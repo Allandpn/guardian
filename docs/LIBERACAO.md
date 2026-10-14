@@ -22,16 +22,17 @@ Objetivo: quem usa o aparelho tenta acessar algo, vê o que o Pi-hole bloqueou, 
 
 ## Filtro de ruído
 
-Com listas de anúncios, uma única página bloqueia dezenas de domínios. Padrão proposto:
+O executor reporta todos os bloqueios dos aparelhos pareados, deduplicados por aparelho, domínio e origem, para o guardião poder filtrar como no Pi-hole:
 
-- O executor reporta só consultas bloqueadas por regra própria (`REGEX`, `DENYLIST`, e os equivalentes `*_CNAME`).
-- Bloqueios por lista de anúncios (`GRAVITY`) ficam fora, e o app tem a opção **Mostrar também anúncios**, desligada.
+- **Filtro por aparelho** e **filtro por origem** (regras próprias, nome de cada lista, CNAME). A origem vem do próprio log do Pi-hole.
+- Padrão da tela: só regras próprias e domínios negados. Listas de anúncios aparecem ao marcar o filtro correspondente.
+- No app, a tela **Bloqueado agora** abre com o mesmo padrão (regras próprias) e tem a opção **Mostrar também anúncios**.
 - Para `*_CNAME`, o domínio reportado é o alvo do CNAME que causou o bloqueio, porque liberar só o nome original não adianta.
-- Cada aparelho tem um limite de 200 domínios únicos. Os mais antigos saem primeiro.
+- Cada aparelho guarda no máximo 1000 domínios únicos. Os mais antigos saem primeiro.
 
 ## Gateway
 
-- Tabela `blocked(dev, domain, count, first, last, source)`, retenção de 7 dias, 200 domínios por aparelho.
+- Tabela `blocked(dev, domain, count, first, last, source)`, retenção de 24 horas, 1000 domínios por aparelho.
 - `POST /v1/devices/{dev}/blocked`: o executor envia a lista, assinada como o relatório.
 - `GET /v1/devices/{dev}/blocked`: o aparelho consulta, com assinatura do aparelho. `GET /v1/blocked`: o guardião consulta, com sessão.
 - `POST /v1/devices/{dev}/requests` com `{kind: "unblock", domains: [...]}`. O gateway só aceita domínios que estão na tabela `blocked` daquele aparelho e valida cada um com `domains.normalize`.
@@ -48,9 +49,9 @@ Com listas de anúncios, uma única página bloqueia dezenas de domínios. Padr�
 ## Site
 
 - **Pedidos**: cartão por pedido, como descrito acima.
-- **Bloqueios** (novo, dentro de cada aparelho): log dos últimos 7 dias, com contagem e botão **Liberar** direto, sem pedido.
+- **Bloqueios** (novo, dentro de cada aparelho): log das últimas 24 horas, com filtros por aparelho e por origem, contagem e botão **Liberar** direto, sem pedido.
 - **Liberados**: ganha o botão **Bloquear de novo** e mostra o tempo restante dos temporários.
-- **Entrar**: a passkey é oferecida assim que o site abre, sem digitar nome. Depois do login, o site volta para o link aberto (por exemplo `#/pedidos`). A sessão passa de 12 h para 30 dias. O cookie só dá leitura do painel, e cada ação continua exigindo a assinatura da passkey.
+- **Entrar**: a passkey é oferecida assim que o site abre, sem digitar nome. Depois do login, o site volta para o link aberto (por exemplo `#/pedidos`). A sessão passa de 12 h para 30 dias (confirmado). O cookie só dá leitura do painel, e cada ação continua exigindo a assinatura da passkey.
 - O push para o guardião fica desligado por padrão. Continua existindo como opção.
 
 ## App
@@ -61,12 +62,12 @@ Com listas de anúncios, uma única página bloqueia dezenas de domínios. Padr�
 ## Riscos e limites
 
 - **Liberar vale para a casa toda.** A permissão do Pi-hole fica no grupo padrão, então os aparelhos de casa também deixam de ser bloqueados naquele domínio. Para liberar só um aparelho seria preciso um grupo no Pi-hole para os remotos, com as listas replicadas nele.
-- **Origem do cliente no Docker.** Se o contêiner usa rede bridge, o Pi-hole pode registrar os pedidos com o IP do gateway do Docker em vez do IP da Tailscale do aparelho. Nesse caso o filtro por aparelho não funciona. Verificação simples: abrir o Query Log do Pi-hole e ver o que aparece na coluna Cliente para o tablet.
+- **Origem do cliente no Docker (a confirmar no primeiro uso).** Os aparelhos falam com o Pi-hole pela Tailscale. Se o contêiner usa rede bridge, o Pi-hole pode registrar os pedidos com o IP do gateway do Docker em vez do IP da Tailscale do aparelho. Nesse caso o filtro por aparelho não funciona. Verificação simples: abrir o Query Log do Pi-hole e ver o que aparece na coluna Cliente para o tablet.
 - **Mapa aparelho para IP.** O executor recebe os IPs da Tailscale (IPv4 e IPv6) de cada aparelho na configuração. São só dois aparelhos.
 - **Nada indica qual app fez a consulta.** O Pi-hole só vê o domínio.
 - **Cache.** Depois da liberação, o navegador ou o Android podem guardar o bloqueio por 1 a 2 minutos.
-- **Domínios forjados.** Uma página no aparelho pode gerar consultas a nomes arbitrários para encher a lista. O limite de 200 e o fato de o guardião ver cada domínio antes de assinar contêm o dano. Domínios `xn--` (punycode) aparecem com aviso.
-- **Privacidade.** O gateway passa a guardar domínios bloqueados (por regra própria) com horário, por 7 dias. Nada do que foi permitido é guardado.
+- **Domínios forjados.** Uma página no aparelho pode gerar consultas a nomes arbitrários para encher a lista. O limite de 1000 e o fato de o guardião ver cada domínio antes de assinar contêm o dano. Domínios `xn--` (punycode) aparecem com aviso.
+- **Privacidade.** O gateway passa a guardar domínios bloqueados (por regra própria) com horário, por 24 horas. Nada do que foi permitido é guardado.
 - **Não validado em Pi-hole real:** formato de `/api/queries` no v6 (campos de status, cliente, lista e `cname`), precedência da lista de permissão sobre regras regex, e os endpoints de domínios.
 
 ## Etapas
