@@ -1,5 +1,5 @@
 {
- "note": "Gerado por tools/gen_vectors.py. 'envelope.payload' e as assinaturas são base64url; chaves públicas são SPKI/DER em base64url.",
+ "note": "Gerado por tools/gen_vectors.py. 'envelope.payload' e as assinaturas são base64url; chaves públicas são SPKI/DER em base64url. 'chrome' = envelope assinado por um passkey real do Chromium (autenticador virtual).",
  "trust": {
   "rp_id": "guardian.example.ts.net",
   "origin": "https://guardian.example.ts.net",
@@ -196,5 +196,35 @@
  "sha256_challenge": {
   "payload": "eyJ2IjoxLCJkZXYiOiJhYWFhYmJiYmNjY2NkZGRkZWVlZSIsImd1YXJkaWFuIjoiZ19hbmEiLCJjdHIiOjEsInR5cGUiOiJhcHByb3ZlX2FwcCIsImFyZ3MiOnsicGtnIjoiY29tLmV4ZW1wbG8uYXBwIn19",
   "challenge": "Qk0udThXiUIGGFxjvLyl9-qQv6JsSn7GJkGwxIl9K1w"
- }
+ },
+ "chrome": [
+  {
+   "dev": "j5iwbvv33pdgyxkb5cko",
+   "type": "approve_app",
+   "trust": {
+    "rp_id": "localhost",
+    "origin": "http://localhost:38969",
+    "guardians": {
+     "g_e233589f": {
+      "name": "Ana",
+      "creds": {
+       "9RpsX0of8mhiFgWIT6rqoDyJoRhTp6xD65mPeGm-4os": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyeYERHzHv7Anq5WNYrI4WY_YO2BlOCTXy8lemxWWuvEhbkUMQZmdKjL1IFbPgdc1Su8JLrT_4_hkNTccWSXuYQ"
+      }
+     }
+    }
+   },
+   "envelope": {
+    "payload": "eyJ2IjoxLCJkZXYiOiJqNWl3YnZ2MzNwZGd5eGtiNWNrbyIsImd1YXJkaWFuIjoiZ19lMjMzNTg5ZiIsImN0ciI6MSwidHlwZSI6ImFwcHJvdmVfYXBwIiwiYXJncyI6eyJwa2ciOiJjb20uZXhlbXBsby5qb2dvIn19",
+    "sigs": [
+     {
+      "guardian": "g_e233589f",
+      "cred": "9RpsX0of8mhiFgWIT6rqoDyJoRhTp6xD65mPeGm-4os",
+      "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAw",
+      "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQW5YUnhEUVluUE11SGtZMUl0bmN5bWdQcUtWenpJbFpjdWtLaUU0b3JvOCIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3Q6Mzg5NjkiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+      "signature": "MEUCIAbyQLFFmBqSwWOBu4_LxpG6tg_uKX2Nxkjg1Y1PhzdbAiEA0iYFqD8tvtomyOpl0xh7LKPjQQk8vcjSh8QyMRAHaRs"
+     }
+    ]
+   }
+  }
+ ]
 }

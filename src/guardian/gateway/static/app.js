@@ -283,6 +283,7 @@ async function guardiansView() {
     }
   }, () => route());
   const out = h('div', {});
+  const push = await pushCard();
   const link = (kind, name) => act(async () => {
     const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}) });
     out.replaceChildren(h('div', { class: 'card' }, h('p', {}, 'Envie este link (vale 24 h, uso único):'), h('textarea', { readonly: true }, `${me.origin}/#invite=${r.token}`)));
@@ -315,6 +316,8 @@ async function guardiansView() {
         await api('POST', `/v1/commands/${c.id}/cosign`, { sig });
         toast('Co-assinado.');
       }, () => route()) }, 'Co-assinar') : chip('aguardando o outro guardião')))) : h('p', { class: 'muted' }, 'Nenhuma.'),
+    h('h2', {}, 'Notificações'),
+    push,
     h('h2', {}, 'Convidar e parear'),
     h('div', { class: 'card' },
       h('form', { onsubmit: (e) => { e.preventDefault(); if (nm.value.trim()) link('new_guardian', nm.value.trim())(); } }, nm, h('button', {}, 'Convidar guardião')),
@@ -322,6 +325,34 @@ async function guardiansView() {
       ' ', h('button', { class: 'ghost', onclick: pair('device') }, 'Parear aparelho'),
       ' ', h('button', { class: 'ghost', onclick: pair('executor') }, 'Parear executor Pi-hole')),
     out);
+}
+
+// ---------- notificações (Web Push) ----------
+async function pushCard() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    return h('div', { class: 'card muted' }, 'Este navegador não suporta notificações push. No iPhone, instale o site na tela inicial primeiro.');
+  }
+  const reg = await navigator.serviceWorker.ready.catch(() => null);
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  const on = !!sub && Notification.permission === 'granted';
+  return h('div', { class: 'card' },
+    h('p', { class: on ? 'ok' : 'muted' }, on ? 'Notificações ativas neste aparelho: sem sinal, filtro caiu, app novo, pedidos.' :
+      Notification.permission === 'denied' ? 'As notificações estão bloqueadas nas configurações do navegador.' : 'Receba um aviso quando algo precisar de você.'),
+    on ? h('div', {},
+      h('button', { class: 'ghost', onclick: act(async () => { const r = await api('POST', '/v1/push/test', {}); toast(r.sent ? 'Aviso de teste enviado.' : 'Nenhum aviso enviado.'); }) }, 'Enviar teste'), ' ',
+      h('button', { class: 'ghost', onclick: act(async () => {
+        await api('POST', '/v1/push/unsubscribe', { endpoint: sub.endpoint });
+        await sub.unsubscribe();
+        toast('Notificações desativadas.');
+      }, () => route()) }, 'Desativar')) :
+      h('button', { onclick: act(async () => {
+        if ((await Notification.requestPermission()) !== 'granted') throw new Error('Permissão de notificação negada.');
+        const { key } = await api('GET', '/v1/push/key');
+        const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(key) });
+        const j = s.toJSON();
+        await api('POST', '/v1/push/subscribe', { endpoint: j.endpoint, keys: j.keys });
+        toast('Notificações ativadas.');
+      }, () => route()) }, 'Ativar notificações'));
 }
 
 async function auditView() {

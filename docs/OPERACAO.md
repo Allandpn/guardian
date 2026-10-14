@@ -48,7 +48,12 @@ outros serviços seus, mude em `pihole.toml` (`webserver.port`) e ajuste `PIHOLE
 
 - Site → Guardiões → **Convidar guardião**: envie o link. Depois que ele cadastrar, use **Propagar** em cada aparelho/executor
   (um toque de passkey por item) para que passem a confiar nele. Peça que cada guardião cadastre um **segundo passkey** (chave física ou outro celular).
-- **Parear aparelho**: gere a string, cole no NotToday *antes* do `set-device-owner`, confira o fingerprint por voz e só então ative (`activate`).
+- **Parear aparelho**: no site, Guardiões → **Parear aparelho**; no NotToday (tela de PIN) → **Parear com guardião remoto** e cole a string *antes* do
+  `set-device-owner`. O app mostra o **fingerprint**: confira por voz com o que o site mostra para o aparelho. Depois defina o PIN pelo site
+  (aparelho → PINs), ajuste o atraso (aparelho → Configuração → `unlock_delay_min`) e só então `adb shell dpm set-device-owner com.allan.nottoday/.AdminReceiver`.
+  Detalhes e riscos em `docs/REMOTO.md` e `docs/LOCKOUT.md` (#25) do NotToday.
+- **Notificações**: cada guardião abre o site no celular, instala-o na tela inicial (obrigatório no iPhone) e em Guardiões → **Ativar notificações**.
+  Defina `GATEWAY_PUSH_SUBJECT=mailto:voce@exemplo.com` (contato do VAPID). Use **Enviar teste** para conferir.
 
 ## 5. Manutenção
 

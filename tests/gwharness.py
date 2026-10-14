@@ -51,7 +51,8 @@ class Env:
         self.tmp = tempfile.TemporaryDirectory()
         self.cfg = Config(origin="http://localhost", rp_id=RP, db_path=os.path.join(self.tmp.name, "g.db"),
                           bind="127.0.0.1", port=0, secure_cookies=False, limit_scale=limit_scale,
-                          max_connections=max_connections)
+                          max_connections=max_connections, alerts_enabled=False,
+                          allow_any_push_endpoint=True)
         self.srv = make_server(self.cfg)
         self.port = self.srv.server_address[1]
         self.cfg.origin = f"http://localhost:{self.port}"

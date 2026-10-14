@@ -90,6 +90,11 @@ def main():
         got = gw.call("GET", f"/v1/devices/{dev}/commands?after=0&wait=0")["commands"]
         v = consumer.accept(got[0]["envelope"])
         out["approve_verified"] = (v.cmd["type"], v.cmd["args"]["pkg"])
+        if os.environ.get("CHROME_VECTOR_OUT"):  # envelope assinado por um passkey real do Chromium, para os testes do Kotlin
+            vec = {"dev": dev, "type": v.cmd["type"], "trust": cmds.Trust(pp["rp"], pp["url"], {
+                g: cmds.Guardian(x["name"], dict(x["creds"])) for g, x in pp["guardians"].items()}).to_json(),
+                "envelope": got[0]["envelope"]}
+            json.dump(vec, open(os.environ["CHROME_VECTOR_OUT"], "w"))
 
         # 5) PIN cifrado no navegador, aberto no "aparelho"
         page.reload()

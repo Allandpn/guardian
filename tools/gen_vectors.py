@@ -57,6 +57,11 @@ def main():
         "device_id": {"spki": b64.enc(spki), "id": devauth.device_id(spki), "fingerprint": devauth.fingerprint(spki)},
         "sha256_challenge": {"payload": b64.enc(p1), "challenge": b64.enc(hashlib.sha256(p1).digest())},
     }
+    path = os.path.join(os.path.dirname(__file__), "..", "protocol", "vectors.json")
+    if os.path.exists(path):  # preserva os vetores capturados de um Chromium real (tools/add_chrome_vector.py)
+        old = json.load(open(path))
+        if "chrome" in old:
+            out["chrome"] = old["chrome"]
     json.dump(out, sys.stdout, indent=1, ensure_ascii=False)
     print()
 

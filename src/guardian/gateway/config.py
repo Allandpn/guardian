@@ -16,6 +16,10 @@ class Config:
     session_ttl_s: int = 12 * 3600
     invite_ttl_s: int = 24 * 3600
     challenge_ttl_s: int = 120
+    alerts_enabled: bool = True                # avisos por Web Push (aparelho sem sinal, filtro caiu, pedidos…)
+    alerts_interval_s: int = 30
+    push_subject: str = "mailto:guardian@example.invalid"   # contato do VAPID: mailto: ou https://
+    allow_any_push_endpoint: bool = False      # só testes: aceita endpoints fora da lista de serviços de push
     limit_scale: float = 1.0                   # multiplica os limites de taxa (só os testes mexem)
 
     @staticmethod
@@ -31,4 +35,6 @@ class Config:
             port=int(e.get("GATEWAY_PORT", "8080")),
             secure_cookies=e.get("GATEWAY_INSECURE_COOKIES", "") != "1",
             max_connections=int(e.get("GATEWAY_MAX_CONNECTIONS", "64")),
+            alerts_enabled=e.get("GATEWAY_ALERTS", "1") != "0",
+            push_subject=e.get("GATEWAY_PUSH_SUBJECT", "mailto:guardian@example.invalid"),
         )

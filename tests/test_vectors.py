@@ -23,6 +23,11 @@ class Vectors(unittest.TestCase):
                     with self.assertRaises(cmds.CommandError):
                         cmds.verify_envelope(trust, c["envelope"])
 
+    def test_real_chromium_envelope(self):
+        for c in V.get("chrome", []):
+            consumer = cmds.Consumer(c["dev"], cmds.Trust.from_json(c["trust"]))
+            self.assertEqual(consumer.accept(c["envelope"]).cmd["type"], c["type"])
+
     def test_device_request_signature(self):
         r = V["device_request"]
         h = r["headers"]

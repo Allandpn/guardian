@@ -10,7 +10,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from cryptography.hazmat.primitives import serialization
+
 from ..protocol import b64, commands as cmds, devauth, webauthn
+from . import webpush
+from .alerts import Alerts, Notifier
 from .config import Config
 from .db import Store
 from .limits import Limiter, NonceCache
@@ -83,6 +87,9 @@ class Gateway:
         self.l_static = Limiter(300 * k, int(100 * k))
         self.l_dev = Limiter(120 * k, int(30 * k))
         self.l_cmd = Limiter(30 * k, int(15 * k))
+        self.vapid = self._load_vapid()
+        self.alerts = Alerts(self.store)
+        self.notifier = Notifier(self.store, self.vapid, cfg.push_subject, cfg.allow_any_push_endpoint)
         self.static = {}
         for path, (name, ctype) in STATIC.items():
             p = os.path.join(STATIC_DIR, name)
@@ -107,6 +114,10 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/report", self.post_report),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests", self.post_request),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
+            ("GET", r"/v1/push/key", self.push_key),
+            ("POST", r"/v1/push/subscribe", self.push_subscribe),
+            ("POST", r"/v1/push/unsubscribe", self.push_unsubscribe),
+            ("POST", r"/v1/push/test", self.push_test),
             ("GET", r"/v1/commands/awaiting", self.awaiting),
             ("POST", r"/v1/commands/(?P<cid>[0-9]{1,12})/cosign", self.cosign),
             ("GET", r"/v1/audit", self.audit),
@@ -136,6 +147,64 @@ class Gateway:
             if m and method == req.method:
                 return fn(req, **m.groupdict())
         raise HttpError(404, "não encontrado")
+
+    def _load_vapid(self):
+        raw = self.store.meta_get("vapid_priv")
+        if raw:
+            return serialization.load_der_private_key(b64.dec(raw), None)
+        key = webpush.new_vapid_key()
+        self.store.meta_set("vapid_priv", b64.enc(key.private_bytes(
+            serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())))
+        return key
+
+    def alerts_tick(self) -> int:
+        """Avalia o que mudou e avisa os guardiões inscritos. Devolve quantos avisos foram gerados."""
+        notes = self.alerts.evaluate()
+        if notes:
+            self.notifier.notify(notes)
+        return len(notes)
+
+    def _alerts_loop(self):
+        while True:
+            time.sleep(self.cfg.alerts_interval_s)
+            try:
+                self.alerts_tick()
+            except Exception as e:
+                print("alertas falharam:", repr(e), file=sys.stderr)
+
+    # ------------------------------------------------------------------ push
+    def push_key(self, req):
+        self.guardian(req)
+        return 200, {"key": b64.enc(webpush.public_bytes(self.vapid))}, {}
+
+    def push_subscribe(self, req):
+        gid = self.guardian(req)
+        d = req.json()
+        keys = d.get("keys") if isinstance(d.get("keys"), dict) else {}
+        endpoint = _str(d, "endpoint", 1000)
+        try:
+            p256dh, auth = b64.dec(_str(keys, "p256dh", 200)), b64.dec(_str(keys, "auth", 100))
+        except ValueError:
+            raise HttpError(400, "chaves de push inválidas")
+        if len(p256dh) != 65 or p256dh[0] != 4 or len(auth) != 16:
+            raise HttpError(400, "chaves de push inválidas")
+        if not self.cfg.allow_any_push_endpoint and not webpush.endpoint_allowed(endpoint):
+            raise HttpError(400, "serviço de push não permitido")
+        self.store.add_push(endpoint, gid, keys["p256dh"], keys["auth"])
+        return 200, {"ok": True}, {}
+
+    def push_unsubscribe(self, req):
+        gid = self.guardian(req)
+        self.store.delete_push(_str(req.json(), "endpoint", 1000), gid)
+        return 200, {"ok": True}, {}
+
+    def push_test(self, req):
+        gid = self.guardian(req)
+        if not self.l_cmd.allow("push:" + gid):
+            raise HttpError(429, "devagar")
+        n = self.notifier.notify([{"tag": "teste", "title": "NotToday Guardian", "body": "Aviso de teste: as notificações funcionam.",
+                                   "exclude": None}], guardian=gid)
+        return 200, {"sent": n}, {}
 
     def _purge_loop(self):
         while True:
@@ -618,4 +687,6 @@ def make_server(cfg: Config, store: Store | None = None) -> _Server:
     gw = Gateway(cfg, store)
     srv = _Server((cfg.bind, cfg.port), Handler, gw)
     threading.Thread(target=gw._purge_loop, daemon=True).start()
+    if cfg.alerts_enabled:
+        threading.Thread(target=gw._alerts_loop, daemon=True).start()
     return srv

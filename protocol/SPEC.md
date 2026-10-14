@@ -4,6 +4,14 @@ Implementação de referência: `src/guardian/protocol/` (Python). O aparelho (K
 casos de `protocol/vectors.json` (gerado por `tools/gen_vectors.py`). Convenções: **base64url sem preenchimento**
 para todo binário em JSON; chaves públicas em **SPKI/DER**; assinaturas ECDSA em **DER**; JSON UTF-8.
 
+## Implementações
+
+- **Python** (referência): `src/guardian/protocol/`. Gateway e executor usam estas funções.
+- **Kotlin** (aparelho): repositório NotToday, pacote `com.allan.nottoday.remote` (`WebAuthn`, `Commands`/`Consumer`, `DevAuth`, `PinBox`).
+  `app/src/test/resources/vectors.json` é cópia de `protocol/vectors.json`: ao mudar o protocolo, regenere os vetores e copie o arquivo.
+  O vetor `chrome` é um envelope assinado por um passkey real do Chromium (`CHROME_VECTOR_OUT=… python tests/e2e_browser.py` e
+  `python tools/add_chrome_vector.py …`).
+
 ## Atores
 
 | Ator | Chave | Papel |
@@ -87,11 +95,19 @@ assinados por eles. Depois de registrar, mostra o **fingerprint** da própria ch
 Novos guardiões/passkeys chegam por `add_guardian`/`add_credential` assinados; o site mostra a divergência (`report.trust`)
 e oferece "Propagar".
 
+## Avisos (Web Push)
+
+`GET /v1/push/key` (chave VAPID pública), `POST /v1/push/subscribe {endpoint, keys:{p256dh, auth}}`, `POST /v1/push/unsubscribe {endpoint}`,
+`POST /v1/push/test`. O endpoint só é aceito se for de um serviço de push conhecido (FCM, Mozilla, Windows, Apple; HTTPS, porta 443),
+senão o gateway viraria um SSRF. Corpo cifrado em `aes128gcm` (RFC 8291) e assinado com VAPID (RFC 8292). Avisos: aparelho sem sinal (5 min) e de volta,
+filtro caiu/voltou, app novo pendente, pedido de afrouxar, pedido do usuário, co-assinatura pendente (não avisa o autor), Pi-hole inacessível/de volta.
+A 1ª rodada depois de subir o gateway só memoriza o estado (sem avisos).
+
 ## API do guardião (site → gateway)
 
 Sessão por cookie (`__Host-gsession`, HttpOnly, SameSite=Strict) obtida com passkey; POSTs exigem `Origin` igual à origem pública.
 `POST /v1/register/{options,verify}` (convite) · `POST /v1/auth/{options,verify,logout}` · `GET /v1/me` ·
 `POST /v1/invites` · `POST /v1/pairings` · `GET /v1/devices` · `GET /v1/devices/{dev}/ctr` ·
 `POST /v1/devices/{dev}/commands` · `GET /v1/commands/awaiting` · `POST /v1/commands/{id}/cosign` ·
-`GET /v1/audit` · `GET /v1/requests` · `POST /v1/requests/{id}/dismiss` · `POST /v1/devices/{dev}/forget`.
+`GET /v1/audit` · `GET /v1/requests` · `POST /v1/requests/{id}/dismiss` · `POST /v1/devices/{dev}/forget` · `/v1/push/*`.
 O próximo `ctr` é `max(último do gateway, último reportado pelo aparelho) + 1`.

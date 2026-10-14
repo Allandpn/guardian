@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS commands(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TE
 CREATE INDEX IF NOT EXISTS commands_dev ON commands(dev, status, ready_seq);
 CREATE TABLE IF NOT EXISTS ctrs(dev TEXT NOT NULL, guardian TEXT NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(dev, guardian));
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TEXT, ts INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, guardian TEXT NOT NULL, p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TEXT NOT NULL, ts INTEGER NOT NULL,
   kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open');
 """
@@ -161,6 +164,36 @@ class Store:
         cutoff = int(time.time()) - DELIVERED_KEEP_S
         self.x("DELETE FROM commands WHERE created<?", (cutoff,))
         self.x("DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)", (AUDIT_MAX,))
+
+    # --- meta e inscrições de push ------------------------------------------------
+    def meta_get(self, k: str) -> str | None:
+        r = self.one("SELECT v FROM meta WHERE k=?", (k,))
+        return r["v"] if r else None
+
+    def meta_set(self, k: str, v: str):
+        self.x("INSERT INTO meta VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+
+    def add_push(self, endpoint: str, guardian: str, p256dh: str, auth: str, keep: int = 5):
+        with self.lock:
+            self.db.execute("INSERT INTO push_subs VALUES(?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET "
+                            "guardian=excluded.guardian, p256dh=excluded.p256dh, auth=excluded.auth",
+                            (endpoint, guardian, p256dh, auth, int(time.time())))
+            self.db.execute("DELETE FROM push_subs WHERE guardian=? AND endpoint NOT IN "
+                            "(SELECT endpoint FROM push_subs WHERE guardian=? ORDER BY created DESC, rowid DESC LIMIT ?)",
+                            (guardian, guardian, keep))
+
+    def delete_push(self, endpoint: str, guardian: str | None = None):
+        if guardian:
+            self.x("DELETE FROM push_subs WHERE endpoint=? AND guardian=?", (endpoint, guardian))
+        else:
+            self.x("DELETE FROM push_subs WHERE endpoint=?", (endpoint,))
+
+    def push_subs(self, guardian: str | None = None, exclude: str | None = None):
+        if guardian:
+            return self.q("SELECT * FROM push_subs WHERE guardian=?", (guardian,))
+        if exclude:
+            return self.q("SELECT * FROM push_subs WHERE guardian<>?", (exclude,))
+        return self.q("SELECT * FROM push_subs")
 
     # --- auditoria e pedidos ---------------------------------------------------------
     def audit(self, dev: str | None, kind: str, text: str):

@@ -59,10 +59,15 @@ co-assinaturas, parear aparelho/executor), auditoria. Login e cada comando sens�
 6. Pendências de validação (?): limite de taxa do Funnel; `TS_SERVE_CONFIG` com `${TS_CERT_DOMAIN}` e `read_only` no container do Tailscale;
    caminhos `/api/domains/{type}/{kind}[/{domain}]` do Pi-hole v6 (confira em `http://<seu-pihole>/api/docs`); ECDH com chave do Keystore na One UI 8.
 
-## Próximos passos
+## Avisos (Web Push)
 
-1. Lado do aparelho no repositório NotToday: módulo Kotlin `:protocol` (verificação WebAuthn/ES256, `Consumer`, caixa do PIN) validado com `vectors.json`,
-   `RemoteChannel` no `GuardService` (long-poll, relatório, pedidos), pareamento por string, `set_pin` (ECDH com o Keystore), `activate`,
-   aplicação dos comandos pelo `Gate`/`Pending`.
-2. Web Push (VAPID) e alertas ("aparelho sem relatar", filtro caiu, pedido novo).
-3. Lote assinado (um toque para vários aparelhos), grupos do Pi-hole por aparelho, consultas bloqueadas recentes.
+O gateway avalia o estado a cada 30 s e avisa os guardiões inscritos: aparelho sem sinal (5 min), filtro caiu, app novo pendente,
+pedido de afrouxar, pedido do usuário, co-assinatura pendente, Pi-hole inacessível. O corpo vai cifrado até o navegador (RFC 8291) e o
+endpoint de push só é aceito de serviços conhecidos (evita SSRF). A chave VAPID fica no `gateway.db`: autoriza só avisos genéricos a quem se inscreveu.
+
+## Estado e próximos passos
+
+Feito: protocolo, gateway, site, executor, avisos e o lado do aparelho (repositório NotToday, `docs/REMOTO.md`).
+Falta validar em hardware real: telas e Keystore (ECDH, `PURPOSE_SIGN | PURPOSE_AGREE_KEY`) no aparelho, entrega do push num navegador real,
+o Docker/Funnel e a API de domínios do Pi-hole v6. Futuro: lote assinado (um toque para vários aparelhos), grupos do Pi-hole por aparelho,
+consultas bloqueadas recentes, `activate` obrigatório antes do `set-device-owner`.
