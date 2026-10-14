@@ -29,6 +29,8 @@ STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/crypto.js": ("crypto.js", "text/javascript; charset=utf-8"),
+    "/ui.js": ("ui.js", "text/javascript; charset=utf-8"),
+    "/gate.js": ("gate.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),

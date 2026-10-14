@@ -83,7 +83,7 @@ linha de requisição (caminho + query) exatamente como enviada. O gateway aceit
 
 **Relatório do aparelho** (campos que o site usa): `kind:"device"`, `ts`, `version`, `owner`, `filterActive`, `filterReason`,
 `tailscale`, `pinSet`, `pendingApps:[{pkg,label,risks:[...]}]`, `pending:[{kind,state:"waiting|ready",remainingMs,summary}]`,
-`windows:{maintenanceMs,devMs,devUsed}`, `snapshot:{chave:valor}` (`Config.snapshot()`), `trust:{guardian:[cred,...]}`,
+`windows:{maintenanceMs,devMs,devUsed}`, `snapshot:{chave:valor}` (`Config.snapshot()`), `labels`/`groups`/`hints` (chave → nome em português, grupo e dica: o site monta as Regras só com isto), `approvedApps:[{pkg,label}]`, `activated`, `trust:{guardian:[cred,...]}`,
 `ctrs:{guardian:int}`, `executed:[...]`. **Relatório do executor**: `kind:"executor"`, `pihole_ok`, `allow`, `deny`, `temp`,
 `trust`, `ctrs`, `executed`. Todo texto vindo de relatório é exibido pelo site com `textContent`.
 

@@ -21,7 +21,7 @@ Site (PWA, passkey) ──HTTPS/Funnel──► GATEWAY (container isolado, nó 
 | Parte | Estado |
 |---|---|
 | `protocol/` + `src/guardian/protocol` | feito, com vetores de teste (`protocol/vectors.json`) |
-| Gateway (`src/guardian/gateway`) e site | feito; testado, inclusive no Chromium com passkey virtual |
+| Gateway (`src/guardian/gateway`) e site (tema escuro "Mar e terra", celular e computador) | feito; testado, inclusive no Chromium com passkey virtual |
 | Executor do Pi-hole v6 | feito; testado contra um Pi-hole falso. **Caminhos `/api/domains/...` ainda não conferidos num Pi-hole v6 real** |
 | `deploy/` (Docker, firewall, ACL, systemd) | escrito; compose validado, **não executado** |
 | Alertas por Web Push (aparelho sem sinal, filtro caiu, app novo, pedidos, co-assinatura) | feito; criptografia validada com o vetor da RFC 8291; **entrega num navegador real ainda não testada** |
@@ -34,7 +34,7 @@ Só `cryptography` como dependência de execução; o gateway usa a biblioteca p
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -e .
-PYTHONPATH=src python3 -m unittest discover -s tests -v      # 72 testes
+PYTHONPATH=src python3 -m unittest discover -s tests -v      # 73 testes
 # ponta a ponta no Chromium (precisa de playwright e do Chromium):
 PYTHONPATH=src python tests/e2e_browser.py
 # simulador de guardião para testes de outras linguagens (o NotToday roda contra ele; veja docs do NotToday):

@@ -2,19 +2,18 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#1f2937">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12202A">
   <title>NotToday Guardian</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header id="top" hidden>
-    <strong>NotToday Guardian</strong>
-    <nav id="nav"></nav>
-  </header>
-  <main id="main"><p class="muted">Carregando…</p></main>
+  <div id="shell">
+    <nav id="nav" aria-label="Seções" hidden></nav>
+    <div id="content"><main id="main"><p class="empty">Carregando…</p></main></div>
+  </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/app.js"></script>
 </body>

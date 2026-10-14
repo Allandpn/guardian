@@ -1,32 +1,22 @@
 import { enc, dec, sha256, sealPin, commandBytes, pairingString } from './crypto.js';
+import { h, icon, chip, toast, sheet } from './ui.js';
+import { classify } from './gate.js';
 
-const $ = (id) => document.getElementById(id);
-const main = $('main');
-let me = null;          // { guardian, trust, rp_id, origin }
+const main = document.getElementById('main');
+const nav = document.getElementById('nav');
+const SILENT_S = 300;
+let me = null;               // { guardian, trust, rp_id, origin }
 let timer = null;
+let counts = { apps: 0, reqs: 0, cosign: 0 };
+const drafts = new Map();    // aparelho -> { chave: novoValor } (regras ainda não assinadas)
+const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regras abertos
+let selected = null;         // aparelho aberto no painel (computador)
+let pair = null;             // andamento do pareamento
+let domDur = 3600;           // duração escolhida para liberar domínio
 
-// ---------- DOM sem innerHTML: todo texto vindo da rede entra por textContent ----------
-function h(tag, attrs, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (v === true) el.setAttribute(k, '');
-    else if (v !== false && v != null) el.setAttribute(k, v);
-  }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : String(kid));
-  return el;
-}
-const chip = (t, cls) => h('span', { class: 'chip ' + (cls || '') }, t);
-let toastTimer;
-function toast(msg) {
-  const t = $('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
-}
 const fail = (e) => toast(e && e.message ? e.message : String(e));
 const show = (...nodes) => { main.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); };
+const wide = () => window.matchMedia('(min-width: 900px)').matches;
 
 async function api(method, path, body) {
   const r = await fetch(path, {
@@ -40,16 +30,32 @@ async function api(method, path, body) {
   return data;
 }
 
+// ---------- formatação ----------
 function ago(ts, now) {
   if (!ts) return 'nunca';
   const s = Math.max(0, now - ts);
-  if (s < 90) return `há ${s}s`;
+  if (s < 90) return `há ${s} s`;
   if (s < 5400) return `há ${Math.round(s / 60)} min`;
   if (s < 172800) return `há ${Math.round(s / 3600)} h`;
   return `há ${Math.round(s / 86400)} d`;
 }
 const fp = (id) => id.match(/.{1,4}/g).join('-');
-const SILENT_S = 300;
+const fmtVal = (v) => (v === 'true' ? 'ligado' : v === 'false' ? 'desligado' : v === '' ? '(vazio)' : v);
+const ruleLabel = (key, labels) => (key === 'unlock_delay_min' ? 'Atraso para afrouxar (horas)' : labels[key] || key);
+function dur(ms) {
+  const min = Math.max(1, Math.ceil(ms / 60000));
+  return min >= 60 ? `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min` : `${min} min`;
+}
+const delayText = (snap) => { const m = Number((snap || {}).unlock_delay_min); return m ? (m % 60 === 0 ? `${m / 60} h` : `${m} min`) : 'sem atraso'; };
+const durLabel = (s) => ({ 3600: '1 hora', 86400: '24 horas', 604800: '7 dias', 0: 'permanente' }[s] || `${Math.round(s / 60)} min`);
+const gname = (gid) => (me && me.trust[gid] ? me.trust[gid].name : gid);
+const TYPE = {
+  approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
+  confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
+  set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
+  remove_guardian: 'remover guardião', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio',
+};
+const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
 // ---------- WebAuthn ----------
 async function passkeyCreate(opts) {
@@ -80,17 +86,80 @@ async function sendCommand(dev, type, args = {}) {
   const bytes = commandBytes({ v: 1, dev, guardian: me.guardian.id, ctr: next, type, args });
   const sig = await signPayload(bytes);
   const r = await api('POST', `/v1/devices/${dev}/commands`, { payload: enc(bytes), sigs: [sig] });
-  toast(r.status === 'awaiting' ? 'Enviado: aguarda a co-assinatura de outro guardião.' : 'Comando enviado.');
+  toast(r.status === 'awaiting' ? 'Enviado: aguarda a co-assinatura de outro guardião.' : 'Comando enviado ao aparelho.');
   return r;
 }
-const act = (fn, after) => async () => { try { await fn(); if (after) await after(); } catch (e) { fail(e); } };
 
-// ---------- login / registro ----------
-async function loginView() {
-  show(h('h1', {}, 'NotToday Guardian'),
-    h('div', { class: 'card' },
-      h('p', {}, 'Entre com o seu passkey (biometria ou chave de segurança).'),
-      h('button', { onclick: act(async () => { await doLogin(); }) }, 'Entrar com passkey')));
+/** Mostra a folha com o que será assinado e, se o guardião confirmar, assina e envia. */
+async function confirmSend(dev, type, args, spec) {
+  if (!(await sheet(spec))) return false;
+  await sendCommand(dev, type, args);
+  return true;
+}
+const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
+
+// ---------- dados ----------
+async function loadAll() {
+  const [d, r, a] = await Promise.all([api('GET', '/v1/devices'), api('GET', '/v1/requests'), api('GET', '/v1/commands/awaiting')]);
+  const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).length, 0);
+  counts = { apps, reqs: r.items.length, cosign: a.commands.filter((c) => c.can_cosign).length };
+  return { devices: d.devices, now: d.now, reqs: r.items, aw: a.commands };
+}
+
+function statusOf(d, now) {
+  const r = d.report || {};
+  if (now - (d.last_seen || d.created) > SILENT_S) return { word: 'Sem sinal', kind: 'bad', detail: `sem consultar o gateway ${ago(d.last_seen || d.created, now)}` };
+  if (!d.report) return { word: 'Novo', kind: '', detail: 'aguardando o primeiro relatório' };
+  if (d.kind === 'executor') {
+    if (r.pihole_ok === false) return { word: 'Atenção', kind: 'warn', detail: 'Pi-hole inacessível' };
+    return { word: 'Ok', kind: 'ok', detail: `${(r.allow || []).length} liberados · ${(r.temp || []).length} temporários · ${(r.deny || []).length} bloqueados` };
+  }
+  const apps = (r.pendingApps || []).length;
+  const pend = (r.pending || []).length;
+  if (r.filterActive === false) return { word: 'Atenção', kind: 'warn', detail: 'filtro não confirmado' + (r.filterReason ? `: ${r.filterReason}` : '') };
+  if (apps || pend) {
+    return { word: 'Atenção', kind: 'warn', detail: [apps ? `${apps} app(s) pendente(s)` : '', pend ? `${pend} pedido(s) em espera` : ''].filter(Boolean).join(' · ') };
+  }
+  return { word: 'Protegido', kind: 'ok', detail: `filtro confirmado · visto ${ago(d.last_seen, now)}` };
+}
+
+// ---------- peças comuns ----------
+function top(title, { back, actions } = {}) {
+  return h('header', { class: 'top' }, back ? h('a', { class: 'ib', href: back, 'aria-label': 'Voltar' }, icon('back')) : null,
+    h('h1', {}, title), actions || null);
+}
+
+function renderNav(active) {
+  nav.hidden = !me;
+  if (!me) return;
+  const item = (href, label, ic, key, badge) => h('a', { class: 'navitem' + (active === key ? ' on' : ''), href, 'aria-current': active === key ? 'page' : null },
+    icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
+  nav.replaceChildren(h('div', { class: 'brand' }, 'NotToday Guardian'),
+    item('#/', 'Início', 'home', 'home', counts.apps), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
+    item('#/people', 'Pessoas', 'people', 'people', counts.cosign), item('#/history', 'Histórico', 'clock', 'history', 0),
+    h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
+}
+
+async function logout() {
+  await api('POST', '/v1/auth/logout', {});
+  me = null;
+  route();
+}
+
+function copyBtn(getText, label = 'Copiar') {
+  return h('button', { class: 'btn', type: 'button', onclick: act(async () => {
+    try { await navigator.clipboard.writeText(getText()); toast('Copiado.'); } catch (_) { toast('Não foi possível copiar: selecione o texto.'); }
+  }) }, label);
+}
+
+// ---------- entrar / convite ----------
+function loginView() {
+  show(h('div', { class: 'login' },
+    h('div', { class: 'logo' }, icon('shield', 38)),
+    h('h1', {}, 'NotToday Guardian'),
+    h('p', { class: 'muted' }, 'Entre com o seu passkey (biometria ou chave de segurança). Não existe senha.'),
+    h('button', { class: 'btn pri', type: 'button', onclick: act(doLogin) }, 'Entrar com passkey'),
+    h('p', { class: 'muted' }, 'Cada ação sensível pede o seu passkey de novo.')));
 }
 
 async function doLogin() {
@@ -102,172 +171,399 @@ async function doLogin() {
   await boot();
 }
 
-async function inviteView(token) {
-  show(h('h1', {}, 'Cadastrar passkey'),
-    h('div', { class: 'card' },
-      h('p', {}, 'Você foi convidado como guardião. Cadastre um passkey neste aparelho.'),
-      h('button', { onclick: act(async () => {
-        const o = await api('POST', '/v1/register/options', { invite: token });
-        const reg = await passkeyCreate(o);
-        await api('POST', '/v1/register/verify', { challengeId: o.challengeId, ...reg });
-        location.hash = '#/';
-        await boot();
-        toast('Passkey cadastrado.');
-      }) }, 'Cadastrar passkey')));
+function inviteView(token) {
+  show(h('div', { class: 'login' },
+    h('div', { class: 'logo' }, icon('shield', 38)),
+    h('h1', {}, 'Cadastrar passkey'),
+    h('p', { class: 'muted' }, 'Você foi convidado como guardião. Cadastre um passkey neste aparelho e, depois, um segundo (outro celular ou chave física) para não ficar sem acesso.'),
+    h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+      const o = await api('POST', '/v1/register/options', { invite: token });
+      const reg = await passkeyCreate(o);
+      await api('POST', '/v1/register/verify', { challengeId: o.challengeId, ...reg });
+      location.hash = '#/';
+      await boot();
+      toast('Passkey cadastrado.');
+    }) }, 'Cadastrar passkey'),
+    h('p', { class: 'muted' }, 'O link vale 24 h e só funciona uma vez.')));
 }
 
-// ---------- telas ----------
-async function loadDevices() { return api('GET', '/v1/devices'); }
+// ---------- início ----------
+function deviceCard(d, now, { sel } = {}) {
+  const st = statusOf(d, now);
+  return h('a', { class: 'card' + (sel ? ' sel' : '') + (st.kind === 'bad' ? ' badb' : st.kind === 'warn' ? ' warnb' : ''), href: `#/device/${d.id}` },
+    h('div', { class: 'row' }, h('span', { class: 'dot ' + st.kind }), h('strong', {}, d.name),
+      d.kind === 'executor' ? chip('executor') : null, h('span', { class: 'sp' }), chip(st.word, st.kind)),
+    h('div', { class: 'muted', style: 'margin-top:6px' }, st.detail));
+}
 
-function statusOf(d, now) {
-  const silent = now - d.last_seen > SILENT_S;
-  const r = d.report || {};
-  const out = [];
-  if (silent) out.push(['sem sinal ' + ago(d.last_seen, now), 'bad']);
-  if (d.kind === 'device') {
-    if (r.filterActive === false) out.push(['filtro NÃO confirmado', 'bad']);
-    else if (r.filterActive) out.push(['filtro ok', 'ok']);
-    if ((r.pendingApps || []).length) out.push([`${r.pendingApps.length} app(s) pendente(s)`, 'warn']);
-  } else if (r.pihole_ok === false) {
-    out.push(['Pi-hole inacessível', 'bad']);
+async function inicioView() {
+  const { devices, now, reqs, aw } = await loadAll();
+  renderNav('home');
+  const todos = [];
+  const cos = aw.filter((c) => c.can_cosign);
+  if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/people' });
+  if (reqs.length) todos.push({ n: reqs.length, title: 'Pedidos dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains' });
+  for (const d of devices) {
+    const r = d.report || {};
+    const apps = r.pendingApps || [];
+    if (apps.length) todos.push({ n: apps.length, title: 'Apps aguardando aprovação', sub: `${d.name}${apps.some((a) => (a.risks || []).length) ? ' · com risco' : ''}`, href: `#/device/${d.id}/apps` });
+    const ready = (r.pending || []).filter((p) => p.state === 'ready');
+    if (ready.length) todos.push({ n: ready.length, title: 'Pedido pronto para confirmar', sub: `${d.name} · ${ready.map((p) => KIND[p.kind] || p.kind).join(', ')}`, href: `#/device/${d.id}` });
   }
-  if (d.pending) out.push([`${d.pending} comando(s) na fila`, 'warn']);
-  return out;
+  const phones = devices.filter((d) => d.kind === 'device');
+  if (!selected || !devices.some((d) => d.id === selected)) selected = (phones[0] || devices[0] || {}).id || null;
+  const sel = devices.find((d) => d.id === selected);
+
+  const list = h('div', { class: 'list' },
+    h('div', { class: 'sec' }, 'Precisa de você'),
+    todos.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, todos.map((t) => h('a', { class: 'todo', href: t.href },
+      h('span', { class: 'cnt' }, String(t.n)), h('div', { class: 'sp' }, h('strong', {}, t.title), h('div', { class: 'muted' }, t.sub)), icon('chevron', 18)))) :
+      h('div', { class: 'card' }, h('div', { class: 'row' }, h('span', { style: 'color:var(--green)' }, icon('check')), h('strong', {}, 'Tudo em dia'))),
+    h('div', { class: 'sec' }, 'Aparelhos'),
+    devices.length ? devices.map((d) => wide() ? h('a', { class: 'card' + (d.id === selected ? ' sel' : ''), href: '#/', onclick: (e) => { e.preventDefault(); selected = d.id; route(); } },
+      statusRow(d, now)) : deviceCard(d, now)) :
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum aparelho pareado ainda. Toque em “Parear”.')));
+
+  const pane = wide() && sel && sel.kind === 'device' ? h('div', { class: 'pane' }, h('div', { class: 'sec' }, 'Detalhe'), deviceBanner(sel, now),
+    h('div', { class: 'row', style: 'margin:12px 14px 0' }, h('a', { class: 'btn grow', href: `#/device/${sel.id}`, style: 'text-align:center;display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Abrir aparelho completo')),
+    resumoNodes(sel, now)) : null;
+
+  show(top('Início'), h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)),
+    h('a', { class: 'fab', href: '#/pair' }, icon('plus', 20), 'Parear'));
+  timer = setTimeout(route, 20000);
 }
 
-async function dashboardView() {
-  const [{ devices, now }, reqs, aw] = await Promise.all([loadDevices(), api('GET', '/v1/requests'), api('GET', '/v1/commands/awaiting')]);
-  const cos = aw.commands.filter((c) => c.can_cosign);
-  show(h('h1', {}, 'Aparelhos'),
-    cos.length ? h('div', { class: 'card' }, h('strong', { class: 'warn' }, `${cos.length} comando(s) aguardam a sua co-assinatura `),
-      h('a', { href: '#/guardians' }, 'ver')) : null,
-    reqs.items.length ? h('div', { class: 'card' }, h('strong', {}, `${reqs.items.length} pedido(s) do usuário`),
-      h('div', {}, reqs.items.slice(0, 5).map((q) => h('div', { class: 'muted' }, `${devName(devices, q.dev)}: [${q.kind}] ${q.text}`))),
-      h('a', { href: '#/domains' }, 'responder pedidos de domínio')) : null,
-    devices.length ? devices.map((d) => h('div', { class: 'card' },
-      h('div', { class: 'row' },
-        h('div', {}, h('strong', {}, d.name), ' ', chip(d.kind === 'executor' ? 'executor Pi-hole' : 'aparelho'),
-          h('div', { class: 'muted' }, 'id ' + fp(d.id))),
-        h('a', { href: `#/device/${d.id}` }, 'abrir')),
-      h('div', {}, statusOf(d, now).map(([t, c]) => h('span', { class: c + ' ' }, t + ' · ')),
-        statusOf(d, now).length ? null : h('span', { class: 'muted' }, 'visto ' + ago(d.last_seen, now))))) :
-      h('div', { class: 'card' }, 'Nenhum aparelho pareado. Use "Guardiões → Parear".'));
+function statusRow(d, now) {
+  const st = statusOf(d, now);
+  return [h('div', { class: 'row' }, h('span', { class: 'dot ' + st.kind }), h('strong', {}, d.name), d.kind === 'executor' ? chip('executor') : null,
+    h('span', { class: 'sp' }), chip(st.word, st.kind)), h('div', { class: 'muted', style: 'margin-top:6px' }, st.detail)];
 }
-const devName = (devices, id) => (devices.find((d) => d.id === id) || { name: id }).name;
 
-async function deviceView(id) {
-  const { devices, now } = await loadDevices();
+// ---------- aparelho ----------
+function deviceBanner(d, now) {
+  const st = statusOf(d, now);
+  const r = d.report || {};
+  const title = d.kind === 'executor' ? 'Executor do Pi-hole' : r.filterActive ? 'Filtro CONFIRMADO' : r.filterActive === false ? 'Filtro NÃO confirmado' : 'Aguardando relatório';
+  return h('div', { class: 'banner ' + (st.kind === 'ok' ? '' : st.kind) },
+    h('div', { class: 'row' }, h('strong', { style: 'font-size:16px' }, title), h('span', { class: 'sp' }), chip(st.word, st.kind)),
+    h('div', { class: 'muted', style: 'margin-top:4px;color:var(--text)' }, `visto ${ago(d.last_seen, now)} · relatório ${ago(d.report_ts, now)}`));
+}
+
+function segTabs(items, active) {
+  return h('nav', { class: 'seg', 'aria-label': 'Seções' }, items.map(([href, label, key]) => h('a', { href, class: key === active ? 'on' : '', 'aria-current': key === active ? 'page' : null }, label)));
+}
+
+async function deviceView(id, tab) {
+  const { devices, now } = await loadAll();
+  renderNav('home');
   const d = devices.find((x) => x.id === id);
-  if (!d) { show(h('p', {}, 'Aparelho não encontrado.')); return; }
-  const r = d.report || {};
-  const refresh = () => route();
-  const nodes = [h('h1', {}, d.name), h('p', { class: 'muted' }, `${d.kind === 'executor' ? 'Executor' : 'Aparelho'} · id ${fp(d.id)} · visto ${ago(d.last_seen, now)} · relatório ${ago(d.report_ts, now)}`)];
-  if (d.kind === 'executor') {
-    nodes.push(h('div', { class: 'card' }, 'Executor do Pi-hole. Gerencie os domínios em ', h('a', { href: '#/domains' }, 'Domínios'), '.'));
-  } else {
-    nodes.push(h('div', { class: 'card' },
-      h('div', {}, 'Filtro: ', r.filterActive ? h('strong', { class: 'ok' }, 'CONFIRMADO') : h('strong', { class: 'bad' }, 'NÃO confirmado'),
-        r.filterReason ? h('span', { class: 'muted' }, ` (${r.filterReason})`) : null),
-      h('div', { class: 'muted' }, `Device Owner: ${r.owner ? 'sim' : 'não'} · Tailscale: ${r.tailscale ? 'sim' : 'não'} · PIN local: ${r.pinSet ? 'definido' : 'não definido'} · versão ${r.version || '?'}`),
-      r.windows ? h('div', { class: 'muted' }, `Manutenção: ${r.windows.maintenanceMs ? 'ATIVA' : 'fechada'} · janela de dev: ${r.windows.devMs ? 'ABERTA' : 'fechada'} (${r.windows.devUsed ?? '?'} usadas em 24 h)`) : null));
-    const pend = r.pendingApps || [];
-    nodes.push(h('h2', {}, 'Apps pendentes de aprovação'));
-    nodes.push(pend.length ? pend.map((a) => h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('div', {}, h('strong', {}, a.label || a.pkg), h('div', { class: 'muted' }, a.pkg)),
-        h('button', { onclick: act(() => sendCommand(id, 'approve_app', { pkg: a.pkg }), refresh) }, 'Aprovar')),
-      (a.risks || []).map((x) => chip('⚠ ' + x, 'warn')))) : h('p', { class: 'muted' }, 'Nenhum.'));
-    const pq = r.pending || [];
-    nodes.push(h('h2', {}, 'Pedidos de desbloqueio em espera'));
-    nodes.push(pq.length ? pq.map((p) => h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('div', {}, h('strong', {}, p.kind), ' ', p.summary || ''),
-        h('div', {}, p.state === 'ready' ? h('button', { onclick: act(() => sendCommand(id, 'confirm', { kind: p.kind }), refresh) }, 'Confirmar') : chip(`disponível em ${Math.ceil((p.remainingMs || 0) / 60000)} min`),
-          ' ', h('button', { class: 'ghost', onclick: act(() => sendCommand(id, 'cancel', { kind: p.kind }), refresh) }, 'Cancelar'))))) : h('p', { class: 'muted' }, 'Nenhum.'));
-    const snap = r.snapshot || {};
-    const keys = Object.keys(snap).sort();
-    const sel = h('select', {}, keys.map((k) => h('option', { value: k }, k)));
-    const val = h('input', { placeholder: 'novo valor', size: 18 });
-    sel.addEventListener('change', () => { val.value = snap[sel.value] ?? ''; });
-    val.value = keys.length ? snap[keys[0]] : '';
-    nodes.push(h('h2', {}, 'Configuração'));
-    nodes.push(h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'Endurecer vale na hora; afrouxar espera o atraso do aparelho (chave unlock_delay_min, em minutos).'),
-      h('form', { onsubmit: (e) => { e.preventDefault(); act(() => sendCommand(id, 'set_config', { patch: { [sel.value]: val.value } }), refresh)(); } },
-        sel, val, h('button', {}, 'Enviar')),
-      h('table', {}, keys.map((k) => h('tr', {}, h('td', {}, k), h('td', {}, snap[k]))))));
-    const pin = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'PIN (6+ dígitos)', autocomplete: 'off' });
-    const devpin = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'PIN de desenvolvedor', autocomplete: 'off' });
-    const sendPin = (type, input) => async () => {
-      if (!/^[0-9]{6,32}$/.test(input.value)) throw new Error('o PIN precisa ter 6 ou mais dígitos');
-      const box = await sealPin(d.spki, input.value, `guardian/${type}/${id}`);
-      input.value = '';
-      await sendCommand(id, type, { box });
-    };
-    nodes.push(h('h2', {}, 'PINs'));
-    nodes.push(h('div', { class: 'card' },
-      h('p', { class: 'muted' }, 'O PIN viaja cifrado para a chave do aparelho: o gateway e o usuário não o veem.'),
-      h('form', { onsubmit: (e) => { e.preventDefault(); act(sendPin('set_pin', pin), refresh)(); } }, pin, h('button', {}, 'Definir PIN local')),
-      h('form', { onsubmit: (e) => { e.preventDefault(); act(sendPin('set_dev_pin', devpin), refresh)(); } }, devpin, h('button', { class: 'ghost' }, 'Definir PIN de desenvolvedor'))));
-    const pkg = h('input', { placeholder: 'pacote (com.exemplo.app)', size: 26 });
-    nodes.push(h('h2', {}, 'Outras ações'));
-    nodes.push(h('div', { class: 'card' },
-      h('form', { onsubmit: (e) => { e.preventDefault(); act(() => sendCommand(id, 'revoke_app', { pkg: pkg.value.trim() }), refresh)(); } },
-        pkg, h('button', { class: 'ghost' }, 'Revogar aprovação')),
-      h('button', { class: 'ghost', onclick: act(() => sendCommand(id, 'request_maintenance'), refresh) }, 'Pedir janela de manutenção')));
-  }
-  nodes.push(h('h2', {}, 'Gateway'));
-  nodes.push(h('div', { class: 'card' }, h('button', { class: 'danger', onclick: act(async () => {
-    if (!confirm('Remover este aparelho do gateway? (não mexe no aparelho)')) return;
-    await api('POST', `/v1/devices/${id}/forget`, {});
-    location.hash = '#/';
-  }) }, 'Esquecer neste gateway')));
-  show(nodes);
+  if (!d) { show(top('Aparelho', { back: '#/' }), h('p', { class: 'empty' }, 'Aparelho não encontrado.')); return; }
+  const base = `#/device/${id}`;
+  const tabs = d.kind === 'executor' ? [[base, 'Resumo', 'resumo'], [`${base}/avancado`, 'Avançado', 'avancado']] :
+    [[base, 'Resumo', 'resumo'], [`${base}/regras`, 'Regras', 'regras'], [`${base}/apps`, 'Apps', 'apps'], [`${base}/avancado`, 'Avançado', 'avancado']];
+  let body;
+  if (tab === 'regras' && d.kind === 'device') body = regrasNodes(d);
+  else if (tab === 'apps' && d.kind === 'device') body = appsNodes(d);
+  else if (tab === 'avancado') body = avancadoNodes(d, now);
+  else { tab = 'resumo'; body = d.kind === 'executor' ? executorNodes(d, now) : resumoNodes(d, now); }
+  show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, deviceBanner(d, now), segTabs(tabs, tab), body));
+  if (tab !== 'regras') timer = setTimeout(route, 20000);
 }
 
-const TTLS = [['permanente', 0], ['1 hora', 3600], ['24 horas', 86400], ['7 dias', 604800]];
+function executorNodes(d, now) {
+  const r = d.report || {};
+  return [h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'Executor do Pi-hole. Os domínios liberados e bloqueados ficam em Domínios.'),
+    h('a', { class: 'btn pri', href: '#/domains', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Abrir domínios')),
+  h('div', { class: 'card' }, kvRows([['Pi-hole', r.pihole_ok === false ? 'inacessível' : 'ok'], ['Liberados', String((r.allow || []).length)], ['Bloqueados', String((r.deny || []).length)],
+    ['Temporários', String((r.temp || []).length)]]))];
+}
 
-async function domainsView() {
-  const [{ devices, now }, reqs] = await Promise.all([loadDevices(), api('GET', '/v1/requests')]);
-  const ex = devices.find((d) => d.kind === 'executor');
-  if (!ex) { show(h('h1', {}, 'Domínios'), h('div', { class: 'card' }, 'Nenhum executor do Pi-hole pareado. Veja "Guardiões → Parear".')); return; }
+function kvRows(rows) {
+  return h('div', { class: 'kvbox', style: 'margin:0' }, rows.map(([k, v]) => h('div', { class: 'kv' }, h('span', {}, k), h('span', {}, v))));
+}
+
+function resumoNodes(d, now) {
+  const r = d.report || {};
+  const snap = r.snapshot || {};
+  const pend = r.pending || [];
+  const apps = r.pendingApps || [];
+  const nodes = [];
+  nodes.push(h('div', { class: 'sec' }, 'Pendências'));
+  if (!pend.length && !apps.length) nodes.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada pendente.')));
+  for (const p of pend) {
+    const ready = p.state === 'ready';
+    nodes.push(h('div', { class: 'card warnb' },
+      h('div', { class: 'row' }, h('strong', {}, `Pedido: ${KIND[p.kind] || p.kind}`), h('span', { class: 'sp' }), chip(ready ? 'pronto' : 'em espera', ready ? 'ok' : 'warn')),
+      h('div', { class: 'muted', style: 'margin-top:4px' }, p.summary || ''),
+      ready ? null : h('div', { class: 'muted', style: 'margin-top:6px' }, 'Libera em ', h('strong', { style: 'color:var(--text)' }, dur(p.remainingMs || 0)), ' (contado pelo relógio do aparelho)'),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        h('button', { class: 'btn grow', type: 'button', onclick: act(() => confirmSend(d.id, 'cancel', { kind: p.kind }, { title: `Cancelar o pedido de ${KIND[p.kind] || p.kind}?`,
+          rows: [['Aparelho', d.name]], effect: 'vale na hora', effectKind: 'ok' }).then(() => route())) }, 'Cancelar pedido'),
+        h('button', { class: 'btn pri grow', type: 'button', disabled: !ready, onclick: act(() => confirmSend(d.id, 'confirm', { kind: p.kind }, { title: `Confirmar: ${KIND[p.kind] || p.kind}?`,
+          rows: [['Aparelho', d.name], ['Pedido', p.summary || '']], effect: 'aplica agora', effectKind: 'warn', note: 'Esta mudança afrouxa a proteção.', danger: p.kind === 'RELEASE' }).then(() => route())) }, 'Confirmar'))));
+  }
+  if (apps.length) {
+    nodes.push(h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('strong', {}, `${apps.length} app(s) aguardando aprovação`), h('span', { class: 'sp' }),
+        apps.some((a) => (a.risks || []).length) ? chip('com risco', 'warn') : null),
+      h('div', { class: 'muted', style: 'margin-top:4px' }, apps.slice(0, 3).map((a) => a.label || a.pkg).join(' · ')),
+      h('a', { class: 'btn pri block', href: `#/device/${d.id}/apps`, style: 'margin-top:10px;display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Revisar apps')));
+  }
+  nodes.push(h('div', { class: 'sec' }, 'Estado'));
+  const w = r.windows || {};
+  nodes.push(h('div', { class: 'card' }, kvRows([
+    ['Device Owner', r.owner ? 'sim' : 'não'], ['Ativado pelo guardião', r.activated ? 'sim' : 'não'], ['PIN local', r.pinSet ? 'definido' : 'não definido'],
+    ['Atraso para afrouxar', delayText(snap)], ['Janela de manutenção', w.maintenanceMs ? 'ATIVA' : 'fechada'],
+    ['Janela de desenvolvimento', w.devMs ? 'ABERTA' : `fechada · ${w.devUsed ?? '?'} usadas em 24 h`], ['Tailscale', r.tailscale ? 'sim' : 'não'], ['Versão do app', r.version || '?'],
+  ])));
+  nodes.push(h('div', { class: 'sec' }, 'Atalhos'));
+  nodes.push(h('div', { class: 'pad', style: 'display:flex;flex-direction:column;gap:8px' },
+    h('button', { class: 'btn', type: 'button', style: 'text-align:left', onclick: act(() => pinDialog(d)) }, 'Definir PIN local ou de desenvolvedor…'),
+    h('button', { class: 'btn', type: 'button', style: 'text-align:left', onclick: act(() => confirmSend(d.id, 'request_maintenance', {}, { title: `Pedir janela de manutenção em ${d.name}?`,
+      rows: [['Duração', '30 minutos'], ['Libera', 'ADB, instalar apps, USB e lojas']], effect: `espera ${delayText(snap)}`, effectKind: 'warn',
+      note: 'Depois da espera, confirme o pedido aqui para abrir a janela.' }).then(() => route())) }, 'Pedir janela de manutenção…')));
+  return nodes;
+}
+
+/** Janela para digitar um PIN (cifrado no navegador até a chave do aparelho). */
+function pinDialog(d) {
+  return new Promise((resolve) => {
+    const pin = h('input', { class: 'inp', type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: 'PIN (6 ou mais dígitos)', 'aria-label': 'PIN' });
+    let overlay;
+    const close = (v) => { overlay.remove(); resolve(v); };
+    const go = (type) => act(async () => {
+      if (!/^[0-9]{6,32}$/.test(pin.value)) throw new Error('o PIN precisa ter 6 ou mais dígitos');
+      const value = pin.value;
+      close(true);
+      const box = await sealPin(d.spki, value, `guardian/${type}/${d.id}`);
+      await confirmSend(d.id, type, { box }, { title: type === 'set_pin' ? `Definir o PIN local de ${d.name}?` : `Definir o PIN de desenvolvedor de ${d.name}?`,
+        rows: [['Aparelho', d.name]], effect: 'vale na hora', effectKind: 'ok', note: 'O PIN viaja cifrado até a chave do aparelho: o gateway e o usuário não o veem.', noteKind: 'ok' });
+      route();
+    });
+    overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(false); } },
+      h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Definir PIN' }, h('div', { class: 'grab' }), h('h2', {}, 'Definir PIN'),
+        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'O PIN fica só entre você e o aparelho.'), pin,
+        h('div', { class: 'row' }, h('button', { class: 'btn pri', type: 'button', onclick: go('set_pin') }, 'PIN local'),
+          h('button', { class: 'btn', type: 'button', onclick: go('set_dev_pin') }, 'PIN de desenvolvedor')),
+        h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => close(false) }, 'Cancelar'))));
+    document.body.append(overlay);
+    pin.focus();
+  });
+}
+
+// ---------- regras ----------
+function regrasNodes(d) {
+  const r = d.report || {};
+  const snap = r.snapshot || {};
+  const labels = r.labels || {};
+  const groups = r.groups || {};
+  const hints = r.hints || {};
+  if (!Object.keys(snap).length) return h('p', { class: 'empty' }, 'O aparelho ainda não enviou a configuração.');
+  const dr = drafts.get(d.id) || {};
+  const setDraft = (key, value) => {
+    const cur = drafts.get(d.id) || {};
+    if (String(value) === String(snap[key])) delete cur[key]; else cur[key] = String(value);
+    drafts.set(d.id, cur);
+    route();
+  };
+  const effectOf = (key) => {
+    const c = classify(key, snap[key], dr[key]);
+    return c === 'loosen' ? chip(`espera ${delayText(snap)}`, 'warn') : chip('na hora', 'ok');
+  };
+  const rowFor = (key) => {
+    const v = key in dr ? dr[key] : snap[key];
+    const label = ruleLabel(key, labels);
+    const chg = key in dr;
+    const left = h('div', { class: 't' }, label, hints[key] ? h('div', { class: 'muted' }, hints[key]) : null,
+      chg ? h('div', { class: 'muted', style: 'margin-top:2px' }, key === 'unlock_delay_min' ? `${Number(snap[key]) / 60} h → ${Number(dr[key]) / 60} h` : `${fmtVal(snap[key])} → ${fmtVal(dr[key])}`) : null);
+    let ctl;
+    if (snap[key] === 'true' || snap[key] === 'false') {
+      ctl = h('button', { class: 'tg', type: 'button', role: 'switch', 'aria-checked': String(v === 'true'), 'aria-label': label, onclick: () => setDraft(key, v === 'true' ? 'false' : 'true') });
+    } else if (key === 'unlock_delay_min') {
+      ctl = h('input', { class: 'inp', type: 'number', min: '0', max: '336', value: String(Number(v) / 60), 'aria-label': `${label} em horas`, style: 'width:90px',
+        onchange: (e) => setDraft(key, String(Math.round(Number(e.target.value) * 60))) });
+    } else if (key === 'chrome_youtube') {
+      ctl = h('select', { class: 'sel', 'aria-label': label, style: 'width:130px', onchange: (e) => setDraft(key, e.target.value) },
+        [['0', 'Desligado'], ['1', 'Moderado'], ['2', 'Estrito']].map(([val, t]) => h('option', { value: val, selected: v === val }, t)));
+    } else {
+      ctl = h('input', { class: 'inp', value: v, 'aria-label': label, onchange: (e) => setDraft(key, e.target.value.trim()) });
+    }
+    return h('div', { class: 'rw' + (chg ? ' chg' : '') }, left, chg ? effectOf(key) : null, ctl);
+  };
+  const order = ['Filtro', 'Apps novos', 'Segurança', 'Restrições do sistema', 'Desenvolvimento (ADB curto)', 'Chrome', 'Lojas e apps protegidos', 'Sistema'];
+  const keys = Object.keys(snap);
+  const byGroup = new Map();
+  for (const k of keys) { const g = groups[k] || 'Outros'; (byGroup.get(g) || byGroup.set(g, []).get(g)).push(k); }
+  const names = [...order.filter((g) => byGroup.has(g)), ...[...byGroup.keys()].filter((g) => !order.includes(g))];
+  const nodes = names.map((g) => {
+    const ks = byGroup.get(g);
+    const isOpen = open.has(g) || ks.some((k) => k in dr);
+    const changed = ks.filter((k) => k in dr).length;
+    return h('div', { class: 'group' },
+      h('button', { class: 'gh', type: 'button', 'aria-expanded': String(isOpen), onclick: () => { if (open.has(g)) open.delete(g); else open.add(g); route(); } },
+        g, h('span', { class: 'sp' }), changed ? chip(`${changed} alterada(s)`, 'warn') : null, h('span', { class: 'muted' }, `${ks.length} itens`)),
+      isOpen ? ks.map(rowFor) : null);
+  });
+  const n = Object.keys(dr).length;
+  if (n) {
+    nodes.push(h('div', { style: 'height:84px' }));
+    const loosen = Object.keys(dr).filter((k) => classify(k, snap[k], dr[k]) === 'loosen').length;
+    nodes.push(h('div', { class: 'sticky' }, h('div', { class: 'sp' }, h('strong', {}, `${n} alteraç${n === 1 ? 'ão' : 'ões'}`),
+      h('div', { class: 'muted' }, `${n - loosen} valem na hora · ${loosen} esperam ${delayText(snap)}`)),
+      h('button', { class: 'btn', type: 'button', onclick: () => { drafts.delete(d.id); route(); } }, 'Descartar'),
+      h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+        const rows = Object.keys(dr).map((k) => [ruleLabel(k, labels), k === 'unlock_delay_min' ? `${Number(snap[k]) / 60} h → ${Number(dr[k]) / 60} h` : `${fmtVal(snap[k])} → ${fmtVal(dr[k])}`]);
+        const ok = await confirmSend(d.id, 'set_config', { patch: { ...dr } }, { title: `Alterar ${n} configuraç${n === 1 ? 'ão' : 'ões'} de ${d.name}?`, rows,
+          effect: loosen ? `${n - loosen} na hora · ${loosen} espera ${delayText(snap)}` : 'vale na hora', effectKind: loosen ? 'warn' : 'ok',
+          note: loosen ? `O que afrouxa a proteção só vale depois de ${delayText(snap)}, e você pode cancelar até lá.` : null });
+        if (ok) { drafts.delete(d.id); route(); }
+      }) }, 'Revisar e assinar')));
+  }
+  return nodes;
+}
+
+// ---------- apps ----------
+function appsNodes(d) {
+  const r = d.report || {};
+  const pend = r.pendingApps || [];
+  const approved = r.approvedApps || [];
+  const risky = (x) => /vpn|shizuku|shell|hail|test dpc/i.test(x);
+  const nodes = [h('div', { class: 'sec' }, `Aguardando aprovação · ${pend.length}`)];
+  if (!pend.length) nodes.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando.')));
+  for (const a of pend) {
+    const risks = a.risks || [];
+    nodes.push(h('div', { class: 'card' + (risks.some(risky) ? ' badb' : '') },
+      h('div', { class: 'row' }, h('div', { class: 'sp' }, h('strong', {}, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
+        h('button', { class: 'btn pri', type: 'button', onclick: act(() => confirmSend(d.id, 'approve_app', { pkg: a.pkg }, {
+          title: `Aprovar “${a.label || a.pkg}” em ${d.name}?`, rows: [['Ação', 'Aprovar app'], ['Aparelho', d.name], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok',
+          note: risks.length ? `Risco: ${risks.join(', ')}.` : null, noteKind: 'bad' }).then(() => route())) }, 'Aprovar')),
+      risks.length ? h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, risks.map((x) => chip(`risco: ${x}`, risky(x) ? 'bad' : 'warn'))) : null));
+  }
+  nodes.push(h('div', { class: 'sec' }, `Aprovados · ${approved.length}`));
+  const listBox = h('div', {});
+  const draw = (q) => {
+    const items = approved.filter((a) => `${a.label} ${a.pkg}`.toLowerCase().includes(q.toLowerCase()));
+    listBox.replaceChildren(items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((a) => h('div', { class: 'li' },
+      h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
+      h('button', { class: 'btn', type: 'button', onclick: act(() => confirmSend(d.id, 'revoke_app', { pkg: a.pkg }, { title: `Revogar “${a.label || a.pkg}” em ${d.name}?`,
+        rows: [['Ação', 'Revogar aprovação'], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok', note: 'O app será suspenso.' }).then(() => route())) }, 'Revogar')))) :
+      h('p', { class: 'empty' }, approved.length ? 'Nenhum app com esse nome.' : 'O aparelho ainda não enviou a lista.'));
+  };
+  draw('');
+  nodes.push(h('div', { class: 'pad' }, h('input', { class: 'inp', type: 'search', placeholder: 'Buscar app aprovado', 'aria-label': 'Buscar app aprovado', oninput: (e) => draw(e.target.value) })), listBox);
+  return nodes;
+}
+
+function avancadoNodes(d, now) {
+  return [h('div', { class: 'sec' }, 'Identificação'),
+    h('div', { class: 'card' }, kvRows([['Nome', d.name], ['Tipo', d.kind === 'executor' ? 'executor do Pi-hole' : 'aparelho'], ['Fingerprint', fp(d.id)],
+      ['Pareado', ago(d.created, now)], ['Comandos na fila', String(d.pending)]])),
+    h('div', { class: 'sec' }, 'Gateway'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'Remove este aparelho só da lista do gateway. Não mexe no aparelho.'),
+      h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
+        if (!(await sheet({ title: `Esquecer ${d.name} neste gateway?`, rows: [['Aparelho', d.name], ['Fingerprint', fp(d.id)]], note: 'Ele deixa de aparecer aqui e os comandos na fila são descartados.',
+          confirm: 'Esquecer', danger: true }))) return;
+        await api('POST', `/v1/devices/${d.id}/forget`, {});
+        location.hash = '#/';
+      }) }, 'Esquecer neste gateway'))];
+}
+
+// ---------- domínios ----------
+async function domainsView(tab) {
+  const { devices, now, reqs } = await loadAll();
+  renderNav('domains');
+  const ex = devices.find((x) => x.kind === 'executor');
+  if (!ex) { show(top('Domínios'), h('div', { class: 'card' }, h('p', { style: 'margin:0 0 10px' }, 'Nenhum executor do Pi-hole pareado.'), h('a', { class: 'btn pri', href: '#/pair', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Parear o executor'))); return; }
   const r = ex.report || {};
-  const send = (type, args) => act(() => sendCommand(ex.id, type, args), () => route());
-  const sendForm = (type) => (e) => { e.preventDefault(); act(() => sendCommand(ex.id, type, args()), () => route())(); };
-  const dom = h('input', { placeholder: 'exemplo.com', size: 24, autocapitalize: 'none', autocomplete: 'off' });
-  const ttl = h('select', {}, TTLS.map(([l, v]) => h('option', { value: v }, l)));
-  const args = () => ({ domain: dom.value.trim(), ...(Number(ttl.value) ? { ttl_s: Number(ttl.value) } : {}) });
+  const domReqs = reqs.filter((q) => q.kind === 'domain');
+  const otherReqs = reqs.filter((q) => q.kind !== 'domain');
+  if (!tab) tab = reqs.length ? 'pedidos' : 'liberados';
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
-  const list = (name, key) => h('div', { class: 'card' }, h('strong', {}, name),
-    (r[key] || []).length ? h('table', {}, (r[key] || []).map((x) => h('tr', {},
-      h('td', {}, x, temp.has(`${key}:${x}`) ? chip('expira ' + new Date(temp.get(`${key}:${x}`) * 1000).toLocaleString()) : null),
-      h('td', {}, h('button', { class: 'ghost', onclick: send('pihole_remove', { list: key, domain: x }) }, 'Remover'))))) :
-      h('p', { class: 'muted' }, 'Vazia.'));
-  const domReqs = reqs.items.filter((q) => q.kind === 'domain');
-  show(h('h1', {}, 'Domínios'),
-    h('p', { class: 'muted' }, `Executor "${ex.name}" · visto ${ago(ex.last_seen, now)}` + (r.pihole_ok === false ? ' · Pi-hole inacessível' : '')),
-    domReqs.length ? h('div', {}, h('h2', {}, 'Pedidos dos usuários'), domReqs.map((q) => h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('div', {}, h('strong', {}, q.text), h('div', { class: 'muted' }, devName(devices, q.dev) + ' · ' + ago(q.ts, now))),
-        h('div', {}, h('button', { onclick: act(async () => {
-          await sendCommand(ex.id, 'pihole_allow', { domain: q.text.trim(), ttl_s: 3600 });
-          await api('POST', `/v1/requests/${q.id}/dismiss`, {});
-          route();
-        }) }, 'Liberar 1 h'), ' ', h('button', { class: 'ghost', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar')))))) : null,
-    h('div', { class: 'card' },
-      h('form', { onsubmit: (e) => e.preventDefault() }, dom, ttl,
-        h('button', { onclick: sendForm('pihole_allow') }, 'Liberar'),
-        h('button', { class: 'ghost', onclick: sendForm('pihole_deny') }, 'Bloquear'))),
-    list('Liberados', 'allow'), list('Bloqueados', 'deny'));
+  const canary = (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
+  const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
+  const allowSpec = (domain, ttl) => ({ title: `Liberar ${domain} ${ttl ? `por ${durLabel(ttl)}` : 'sem prazo'}?`,
+    rows: [['Ação', 'Liberar domínio'], ['Domínio', domain], ['Duração', durLabel(ttl)]], effect: 'vale na hora', effectKind: 'ok',
+    note: ttl ? null : 'Sem prazo: o domínio fica liberado até alguém removê-lo.', noteKind: 'warn' });
+  const dom = h('input', { class: 'inp', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocomplete: 'off', 'aria-label': 'Domínio' });
+  const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
+  const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
+  const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
+  const tabs = [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/liberados', `Liberados · ${(r.allow || []).length}`, 'liberados'], ['#/domains/bloqueados', `Bloqueados · ${(r.deny || []).length}`, 'bloqueados']];
+
+  const listCard = (name, items) => items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
+    h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
+      temp.has(`${name}:${x}`) ? h('div', { style: 'margin-top:4px' }, chip(`expira ${new Date(temp.get(`${name}:${x}`) * 1000).toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', hour12: false })}`, 'warn')) : null),
+    h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, { title: `Remover ${x} da lista de ${name === 'allow' ? 'liberados' : 'bloqueados'}?`,
+      rows: [['Ação', 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok' }) }, 'Remover')))) :
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Vazia.'));
+
+  let body;
+  if (tab === 'liberados') body = listCard('allow', r.allow || []);
+  else if (tab === 'bloqueados') body = listCard('deny', r.deny || []);
+  else {
+    body = [domReqs.length ? domReqs.map((q) => h('div', { class: 'card' },
+      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, q.text), h('div', { class: 'muted' }, `${(devices.find((x) => x.id === q.dev) || { name: q.dev }).name} · ${ago(q.ts, now)}`)),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        h('button', { class: 'btn grow', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'),
+        h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+          const d = q.text.trim().toLowerCase();
+          if (await confirmSend(ex.id, 'pihole_allow', { domain: d, ttl_s: 3600 }, allowSpec(d, 3600))) { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }
+        }) }, 'Liberar 1 hora')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de domínio.')),
+    otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
+      h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${(devices.find((x) => x.id === q.dev) || { name: q.dev }).name} · ${ago(q.ts, now)}`)),
+      h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
+  }
+
+  show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
+    h('div', { class: 'wrap' }, segTabs(tabs, tab), body,
+      h('div', { class: 'sec' }, 'Liberar ou bloquear um domínio'),
+      h('div', { class: 'card' }, dom, h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
+        h('div', { class: 'row', style: 'margin-top:12px' },
+          h('button', { class: 'btn grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_deny', args(), { title: `Bloquear ${args().domain} ${domDur ? `por ${durLabel(domDur)}` : ''}?`,
+            rows: [['Ação', 'Bloquear domínio'], ['Domínio', args().domain], ['Duração', durLabel(domDur)]], effect: 'vale na hora', effectKind: 'ok' }).then((ok) => ok && route())) }, 'Bloquear'),
+          h('button', { class: 'btn pri grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_allow', args(), allowSpec(args().domain, domDur)).then((ok) => ok && route())) }, 'Liberar')),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Só domínio exato. Curinga e regex ficam de fora desta versão.')),
+      canary ? h('div', { class: 'card flat' }, h('div', { class: 'row' }, h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, canary),
+        h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null));
+  timer = setTimeout(route, 20000);
+}
+
+// ---------- pessoas ----------
+function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+
+async function pushCard() {
+  if (!pushSupported()) return h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Este navegador não suporta notificações push. No iPhone, instale o site na tela inicial primeiro.'));
+  const reg = await navigator.serviceWorker.ready.catch(() => null);
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  const on = !!sub && Notification.permission === 'granted';
+  return h('div', { class: 'card' },
+    h('p', { class: 'muted', style: 'margin:0 0 10px;color:' + (on ? 'var(--green)' : 'var(--muted)') }, on ? 'Avisos ativos neste aparelho: sem sinal, filtro caiu, app novo, pedidos.' :
+      Notification.permission === 'denied' ? 'As notificações estão bloqueadas nas configurações do navegador.' : 'Receba um aviso quando algo precisar de você.'),
+    on ? h('div', { class: 'row' },
+      h('button', { class: 'btn grow', type: 'button', onclick: act(async () => { const r = await api('POST', '/v1/push/test', {}); toast(r.sent ? 'Aviso de teste enviado.' : 'Nenhum aviso enviado.'); }) }, 'Enviar teste'),
+      h('button', { class: 'btn grow', type: 'button', onclick: act(async () => { await api('POST', '/v1/push/unsubscribe', { endpoint: sub.endpoint }); await sub.unsubscribe(); toast('Notificações desativadas.'); route(); }) }, 'Desativar')) :
+      h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+        if ((await Notification.requestPermission()) !== 'granted') throw new Error('Permissão de notificação negada.');
+        const { key } = await api('GET', '/v1/push/key');
+        const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(key) });
+        const j = s.toJSON();
+        await api('POST', '/v1/push/subscribe', { endpoint: j.endpoint, keys: j.keys });
+        toast('Notificações ativadas.');
+        route();
+      }) }, 'Ativar notificações'));
 }
 
 function summarize(env) {
   try {
     const c = JSON.parse(new TextDecoder().decode(dec(env.payload)));
-    return `${c.type} ${JSON.stringify(c.args)}`;
+    return `${TYPE[c.type] || c.type}${c.args && c.args.id ? ` (${gname(c.args.id)})` : ''}`;
   } catch (_) { return '(ilegível)'; }
 }
 
-async function guardiansView() {
+async function peopleView() {
   me = await api('GET', '/v1/me');
-  const [{ devices }, aw] = await Promise.all([loadDevices(), api('GET', '/v1/commands/awaiting')]);
+  const { devices, aw } = await loadAll();
+  renderNav('people');
   const gs = Object.entries(me.trust);
   const missing = (d) => {
     const have = (d.report && d.report.trust) || {};
@@ -276,117 +572,235 @@ async function guardiansView() {
     return out;
   };
   const propagate = (d) => act(async () => {
+    const miss = missing(d);
+    const names = [...new Set(miss.map((m) => m.g.name))].join(', ');
+    if (!(await sheet({ title: `Fazer ${d.name} confiar em ${names}?`, rows: [['Aparelho', d.name], ['Passkeys novos', String(miss.length)]], effect: 'vale na hora', effectKind: 'ok',
+      note: `Serão ${miss.length} toque(s) de passkey, um por item.`, noteKind: 'warn' }))) return;
     const seen = new Set(Object.keys((d.report && d.report.trust) || {}));
-    for (const m of missing(d)) {
+    for (const m of miss) {
       if (!seen.has(m.gid)) { await sendCommand(d.id, 'add_guardian', { id: m.gid, name: m.g.name, cred: m.cred, spki: m.g.creds[m.cred] }); seen.add(m.gid); }
       else await sendCommand(d.id, 'add_credential', { id: m.gid, cred: m.cred, spki: m.g.creds[m.cred] });
     }
-  }, () => route());
+    route();
+  });
   const out = h('div', {});
-  const push = await pushCard();
   const link = (kind, name) => act(async () => {
     const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}) });
-    out.replaceChildren(h('div', { class: 'card' }, h('p', {}, 'Envie este link (vale 24 h, uso único):'), h('textarea', { readonly: true }, `${me.origin}/#invite=${r.token}`)));
+    const text = `${me.origin}/#invite=${r.token}`;
+    out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
+      h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text))));
   });
-  const nm = h('input', { placeholder: 'nome do guardião' });
-  const pair = (kind) => act(async () => {
-    const r = await api('POST', '/v1/pairings', { kind });
-    const who = Object.values(me.trust).map((g) => `${g.name} (${Object.keys(g.creds).length} passkey(s))`).join(', ');
-    out.replaceChildren(h('div', { class: 'card' },
-      h('p', {}, `Cole esta string de pareamento no ${kind === 'executor' ? 'executor (python -m guardian.executor pair --pairing …)' : 'NotToday, no aparelho'} (vale 24 h, uso único). Depois confira o fingerprint por voz.`),
-      h('p', { class: 'warn' }, `O aparelho passará a confiar em: ${who}. O aparelho também mostra esta lista antes de parear: se algum nome não for o esperado, NÃO prossiga.`),
-      h('textarea', { readonly: true }, pairingString(me.origin, me.rp_id, r.token, me.trust))));
-  });
-  show(h('h1', {}, 'Guardiões'),
-    gs.map(([gid, g]) => h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('div', {}, h('strong', {}, g.name), gid === me.guardian.id ? chip('você') : null,
-        h('div', { class: 'muted' }, `${Object.keys(g.creds).length} passkey(s)`)),
-        gid !== me.guardian.id && gs.length > 1 ? h('button', { class: 'danger', onclick: act(async () => {
-          if (!confirm(`Pedir a remoção de ${g.name}? Exige a co-assinatura do outro guardião e passa pelo atraso.`)) return;
+  const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', 'aria-label': 'Nome do guardião' });
+  const cos = aw.filter((c) => c.can_cosign);
+  show(top('Pessoas'), h('div', { class: 'wrap' },
+    h('div', { class: 'sec' }, 'Guardiões'),
+    h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, gs.map(([gid, g]) => {
+      const n = Object.keys(g.creds).length;
+      return h('div', { class: 'li' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
+        h('div', { class: 'sp' }, h('strong', {}, g.name), gid === me.guardian.id ? ' ' : null, gid === me.guardian.id ? chip('você') : null,
+          n < 2 ? h('div', { class: 'muted', style: 'color:var(--orange)' }, 'Só 1 passkey: se perder o celular, perde o acesso.') : null),
+        chip(`${n} passkey${n === 1 ? '' : 's'}`, n < 2 ? 'warn' : 'ok'),
+        gid !== me.guardian.id && gs.length > 1 ? h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
+          if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões + espera', effectKind: 'warn',
+            note: 'Exige a co-assinatura do outro guardião e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
           for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
-        }, () => route()) }, 'Remover…') : null))),
-    h('h2', {}, 'Aparelhos e confiança'),
-    devices.map((d) => { const m = missing(d); return h('div', { class: 'card' }, h('div', { class: 'row' },
-      h('div', {}, h('strong', {}, d.name), h('div', { class: m.length ? 'warn muted' : 'ok muted' }, m.length ? `${m.length} passkey(s) ainda não confiados por este aparelho` : 'confia em todos os passkeys')),
-      m.length ? h('button', { onclick: propagate(d) }, 'Propagar') : null)); }),
-    h('h2', {}, 'Co-assinaturas pendentes'),
-    aw.commands.length ? aw.commands.map((c) => h('div', { class: 'card' }, h('div', { class: 'row' },
-      h('div', {}, h('strong', {}, devName(devices, c.dev)), h('div', { class: 'muted' }, summarize(c.envelope))),
-      c.can_cosign ? h('button', { onclick: act(async () => {
-        const bytes = dec(c.envelope.payload);
-        const sig = await signPayload(bytes);
+          route();
+        }) }, 'Remover') : null);
+    })),
+    h('div', { class: 'card' }, h('div', { class: 'row' }, nm, h('button', { class: 'btn pri', type: 'button', style: 'flex:none', onclick: act(async () => { if (!nm.value.trim()) throw new Error('Digite o nome.'); await link('new_guardian', nm.value.trim())(); }) }, 'Convidar')),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn grow', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outro passkey para mim'))),
+    out,
+    h('div', { class: 'sec' }, 'Confiança nos aparelhos'),
+    h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, devices.length ? devices.map((d) => {
+      const m = missing(d);
+      return h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, d.name), d.kind === 'executor' ? ' ' : null, d.kind === 'executor' ? chip('executor') : null,
+        h('div', { class: 'muted', style: m.length ? 'color:var(--orange)' : '' }, m.length ? `ainda não confia em ${[...new Set(m.map((x) => x.g.name))].join(', ')}` : 'confia em todos os passkeys')),
+        m.length ? h('button', { class: 'btn pri', type: 'button', onclick: propagate(d) }, 'Propagar') : chip('ok', 'ok'));
+    }) : h('p', { class: 'muted' }, 'Nenhum aparelho pareado.')),
+    h('div', { class: 'sec' }, 'Co-assinaturas pendentes'),
+    h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, aw.length ? aw.map((c) => h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, (devices.find((x) => x.id === c.dev) || { name: c.dev }).name),
+      h('div', { class: 'muted' }, `${summarize(c.envelope)} · pedido de ${gname(c.guardian)}`)),
+      c.can_cosign ? h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+        if (!(await sheet({ title: `Co-assinar: ${summarize(c.envelope)}?`, rows: [['Pedido de', gname(c.guardian)], ['Aparelho', (devices.find((x) => x.id === c.dev) || { name: c.dev }).name]],
+          effect: 'dois guardiões + espera', effectKind: 'warn', note: 'Remover um guardião exige a assinatura dos dois.', confirm: 'Co-assinar' }))) return;
+        const sig = await signPayload(dec(c.envelope.payload));
         await api('POST', `/v1/commands/${c.id}/cosign`, { sig });
         toast('Co-assinado.');
-      }, () => route()) }, 'Co-assinar') : chip('aguardando o outro guardião')))) : h('p', { class: 'muted' }, 'Nenhuma.'),
-    h('h2', {}, 'Notificações'),
-    push,
-    h('h2', {}, 'Convidar e parear'),
-    h('div', { class: 'card' },
-      h('form', { onsubmit: (e) => { e.preventDefault(); if (nm.value.trim()) link('new_guardian', nm.value.trim())(); } }, nm, h('button', {}, 'Convidar guardião')),
-      h('button', { class: 'ghost', onclick: link('add_passkey') }, 'Adicionar outro passkey para mim'),
-      ' ', h('button', { class: 'ghost', onclick: pair('device') }, 'Parear aparelho'),
-      ' ', h('button', { class: 'ghost', onclick: pair('executor') }, 'Parear executor Pi-hole')),
-    out);
+        route();
+      }) }, 'Co-assinar') : chip('aguardando o outro guardião'))) : h('p', { class: 'muted', style: 'margin:10px 0' }, cos.length ? '' : 'Nenhuma.')),
+    h('div', { class: 'sec' }, 'Notificações neste aparelho'), await pushCard(),
+    h('div', { class: 'pad', style: 'margin-top:14px' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair'))));
 }
 
-// ---------- notificações (Web Push) ----------
-async function pushCard() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
-    return h('div', { class: 'card muted' }, 'Este navegador não suporta notificações push. No iPhone, instale o site na tela inicial primeiro.');
+// ---------- histórico ----------
+const AUDIT_FILTERS = [['#/history', 'Tudo', 'tudo'], ['#/history/comandos', 'Comandos', 'comandos'], ['#/history/acessos', 'Acessos e pareamento', 'acessos']];
+
+function describeAudit(i, devices) {
+  const dev = devices.find((d) => d.id === i.dev);
+  const dn = dev ? dev.name : '';
+  const t = i.text || '';
+  if (i.kind === 'executed') {
+    const ok = / ok:/.test(t);
+    const type = t.split(' ')[0];
+    return { title: `${TYPE[type] || type}${dn ? ` · ${dn}` : ''}`, sub: t.replace(/^\S+ (ok|FALHOU): ?/, '') || '', chip: ok ? [dev && dev.kind === 'executor' ? 'executado pelo executor' : 'executado pelo aparelho', 'ok'] : ['falhou', 'bad'] };
   }
-  const reg = await navigator.serviceWorker.ready.catch(() => null);
-  const sub = reg ? await reg.pushManager.getSubscription() : null;
-  const on = !!sub && Notification.permission === 'granted';
-  return h('div', { class: 'card' },
-    h('p', { class: on ? 'ok' : 'muted' }, on ? 'Notificações ativas neste aparelho: sem sinal, filtro caiu, app novo, pedidos.' :
-      Notification.permission === 'denied' ? 'As notificações estão bloqueadas nas configurações do navegador.' : 'Receba um aviso quando algo precisar de você.'),
-    on ? h('div', {},
-      h('button', { class: 'ghost', onclick: act(async () => { const r = await api('POST', '/v1/push/test', {}); toast(r.sent ? 'Aviso de teste enviado.' : 'Nenhum aviso enviado.'); }) }, 'Enviar teste'), ' ',
-      h('button', { class: 'ghost', onclick: act(async () => {
-        await api('POST', '/v1/push/unsubscribe', { endpoint: sub.endpoint });
-        await sub.unsubscribe();
-        toast('Notificações desativadas.');
-      }, () => route()) }, 'Desativar')) :
-      h('button', { onclick: act(async () => {
-        if ((await Notification.requestPermission()) !== 'granted') throw new Error('Permissão de notificação negada.');
-        const { key } = await api('GET', '/v1/push/key');
-        const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: dec(key) });
-        const j = s.toJSON();
-        await api('POST', '/v1/push/subscribe', { endpoint: j.endpoint, keys: j.keys });
-        toast('Notificações ativadas.');
-      }, () => route()) }, 'Ativar notificações'));
+  if (i.kind === 'queued') {
+    const m = t.match(/^(\S+?)(?::| co-assinou) (.+)$/);
+    const who = m ? gname(m[1]) : '';
+    const rest = m ? m[2].replace(/ \(aguarda 2º guardião\)/, '') : t;
+    return { title: `${who} ${/co-assinou/.test(t) ? 'co-assinou' : 'pediu'}: ${TYPE[rest] || rest}${dn ? ` · ${dn}` : ''}`, sub: '', chip: /aguarda/.test(t) ? ['aguarda co-assinatura', 'warn'] : null };
+  }
+  if (i.kind === 'login') return { title: `${gname(t)} entrou`, sub: '', chip: null };
+  if (i.kind === 'guardian') return { title: 'Cadastro de guardião ou passkey', sub: t, chip: null };
+  if (i.kind === 'paired') return { title: `${dn || 'Aparelho'} pareado`, sub: t, chip: null };
+  if (i.kind === 'forget') return { title: `${dn || 'Aparelho'} removido do gateway`, sub: '', chip: null };
+  return { title: t, sub: i.kind, chip: null };
 }
 
-async function auditView() {
-  const [{ items }, { devices }] = await Promise.all([api('GET', '/v1/audit?limit=200'), loadDevices()]);
-  show(h('h1', {}, 'Auditoria'), h('div', { class: 'card' }, h('table', {}, items.map((i) => h('tr', {},
-    h('td', { class: 'muted' }, new Date(i.ts * 1000).toLocaleString()), h('td', {}, i.dev ? devName(devices, i.dev) : '—'),
-    h('td', {}, chip(i.kind)), h('td', {}, i.text))))));
+async function historyView(filter) {
+  const [{ devices }, { items }] = await Promise.all([loadAll(), api('GET', '/v1/audit?limit=200')]);
+  renderNav('history');
+  const keep = { comandos: ['queued', 'executed'], acessos: ['login', 'guardian', 'paired', 'forget'] }[filter];
+  const rows = items.filter((i) => !keep || keep.includes(i.kind));
+  const dayOf = (ts) => {
+    const d = new Date(ts * 1000);
+    const t = new Date();
+    const y = new Date(Date.now() - 864e5);
+    return d.toDateString() === t.toDateString() ? 'Hoje' : d.toDateString() === y.toDateString() ? 'Ontem' : d.toLocaleDateString('pt-BR');
+  };
+  const groups = [];
+  for (const i of rows) { const g = dayOf(i.ts); if (!groups.length || groups[groups.length - 1][0] !== g) groups.push([g, []]); groups[groups.length - 1][1].push(i); }
+  show(top('Histórico'), h('div', { class: 'wrap' }, segLinks(AUDIT_FILTERS, filter || 'tudo'),
+    groups.length ? groups.map(([g, list]) => [h('div', { class: 'day' }, g), h('div', { class: 'card', style: 'padding-top:2px;padding-bottom:2px' }, list.map((i) => {
+      const e = describeAudit(i, devices);
+      return h('div', { class: 'ev' }, h('span', { class: 'tm' }, new Date(i.ts * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', hour12: false })),
+        h('div', { class: 't' }, h('strong', {}, e.title), e.sub ? h('div', { class: 'muted' }, e.sub) : null, e.chip ? h('div', { style: 'margin-top:6px' }, chip(e.chip[0], e.chip[1])) : null));
+    }))]) : h('p', { class: 'empty' }, 'Nada por aqui ainda.'),
+    h('p', { class: 'muted pad', style: 'margin-top:10px' }, 'O “executado” vem do aparelho (relatório), não do site: se algo for adulterado no caminho, aparece aqui.')));
+}
+
+function segLinks(items, active) {
+  return h('nav', { class: 'filters', 'aria-label': 'Filtros' }, items.map(([href, label, key]) => h('a', { href, class: key === active ? 'on' : '' }, label)));
+}
+
+// ---------- parear ----------
+const STEPS = { device: ['Gerar o código', 'Colar no NotToday', 'Conferir por voz', 'PIN e atraso', 'Ativar'], executor: ['Gerar o código', 'Rodar no Pi', 'Conferir por voz'] };
+
+async function pairView() {
+  me = await api('GET', '/v1/me');
+  const { devices } = await loadAll();
+  renderNav('home');
+  if (!pair) pair = { step: 1, kind: 'device' };
+  const names = Object.values(me.trust).map((g) => `${g.name} (${Object.keys(g.creds).length} passkey${Object.keys(g.creds).length === 1 ? '' : 's'})`).join(', ');
+  const steps = STEPS[pair.kind];
+  const card = (n, title, detail, body) => {
+    const state = n < pair.step ? 'done' : n === pair.step ? 'cur' : 'lock';
+    return h('div', { class: `card ${state}` }, h('div', { class: 'stepcard' }, h('span', { class: 'st ' + (state === 'done' ? 'ok' : state === 'cur' ? 'cur' : '') }, state === 'done' ? icon('check', 16) : String(n)),
+      h('div', { class: 'sp' }, h('strong', { style: n === pair.step ? 'font-size:16px' : '' }, title), state === 'cur' ? null : h('div', { class: 'muted' }, detail), state === 'cur' ? body : null)));
+  };
+  const reset = () => { pair = null; location.hash = '#/'; };
+  const cmd = 'adb shell dpm set-device-owner com.allan.nottoday/.AdminReceiver';
+  const dev = pair.deviceId ? devices.find((d) => d.id === pair.deviceId) : null;
+  const body = [];
+
+  body.push(card(1, steps[0], `O aparelho vai confiar em: ${names}`, [
+    h('div', { class: 'seg', style: 'margin:10px 0' }, [['device', 'Aparelho'], ['executor', 'Executor do Pi-hole']].map(([k, t]) => h('a', { href: '#/pair', class: pair.kind === k ? 'on' : '', onclick: (e) => { e.preventDefault(); pair.kind = k; pair.step = 1; route(); } }, t))),
+    h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'O código vale 24 h e só funciona uma vez.'),
+    h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+      const before = devices.map((d) => d.id);
+      const r = await api('POST', '/v1/pairings', { kind: pair.kind });
+      pair = { ...pair, step: 2, before, string: pairingString(me.origin, me.rp_id, r.token, me.trust) };
+      route();
+    }) }, 'Gerar código')]));
+
+  body.push(card(2, steps[1], pair.kind === 'executor' ? 'Enviado ao Pi' : 'Enviado por mensagem; vale 24 h, uso único', [
+    h('div', { class: 'note' }, `O ${pair.kind === 'executor' ? 'executor' : 'aparelho'} passará a confiar em: ${names}. ${pair.kind === 'executor' ? 'Ele' : 'O aparelho'} mostra esta lista antes de parear: se algum nome não for o esperado, NÃO prossiga.`),
+    h('textarea', { class: 'ta', readonly: true, 'aria-label': 'String de pareamento' }, pair.string || ''),
+    h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => pair.string)),
+    h('p', { class: 'muted', style: 'margin:10px 0 0' }, pair.kind === 'executor' ?
+      'No Pi: python -m guardian.executor pair --pairing "<string>". Aguardando o executor aparecer aqui…' :
+      'No NotToday: tela de PIN → “Parear com guardião remoto” → cole a string. Aguardando o aparelho aparecer aqui…')]));
+
+  body.push(card(3, steps[2], 'Compare o código que a pessoa lê', [
+    h('p', { class: 'muted', style: 'margin:0' }, 'O aparelho apareceu aqui. Peça para ler o que a tela dele mostra e compare:'),
+    h('div', { class: 'fpb', 'aria-label': 'Fingerprint' }, pair.deviceId ? fp(pair.deviceId) : ''),
+    h('div', { class: 'note bad' }, 'Se a pessoa leu um código diferente, ou o aparelho não apareceu aqui, não continue: o código pode ter sido usado com outro gateway.'),
+    h('div', { class: 'row', style: 'margin-top:10px' },
+      h('button', { class: 'btn grow', type: 'button', onclick: act(async () => { if (pair.deviceId) await api('POST', `/v1/devices/${pair.deviceId}/forget`, {}); reset(); toast('Pareamento descartado.'); }) }, 'Não confere'),
+      h('button', { class: 'btn pri grow', type: 'button', onclick: () => { pair.step = pair.kind === 'executor' ? 9 : 4; route(); } }, 'Confere, continuar'))]));
+
+  if (pair.kind === 'device') {
+    const pin = h('input', { class: 'inp', type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: 'PIN local (6 ou mais dígitos)', 'aria-label': 'PIN local' });
+    const hours = h('select', { class: 'sel', 'aria-label': 'Atraso para afrouxar' }, [[0, 'sem atraso (só para testes)'], [24, '24 horas (padrão)'], [48, '48 horas'], [72, '72 horas']].map(([v, t]) => h('option', { value: v, selected: v === 24 }, t)));
+    body.push(card(4, steps[3], 'Você define o PIN local e o atraso para afrouxar', [
+      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Chega cifrado até o aparelho: o gateway e o usuário não o veem.'), pin,
+      h('label', { class: 'muted', style: 'display:block;margin:10px 0 4px' }, 'Atraso para afrouxar a proteção'), hours,
+      h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+        if (!/^[0-9]{6,32}$/.test(pin.value)) throw new Error('o PIN precisa ter 6 ou mais dígitos');
+        const value = pin.value;
+        const box = await sealPin(dev.spki, value, `guardian/set_pin/${dev.id}`);
+        const delayMin = Number(hours.value) * 60;
+        if (!(await sheet({ title: `Definir o PIN e o atraso de ${dev.name}?`, rows: [['PIN local', 'definido por você (cifrado)'], ['Atraso para afrouxar', delayMin ? `${Number(hours.value)} h` : 'sem atraso']],
+          effect: 'vale na hora', effectKind: 'ok', note: delayMin ? 'Serão 2 toques de passkey: o PIN e o atraso.' : 'Será 1 toque de passkey.', noteKind: 'ok' }))) return;
+        await sendCommand(dev.id, 'set_pin', { box });
+        if (delayMin !== Number(((dev.report || {}).snapshot || {}).unlock_delay_min || 1440)) await sendCommand(dev.id, 'set_config', { patch: { unlock_delay_min: String(delayMin) } });
+        pair.step = 5;
+        route();
+      }) }, 'Definir PIN e atraso'))]));
+    body.push(card(5, steps[4], 'Só depois disto o set-device-owner', [
+      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Envie a ativação. Depois, no computador da pessoa:'),
+      h('div', { class: 'note ok mono', style: 'word-break:break-all' }, cmd),
+      h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => cmd, 'Copiar comando')),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+        if (await confirmSend(dev.id, 'activate', {}, { title: `Ativar ${dev.name}?`, rows: [['Aparelho', dev.name], ['Fingerprint', fp(dev.id)]], effect: 'vale na hora', effectKind: 'ok',
+          note: 'Confirma que você conferiu o fingerprint e definiu o PIN.', noteKind: 'ok' })) { pair.step = 9; route(); }
+      }) }, 'Ativar aparelho'))]));
+  }
+
+  const done = pair.step === 9;
+  const title = pair.kind === 'executor' ? 'Parear executor' : 'Parear aparelho';
+  show(top(title, { back: '#/' }), h('div', { class: 'wrap pad' },
+    h('p', { class: 'muted', style: 'margin:12px 0 0' }, done ? 'Pronto.' : `passo ${Math.min(pair.step, steps.length)} de ${steps.length}`),
+    done ? h('div', { class: 'card' }, h('div', { class: 'row' }, h('span', { style: 'color:var(--green)' }, icon('check')), h('strong', {}, pair.kind === 'executor' ? 'Executor pareado' : 'Aparelho pareado e ativado')),
+      pair.kind === 'device' ? h('p', { class: 'muted' }, 'Agora a pessoa pode rodar o set-device-owner. Você recebe o aviso quando o aparelho confirmar.') : null,
+      h('button', { class: 'btn pri', type: 'button', style: 'margin-top:10px', onclick: reset }, 'Concluir')) : body,
+    done ? null : h('div', { class: 'note' }, 'Por que nesta ordem? Antes do Device Owner o aparelho ainda não está protegido. Pareie, defina o PIN e ative primeiro; senão, sem PIN e sem você, só o reset de fábrica resolve.'),
+    done ? null : h('button', { class: 'btn block', type: 'button', style: 'margin-top:10px', onclick: reset }, 'Cancelar')));
+
+  // espera o aparelho/executor aparecer
+  if (pair.step === 2) {
+    const poll = async () => {
+      try {
+        const d = await api('GET', '/v1/devices');
+        const fresh = d.devices.find((x) => !pair.before.includes(x.id) && x.kind === pair.kind);
+        if (fresh) { pair.deviceId = fresh.id; pair.step = 3; route(); return; }
+      } catch (_) { /* tenta de novo */ }
+      timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 3000);
+  }
 }
 
 // ---------- roteamento ----------
-const NAV = [['#/', 'Aparelhos'], ['#/domains', 'Domínios'], ['#/guardians', 'Guardiões'], ['#/audit', 'Auditoria']];
-
 async function route() {
   clearTimeout(timer);
   const hash = location.hash || '#/';
   const inv = hash.match(/^#invite=([\w-]+)$/);
-  if (inv) { $('top').hidden = true; return inviteView(inv[1]); }
-  if (!me) { $('top').hidden = true; return loginView(); }
-  $('top').hidden = false;
-  $('nav').replaceChildren(...NAV.map(([href, t]) => h('a', { href, class: hash === href || (href === '#/' && hash.startsWith('#/device/')) ? 'on' : '' }, t)),
-    h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/v1/auth/logout', {}); me = null; route(); } }, 'Sair'));
+  if (inv) { nav.hidden = true; return inviteView(inv[1]); }
+  if (!me) { nav.hidden = true; return loginView(); }
   try {
-    const dm = hash.match(/^#\/device\/([a-z2-7]{20})$/);
-    if (dm) await deviceView(dm[1]);
-    else if (hash === '#/domains') await domainsView();
-    else if (hash === '#/guardians') await guardiansView();
-    else if (hash === '#/audit') await auditView();
-    else await dashboardView();
-    if (hash === '#/' || dm) timer = setTimeout(route, 20000);
+    const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
+    const dom = hash.match(/^#\/domains(?:\/(pedidos|liberados|bloqueados))?$/);
+    const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
+    if (dm) await deviceView(dm[1], dm[2] || 'resumo');
+    else if (dom) await domainsView(dom[1]);
+    else if (hash === '#/people') await peopleView();
+    else if (his) await historyView(his[1]);
+    else if (hash === '#/pair') await pairView();
+    else await inicioView();
   } catch (e) {
-    if (e.status === 401) { me = null; return loginView(); }
-    show(h('p', { class: 'bad' }, e.message));
+    if (e.status === 401) { me = null; nav.hidden = true; return loginView(); }
+    show(top('Erro'), h('div', { class: 'card badb' }, e.message));
   }
 }
 
@@ -396,5 +810,6 @@ async function boot() {
 }
 
 addEventListener('hashchange', route);
+window.matchMedia('(min-width: 900px)').addEventListener('change', () => route());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 boot();

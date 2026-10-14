@@ -25,6 +25,10 @@ class ExecConfig:
     pihole_ca: str | None = None
 
 
+def _fmt_ttl(s: int) -> str:
+    return f"{s // 86400} d" if s >= 86400 and s % 86400 == 0 else f"{s // 3600} h" if s >= 3600 and s % 3600 == 0 else f"{max(1, s // 60)} min"
+
+
 class GatewayClient:
     def __init__(self, base: str, key, timeout: float = 40.0):
         self.base, self.key, self.timeout = base.rstrip("/"), key, timeout
@@ -157,14 +161,14 @@ class Executor:
             self._drop_temp(list_, d)
             if ttl:
                 self.state.data["temp"].append({"list": list_, "domain": d, "expires": int(self.now()) + ttl})
-            return f"{list_} {d}" + (f" por {ttl}s" if ttl else "")
+            return f"{'liberado' if list_ == 'allow' else 'bloqueado'} {d}" + (f" por {_fmt_ttl(ttl)}" if ttl else " (sem prazo)")
         if t == "pihole_remove":
             if a.get("list") not in ("allow", "deny"):
                 raise ValueError("lista inválida")
             d = self._guard(a.get("domain"))
             self.pihole.delete_domain(a["list"], d)
             self._drop_temp(a["list"], d)
-            return f"removido de {a['list']}: {d}"
+            return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {d}"
         raise ValueError(f"comando desconhecido: {t}")
 
     def expire_temp(self) -> None:

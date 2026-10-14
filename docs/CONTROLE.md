@@ -44,6 +44,8 @@ Puxa a fila do gateway (conexão de saída), reverifica e aplica pela API REST l
 
 ## Site (PWA)
 
+Tema escuro "Mar e terra" (azul-petróleo, verde-água, laranja; contraste 4,5:1). Barra de baixo no celular (Início, Domínios, Pessoas, Histórico) e trilho lateral com painel de detalhe no computador. Toda ação mostra uma folha de confirmação com o que será assinado e o efeito (na hora ou espera). As Regras vêm agrupadas e com nomes em português a partir do relatório do aparelho (`labels`/`groups`/`hints`); várias mudanças viram **um** comando e um toque de passkey. O pareamento é um assistente de 5 passos.
+
 JS puro e sem dependências; todo texto vindo da rede entra por `textContent`. Telas: aparelhos (estado, apps pendentes, pedidos em espera,
 configuração, PINs), domínios (listas, liberar/bloquear com duração, pedidos dos usuários), guardiões (convites, propagar confiança,
 co-assinaturas, parear aparelho/executor), auditoria. Login e cada comando sensível pedem o passkey.
