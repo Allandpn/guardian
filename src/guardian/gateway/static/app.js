@@ -291,8 +291,10 @@ async function guardiansView() {
   const nm = h('input', { placeholder: 'nome do guardião' });
   const pair = (kind) => act(async () => {
     const r = await api('POST', '/v1/pairings', { kind });
+    const who = Object.values(me.trust).map((g) => `${g.name} (${Object.keys(g.creds).length} passkey(s))`).join(', ');
     out.replaceChildren(h('div', { class: 'card' },
       h('p', {}, `Cole esta string de pareamento no ${kind === 'executor' ? 'executor (python -m guardian.executor pair --pairing …)' : 'NotToday, no aparelho'} (vale 24 h, uso único). Depois confira o fingerprint por voz.`),
+      h('p', { class: 'warn' }, `O aparelho passará a confiar em: ${who}. O aparelho também mostra esta lista antes de parear: se algum nome não for o esperado, NÃO prossiga.`),
       h('textarea', { readonly: true }, pairingString(me.origin, me.rp_id, r.token, me.trust))));
   });
   show(h('h1', {}, 'Guardiões'),
