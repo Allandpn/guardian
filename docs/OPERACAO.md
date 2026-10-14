@@ -48,7 +48,7 @@ outros serviços seus, mude em `pihole.toml` (`webserver.port`) e ajuste `PIHOLE
 
 - Site → Guardiões → **Convidar guardião**: envie o link. Depois que ele cadastrar, use **Propagar** em cada aparelho/executor
   (um toque de passkey por item) para que passem a confiar nele. Peça que cada guardião cadastre um **segundo passkey** (chave física ou outro celular).
-- **Parear aparelho**: no site, Guardiões → **Parear aparelho**; no NotToday (tela de PIN) → **Parear com guardião remoto** e cole a string *antes* do
+- **Parear aparelho**: no site, Guardiões → **Parear aparelho**; no NotToday (tela de PIN) → **Parear com Guardian remoto** e cole a string *antes* do
   `set-device-owner`. O app mostra o **fingerprint**: confira por voz com o que o site mostra para o aparelho. Depois defina o PIN pelo site
   (aparelho → PINs), ajuste o atraso (aparelho → Configuração → `unlock_delay_min`) e só então `adb shell dpm set-device-owner com.allan.nottoday/.AdminReceiver`.
   Detalhes e riscos em `docs/REMOTO.md` e `docs/LOCKOUT.md` (#25) do NotToday.

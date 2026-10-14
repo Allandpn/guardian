@@ -18,7 +18,7 @@ Objetivo: quem usa o aparelho tenta acessar algo, vê o que o Pi-hole bloqueou, 
 1. O aparelho tenta acessar algo e o Pi-hole bloqueia a consulta.
 2. O executor (no Pi) lê `GET /api/queries` do Pi-hole a cada 10 a 15 s, só dos IPs dos aparelhos pareados e só consultas bloqueadas.
 3. O executor envia ao gateway uma lista deduplicada por domínio: `domain`, `count`, `first`, `last`, `source` (regra própria, lista ou CNAME).
-4. No app, a tela **Bloqueado agora** mostra os domínios recentes. A pessoa marca um ou mais e toca em **Pedir liberação**. Em seguida o app abre a folha de compartilhar do Android com um link para o site do guardião.
+4. No app, a tela **Bloqueado agora** mostra os domínios recentes. A pessoa marca um ou mais e toca em **Pedir liberação**. Em seguida o app abre a folha de compartilhar do Android com um link para o site do Guardian.
 5. No site, o guardião abre **Pedidos** e vê cada pedido com os domínios, quantas vezes foram bloqueados e a origem. Cada domínio vem marcado como **Liberar sempre**. Ele pode trocar um deles para **Liberar por tempo** (1 h, 1 dia) ou **Negar**. Um toque de passkey assina tudo.
 6. O executor aplica no Pi-hole. O app mostra "Liberado", "Liberado por 1 h" ou "Negado".
 

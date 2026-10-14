@@ -100,7 +100,7 @@ vale o alvo do CNAME.
 ## Pareamento
 
 String de pareamento = `b64url(JSON {v:1, url:<origem do gateway>, rp:<rpId>, token, guardians:{id:{name,creds:{cred:spki}}}})`,
-gerada pelo site do guardião (token de uso único, 24 h). O aparelho **fixa** `url`, `rp` e os guardiões; só aceita comandos
+gerada pelo site do Guardian (token de uso único, 24 h). O aparelho **fixa** `url`, `rp` e os guardiões; só aceita comandos
 assinados por eles. Depois de registrar, mostra o **fingerprint** da própria chave; o guardião confere por voz com o que o site mostra.
 Novos guardiões/passkeys chegam por `add_guardian`/`add_credential` assinados; o site mostra a divergência (`report.trust`)
 e oferece "Propagar".

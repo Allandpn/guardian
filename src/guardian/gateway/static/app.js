@@ -789,7 +789,7 @@ async function pairView() {
     h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => pair.string)),
     h('p', { class: 'muted', style: 'margin:10px 0 0' }, pair.kind === 'executor' ?
       'No Pi: python -m guardian.executor pair --pairing "<string>". Aguardando o executor aparecer aqui…' :
-      'No NotToday: tela de PIN → “Parear com guardião remoto” → cole a string. Aguardando o aparelho aparecer aqui…')]));
+      'No NotToday: tela de PIN → “Parear com Guardian remoto” → cole a string. Aguardando o aparelho aparecer aqui…')]));
 
   body.push(card(3, steps[2], 'Compare o código que a pessoa lê', [
     h('p', { class: 'muted', style: 'margin:0' }, 'O aparelho apareceu aqui. Peça para ler o que a tela dele mostra e compare:'),
