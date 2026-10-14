@@ -206,8 +206,55 @@ def main():
         out["set_config_verified"] = v.cmd["type"] == "set_config" and v.cmd["args"]["patch"] == {"new_apps_deny": "false"}
         last = got[-1]["seq"]
 
+        # 6b) fluxo de liberação: bloqueio no Pi-hole -> executor -> pedido do aparelho -> guardião decide
+        import time as _t
+        now_ = _t.time()
+        ex.cfg.clients = {"100.64.0.7": dev}
+        fake.queries += [{"time": now_ - 30, "domain": "cdn.video.exemplo.com", "status": "REGEX", "client": {"ip": "100.64.0.7"}},
+                         {"time": now_ - 20, "domain": "api.video.exemplo.com", "status": "DENYLIST", "client": {"ip": "100.64.0.7"}},
+                         {"time": now_ - 10, "domain": "ads.rastreador.net", "status": "GRAVITY", "list_id": 7, "client": {"ip": "100.64.0.7"}}]
+        ex.collect_blocks()
+        page.goto(f"{origin}/#/domains/bloqueios")
+        page.get_by_text("cdn.video.exemplo.com").first.wait_for(timeout=10000)
+        out["blocks_hidden_ads"] = page.get_by_text("ads.rastreador.net").count() == 0
+        page.get_by_role("button", name="Listas", exact=True).click()
+        page.get_by_text("ads.rastreador.net").first.wait_for(timeout=10000)
+        page.get_by_role("button", name="Regras próprias", exact=True).click()
+        shot("14-bloqueios", PHONE)
+        back()
+        gw.call("POST", f"/v1/devices/{dev}/requests", {"kind": "unblock", "domains": ["cdn.video.exemplo.com", "api.video.exemplo.com"]})
+        page.goto(f"{origin}/#/pedidos")
+        page.get_by_text("api.video.exemplo.com").first.wait_for(timeout=10000)
+        page.get_by_role("group", name="Escolha para api.video.exemplo.com").get_by_role("button", name="1 h").click()
+        page.get_by_role("group", name="Escolha para cdn.video.exemplo.com").get_by_role("button", name="Sempre").wait_for()
+        shot("15-pedidos", PHONE)
+        back()
+        page.get_by_role("button", name="Confirmar com passkey").click()
+        page.get_by_role("dialog").get_by_text("api.video.exemplo.com").first.wait_for()
+        sign()
+        run_executor(lambda: "cdn.video.exemplo.com" in fake.lists["allow"] and "api.video.exemplo.com" in fake.lists["allow"])
+        out["unblock_applied"] = "cdn.video.exemplo.com" in fake.lists["allow"] and "api.video.exemplo.com" in fake.lists["allow"]
+        out["unblock_ttl"] = sorted(t["domain"] for t in ex.state.data["temp"]) == ["api.video.exemplo.com"]
+        for _ in range(40):
+            rq = gw.call("GET", f"/v1/devices/{dev}/requests")["requests"]
+            if rq and rq[0]["status"] == "done":
+                break
+            page.wait_for_timeout(250)
+        out["unblock_state_back_to_device"] = {i["domain"]: i["state"] for i in rq[0]["items"]} == {"cdn.video.exemplo.com": "allowed", "api.video.exemplo.com": "allowed"}
+        ex.report()
+        page.goto(f"{origin}/#/domains/liberados")
+        page.get_by_role("button", name="Bloquear de novo").first.wait_for(timeout=10000)
+        shot("16-liberados", PHONE)
+        back()
+        page.get_by_role("button", name="Bloquear de novo").first.click()
+        sign()
+        run_executor(lambda: "cdn.video.exemplo.com" not in fake.lists["allow"] or "api.video.exemplo.com" not in fake.lists["allow"])
+        out["block_again"] = len([d for d in ("cdn.video.exemplo.com", "api.video.exemplo.com") if d in fake.lists["allow"]]) == 1
+
         # 7) domínio temporário pelo site -> executor -> Pi-hole falso
         page.goto(f"{origin}/#/domains/liberados")
+        page.get_by_text("Avançado").click()
+        page.get_by_role("group", name="Duração").get_by_role("button", name="1 hora").click()
         page.get_by_placeholder("exemplo.com").fill("Liberado.Exemplo.com")
         page.get_by_role("button", name="Liberar", exact=True).click()
         page.get_by_role("dialog").get_by_text("1 hora").first.wait_for()
@@ -223,6 +270,8 @@ def main():
         out["listed_in_ui"] = True
 
         # 8) o canário não é liberado, mesmo com comando válido
+        page.goto(f"{origin}/#/domains/liberados")
+        page.get_by_text("Avançado").click()
         page.get_by_placeholder("exemplo.com").fill("canario.example")
         page.get_by_role("button", name="Liberar", exact=True).click()
         before = sum(ex.consumer.last_ctr.values())
@@ -247,7 +296,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "canary_refused", "history_ui")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 

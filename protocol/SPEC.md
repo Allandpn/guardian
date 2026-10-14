@@ -60,6 +60,7 @@ Aparelho: `set_config {patch:{chave:valor}}` (passa por `Gate.split`) · `confir
 `set_dev_policy {...}` · `set_pin {box}` · `set_dev_pin {box}` · `activate {}`.
 
 Executor: `pihole_allow {domain, ttl_s?}` · `pihole_deny {domain, ttl_s?}` · `pihole_remove {list:"allow"|"deny", domain}`.
+`pihole_batch {items:[{domain, ttl_s?}]}` (1 a 50 itens, só libera): usado para aprovar um pedido de liberação com um único toque.
 Só domínio **exato** (ASCII, sem curinga/IP); `ttl_s` entre 60 e 2 592 000; o canário configurado é intocável.
 
 ## Caixa do PIN (`set_pin`, `set_dev_pin`)
@@ -79,13 +80,22 @@ linha de requisição (caminho + query) exatamente como enviada. O gateway aceit
 | `POST /v1/devices/register` | corpo `{pairing, pubkey, name, kind}`; assinado com a chave nova (prova de posse); consome o código de pareamento |
 | `GET /v1/devices/{dev}/commands?after=<seq>&wait=<s ≤ 25>` | long-poll; devolve `{commands:[{id,seq,envelope}], next}`; guarde `next` como `after` |
 | `POST /v1/devices/{dev}/report` | relatório (≤ 64 KiB); `executed:[{type,ok,msg}]` vira auditoria |
-| `POST /v1/devices/{dev}/requests` | pedido do usuário `{kind:"domain"|"app"|"other", text}` |
+| `POST /v1/devices/{dev}/requests` | pedido do usuário `{kind:"domain"|"app"|"other", text}`, ou `{kind:"unblock", domains:[...]}` (1 a 20 domínios que o executor viu bloqueados nas últimas 24 h; sem texto livre) |
+| `GET /v1/devices/{dev}/requests` | pedidos de liberação do aparelho, com o estado de cada domínio (`open`, `allowed`, `denied`, `cancelled`) |
+| `POST /v1/devices/{dev}/requests/{id}/cancel` | o aparelho cancela um pedido aberto |
+| `GET /v1/devices/{dev}/blocked?src=own|list` | (aparelho) o que o Pi-hole bloqueou para ele nas últimas 24 h |
+| `POST /v1/devices/{dev}/blocked` | (executor) `{dev, items:[{domain,src:"own"|"list",list,cname,count,first,last}]}`; o gateway soma as contagens e guarda no máximo 1000 domínios por aparelho |
+
+Guardião (sessão): `GET /v1/blocked?dev=&src=` (log), `POST /v1/requests/{id}/resolve {cmd?, deny:[domínios]}`. `cmd` é o id de um
+`pihole_batch` já enfileirado pelo mesmo guardião para o executor; o gateway confere o conteúdo e marca os domínios como liberados.
+Negar não exige passkey. `src` é `own` (regra própria: `REGEX`, `DENYLIST`) ou `list` (listas de anúncios: `GRAVITY`); nos `*_CNAME`
+vale o alvo do CNAME.
 
 **Relatório do aparelho** (campos que o site usa): `kind:"device"`, `ts`, `version`, `owner`, `filterActive`, `filterReason`,
 `tailscale`, `pinSet`, `pendingApps:[{pkg,label,risks:[...]}]`, `pending:[{kind,state:"waiting|ready",remainingMs,summary}]`,
 `windows:{maintenanceMs,devMs,devUsed}`, `snapshot:{chave:valor}` (`Config.snapshot()`), `labels`/`groups`/`hints` (chave → nome em português, grupo e dica: o site monta as Regras só com isto), `approvedApps:[{pkg,label}]`, `activated`, `trust:{guardian:[cred,...]}`,
 `ctrs:{guardian:int}`, `executed:[...]`. **Relatório do executor**: `kind:"executor"`, `pihole_ok`, `allow`, `deny`, `temp`,
-`trust`, `ctrs`, `executed`. Todo texto vindo de relatório é exibido pelo site com `textContent`.
+`allow_by`/`deny_by` ({domínio: guardião} só das entradas criadas pelo guardião), `trust`, `ctrs`, `executed`. Todo texto vindo de relatório é exibido pelo site com `textContent`.
 
 ## Pareamento
 

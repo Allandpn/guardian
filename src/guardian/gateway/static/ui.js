@@ -3,6 +3,7 @@ export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'style' && v) el.style.cssText = v;  // atributo style inline é barrado pela CSP; o CSSOM não
     else if (v === true) el.setAttribute(k, '');
     else if (v !== false && v != null) el.setAttribute(k, v);
   }

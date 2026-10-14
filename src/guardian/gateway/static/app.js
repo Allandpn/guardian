@@ -12,7 +12,7 @@ const drafts = new Map();    // aparelho -> { chave: novoValor } (regras ainda n
 const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regras abertos
 let selected = null;         // aparelho aberto no painel (computador)
 let pair = null;             // andamento do pareamento
-let domDur = 3600;           // duração escolhida para liberar domínio
+let domDur = 0;              // duração do formulário manual de domínio (0 = sem prazo)
 
 const fail = (e) => toast(e && e.message ? e.message : String(e));
 const show = (...nodes) => { main.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); };
@@ -53,7 +53,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio',
+  remove_guardian: 'remover guardião', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -93,8 +93,7 @@ async function sendCommand(dev, type, args = {}) {
 /** Mostra a folha com o que será assinado e, se o guardião confirmar, assina e envia. */
 async function confirmSend(dev, type, args, spec) {
   if (!(await sheet(spec))) return false;
-  await sendCommand(dev, type, args);
-  return true;
+  return (await sendCommand(dev, type, args)) || true;
 }
 const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
 
@@ -141,6 +140,7 @@ function renderNav(active) {
 }
 
 async function logout() {
+  autoLogin = false;
   await api('POST', '/v1/auth/logout', {});
   me = null;
   route();
@@ -153,7 +153,9 @@ function copyBtn(getText, label = 'Copiar') {
 }
 
 // ---------- entrar / convite ----------
+let autoLogin = true;
 function loginView() {
+  if (autoLogin) { autoLogin = false; doLogin().catch(() => {}); }  // abre o passkey sozinho; se o navegador exigir um toque, o botão fica
   show(h('div', { class: 'login' },
     h('div', { class: 'logo' }, icon('shield', 38)),
     h('h1', {}, 'NotToday Guardian'),
@@ -202,7 +204,7 @@ async function inicioView() {
   const todos = [];
   const cos = aw.filter((c) => c.can_cosign);
   if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/people' });
-  if (reqs.length) todos.push({ n: reqs.length, title: 'Pedidos dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains' });
+  if (reqs.length) todos.push({ n: reqs.length, title: 'Pedidos dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains/pedidos' });
   for (const d of devices) {
     const r = d.report || {};
     const apps = r.pendingApps || [];
@@ -469,62 +471,130 @@ function avancadoNodes(d, now) {
 }
 
 // ---------- domínios ----------
+const reqChoice = new Map(); // `${pedido}|${domínio}` -> 'always' | '3600' | '86400' | 'deny'
+let blkDev = '';             // filtro do log: aparelho ('' = todos)
+let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
+let advOpen = false;         // seção Avançado de Liberados aberta
+let blkTtl = 0;              // duração ao liberar direto pelo log (0 = sempre)
+const TTL_CHOICES = [['always', 'Sempre', 0], ['3600', '1 h', 3600], ['86400', '1 dia', 86400], ['deny', 'Negar', null]];
+const fmtWhen = (ts) => new Date(ts * 1000).toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', hour12: false });
+
 async function domainsView(tab) {
   const { devices, now, reqs } = await loadAll();
   renderNav('domains');
   const ex = devices.find((x) => x.kind === 'executor');
   if (!ex) { show(top('Domínios'), h('div', { class: 'card' }, h('p', { style: 'margin:0 0 10px' }, 'Nenhum executor do Pi-hole pareado.'), h('a', { class: 'btn pri', href: '#/pair', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Parear o executor'))); return; }
   const r = ex.report || {};
-  const domReqs = reqs.filter((q) => q.kind === 'domain');
-  const otherReqs = reqs.filter((q) => q.kind !== 'domain');
-  if (!tab) tab = reqs.length ? 'pedidos' : 'liberados';
+  const unb = reqs.filter((q) => q.kind === 'unblock');
+  const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
+  if (!tab) tab = reqs.length ? 'pedidos' : 'bloqueios';
+  const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
+  const protectedDevs = devices.filter((x) => x.kind === 'device');
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
+  const allowed = new Set(r.allow || []);
   const canary = (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
-  const allowSpec = (domain, ttl) => ({ title: `Liberar ${domain} ${ttl ? `por ${durLabel(ttl)}` : 'sem prazo'}?`,
-    rows: [['Ação', 'Liberar domínio'], ['Domínio', domain], ['Duração', durLabel(ttl)]], effect: 'vale na hora', effectKind: 'ok',
-    note: ttl ? null : 'Sem prazo: o domínio fica liberado até alguém removê-lo.', noteKind: 'warn' });
-  const dom = h('input', { class: 'inp', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocomplete: 'off', 'aria-label': 'Domínio' });
-  const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
-  const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
-  const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
-  const tabs = [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/liberados', `Liberados · ${(r.allow || []).length}`, 'liberados'], ['#/domains/bloqueados', `Bloqueados · ${(r.deny || []).length}`, 'bloqueados']];
-
-  const listCard = (name, items) => items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
-    h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
-      temp.has(`${name}:${x}`) ? h('div', { style: 'margin-top:4px' }, chip(`expira ${new Date(temp.get(`${name}:${x}`) * 1000).toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', hour12: false })}`, 'warn')) : null),
-    h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, { title: `Remover ${x} da lista de ${name === 'allow' ? 'liberados' : 'bloqueados'}?`,
-      rows: [['Ação', 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok' }) }, 'Remover')))) :
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Vazia.'));
+  const tabs = [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'],
+    ['#/domains/liberados', 'Liberados', 'liberados']];
+  const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
+    x.cname ? chip('via CNAME') : null];
+  const batchSpec = (items) => ({ title: `Liberar ${items.length} domínio${items.length > 1 ? 's' : ''}?`,
+    rows: items.map((i) => [i.domain, i.ttl_s ? durLabel(i.ttl_s) : 'sem prazo']), effect: 'vale na hora', effectKind: 'ok',
+    note: items.some((i) => !i.ttl_s) ? 'Sem prazo: o domínio fica liberado até alguém bloquear de novo. Vale para a casa toda.' : 'Vale para a casa toda.', noteKind: 'warn' });
 
   let body;
-  if (tab === 'liberados') body = listCard('allow', r.allow || []);
-  else if (tab === 'bloqueados') body = listCard('deny', r.deny || []);
-  else {
-    body = [domReqs.length ? domReqs.map((q) => h('div', { class: 'card' },
-      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, q.text), h('div', { class: 'muted' }, `${(devices.find((x) => x.id === q.dev) || { name: q.dev }).name} · ${ago(q.ts, now)}`)),
-      h('div', { class: 'row', style: 'margin-top:10px' },
-        h('button', { class: 'btn grow', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'),
-        h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
-          const d = q.text.trim().toLowerCase();
-          if (await confirmSend(ex.id, 'pihole_allow', { domain: d, ttl_s: 3600 }, allowSpec(d, 3600))) { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }
-        }) }, 'Liberar 1 hora')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de domínio.')),
+  if (tab === 'pedidos') {
+    const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
+    const info = new Map(blocked.map((b) => [`${b.dev}|${b.domain}`, b]));
+    body = [unb.length ? unb.map((q) => {
+      const rows = q.items.filter((i) => i.state === 'open');
+      const key = (d) => `${q.id}|${d}`;
+      const val = (d) => reqChoice.get(key(d)) || 'always';
+      const confirm = act(async () => {
+        const items = rows.filter((i) => val(i.domain) !== 'deny').map((i) => ({ domain: i.domain, ...(val(i.domain) === 'always' ? {} : { ttl_s: Number(val(i.domain)) }) }));
+        const deny = rows.filter((i) => val(i.domain) === 'deny').map((i) => i.domain);
+        let cmd = null;
+        if (items.length) {
+          const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
+          if (!sent) return;
+          cmd = sent.id;
+        }
+        await api('POST', `/v1/requests/${q.id}/resolve`, { ...(cmd ? { cmd } : {}), deny });
+        rows.forEach((i) => reqChoice.delete(key(i.domain)));
+        route();
+      });
+      return h('div', { class: 'card warnb' },
+        h('div', { class: 'row' }, h('strong', { class: 'sp' }, devName(q.dev)), chip(`${rows.length} domínio${rows.length > 1 ? 's' : ''}`, 'warn')),
+        h('div', { class: 'muted' }, `pedido ${ago(q.ts, now)}`),
+        rows.map((i) => {
+          const b = info.get(`${q.dev}|${i.domain}`);
+          return h('div', { class: 'li', style: 'flex-direction:column;align-items:stretch;gap:2px' },
+            h('span', { class: 'mono', style: 'font-weight:600' }, i.domain),
+            h('div', { class: 'muted' }, b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${b.src === 'own' ? 'regra própria' : b.list || 'lista'}` : 'sem bloqueio recente', ' ', flags(b || i)),
+            h('div', { class: 'durs', role: 'group', 'aria-label': `Escolha para ${i.domain}`, style: 'margin-top:6px' },
+              TTL_CHOICES.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(val(i.domain) === k),
+                onclick: () => { reqChoice.set(key(i.domain), k); route(); } }, label))));
+        }),
+        h('button', { class: 'btn pri block', type: 'button', style: 'margin-top:12px', onclick: confirm },
+          rows.every((i) => val(i.domain) === 'deny') ? 'Negar' : 'Confirmar com passkey'));
+    }) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de liberação.')),
     otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
-      h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${(devices.find((x) => x.id === q.dev) || { name: q.dev }).name} · ${ago(q.ts, now)}`)),
+      h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
       h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
-  }
-
-  show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
-    h('div', { class: 'wrap' }, segTabs(tabs, tab), body,
-      h('div', { class: 'sec' }, 'Liberar ou bloquear um domínio'),
-      h('div', { class: 'card' }, dom, h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
+  } else if (tab === 'bloqueios') {
+    const qs = new URLSearchParams();
+    if (blkDev) qs.set('dev', blkDev);
+    if (blkSrc) qs.set('src', blkSrc);
+    const items = (await api('GET', '/v1/blocked' + (qs.size ? `?${qs}` : ''))).items;
+    const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
+    body = [h('div', { class: 'sec' }, 'Aparelho'),
+      h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Filtrar por aparelho' },
+        [pill('Todos', !blkDev, () => { blkDev = ''; route(); }), ...protectedDevs.map((x) => pill(x.name, blkDev === x.id, () => { blkDev = x.id; route(); }))]),
+      h('div', { class: 'sec' }, 'Quem bloqueou'),
+      h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Filtrar por origem' },
+        [['own', 'Regras próprias'], ['list', 'Listas'], ['', 'Tudo']].map(([k, label]) => pill(label, blkSrc === k, () => { blkSrc = k; route(); }))),
+      h('div', { class: 'sec' }, 'Liberar direto por'),
+      h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
+        TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, s]) => pill(label, blkTtl === s, () => { blkTtl = s; route(); }))),
+      h('div', { class: 'sec' }, 'Últimas 24 horas'),
+      items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
+          h('div', { class: 'muted' }, `${devName(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${x.src === 'own' ? 'regra própria' : x.list || 'lista'}`, ' ', flags(x))),
+        allowed.has(x.domain) ? chip('liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
+          batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) :
+        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada bloqueado com esses filtros.'))];
+  } else {
+    const by = r.allow_by || {};
+    const mine = (r.allow || []).filter((d) => by[d] !== undefined);
+    const others = (r.allow || []).length - mine.length;
+    const listCard = (name, list) => list.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, list.map((x) => h('div', { class: 'li' },
+      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
+        h('div', { class: 'muted' }, name === 'allow' && by[x] ? `liberado por ${gname(by[x])}` : '', ' ',
+          temp.has(`${name}:${x}`) ? chip(`expira ${fmtWhen(temp.get(`${name}:${x}`))}`, 'warn') : name === 'allow' ? chip('sem prazo') : null)),
+      h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, { title: name === 'allow' ? `Bloquear ${x} de novo?` : `Remover ${x} da lista de bloqueados?`,
+        rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
+        note: name === 'allow' ? 'Volta a valer a regra do Pi-hole para este domínio.' : null }) }, name === 'allow' ? 'Bloquear de novo' : 'Remover')))) :
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Vazio.'));
+    const dom = h('input', { class: 'inp', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocomplete: 'off', 'aria-label': 'Domínio' });
+    const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
+    const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
+    const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
+    body = [listCard('allow', mine),
+      others ? h('p', { class: 'muted', style: 'margin:8px 14px 0' }, `Mais ${others} entrada${others > 1 ? 's' : ''} criada${others > 1 ? 's' : ''} direto no Pi-hole. Elas não aparecem nem são alteradas aqui.`) : null,
+      h('details', { class: 'card flat', style: 'margin-top:12px', open: advOpen, ontoggle: (e) => { advOpen = e.target.open; } }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Avançado: bloqueados e domínio manual'),
+        h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${(r.deny || []).length}`), listCard('deny', r.deny || []),
+        h('div', { class: 'sec', style: 'padding-left:0' }, 'Liberar ou bloquear um domínio'),
+        dom, h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
         h('div', { class: 'row', style: 'margin-top:12px' },
           h('button', { class: 'btn grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_deny', args(), { title: `Bloquear ${args().domain} ${domDur ? `por ${durLabel(domDur)}` : ''}?`,
             rows: [['Ação', 'Bloquear domínio'], ['Domínio', args().domain], ['Duração', durLabel(domDur)]], effect: 'vale na hora', effectKind: 'ok' }).then((ok) => ok && route())) }, 'Bloquear'),
-          h('button', { class: 'btn pri grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_allow', args(), allowSpec(args().domain, domDur)).then((ok) => ok && route())) }, 'Liberar')),
+          h('button', { class: 'btn pri grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_allow', args(), batchSpec([{ domain: args().domain, ttl_s: domDur }])).then((ok) => ok && route())) }, 'Liberar')),
         h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Só domínio exato. Curinga e regex ficam de fora desta versão.')),
       canary ? h('div', { class: 'card flat' }, h('div', { class: 'row' }, h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, canary),
-        h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null));
+        h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null];
+  }
+  show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
+    h('div', { class: 'wrap' }, segTabs(tabs, tab), body));
   timer = setTimeout(route, 20000);
 }
 
@@ -790,10 +860,10 @@ async function route() {
   if (!me) { nav.hidden = true; return loginView(); }
   try {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
-    const dom = hash.match(/^#\/domains(?:\/(pedidos|liberados|bloqueados))?$/);
+    const dom = hash.match(/^#\/(?:domains\/)?(pedidos|bloqueios|liberados)$/) || hash.match(/^#\/(domains)$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
-    else if (dom) await domainsView(dom[1]);
+    else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);
     else if (hash === '#/people') await peopleView();
     else if (his) await historyView(his[1]);
     else if (hash === '#/pair') await pairView();
