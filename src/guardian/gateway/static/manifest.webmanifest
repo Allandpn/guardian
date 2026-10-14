@@ -1,0 +1,9 @@
+{
+  "name": "NotToday Guardian",
+  "short_name": "Guardian",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#1f2937",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -14,3 +14,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "guardian.gateway" = ["static/*"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "B"]
+# HttpError esconde de propósito a causa interna; testes usam Exception genérica para "falha de criptografia".
+ignore = ["B008", "B017", "B904"]

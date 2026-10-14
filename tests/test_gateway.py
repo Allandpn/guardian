@@ -138,7 +138,7 @@ class GatewayTests(unittest.TestCase):
         path = f"/v1/devices/{self.dev}/commands"
         p = command(self.dev, self.gid, n, "approve_app")
         # tipo que não existe / destino errado / autor errado / sem assinatura / assinatura de outro
-        for payload, sigs in (
+        for payload, _ in (
             (command(self.dev, self.gid, n, "apagar_tudo"), None),
             (command("aaaaaaaaaaaaaaaaaaaa", self.gid, n, "approve_app"), None),
             (command(self.dev, "g_outro", n, "approve_app"), None),
@@ -156,7 +156,6 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.c.call("POST", path, envelope(p, self.a.sign_command(self.gid, p)))[0], 409)
 
     def test_two_signature_command_with_cosign(self):
-        from guardian.gateway.server import create_invite
         c2, a2, g2 = self.env.register_guardian("Bia")
         key, dev = self.env.pair_device(self.c, name="Celular")
         trust = self.c.call("GET", "/v1/me")[1]["trust"]
@@ -203,6 +202,42 @@ class GatewayTests(unittest.TestCase):
             codes = [env.client().call("GET", "/healthz")[0] for _ in range(80)]
             self.assertIn(429, codes)
         finally:
+            env.close()
+
+    def test_connection_cap_closes_excess_connections(self):
+        import socket
+        env = Env(max_connections=2)
+        try:
+            held = []
+            for _ in range(2):  # ocupam as duas vagas sem enviar nada
+                s = socket.create_connection(("127.0.0.1", env.port))
+                held.append(s)
+            time.sleep(0.3)
+            extra = socket.create_connection(("127.0.0.1", env.port))
+            extra.settimeout(3)
+            self.assertEqual(extra.recv(10), b"")  # fechada na hora, sem thread
+            extra.close()
+            for s in held:
+                s.close()
+            time.sleep(0.5)
+            self.assertEqual(env.client().call("GET", "/healthz")[0], 200)  # vagas voltam
+        finally:
+            env.close()
+
+    def test_idle_connection_times_out(self):
+        import socket
+        from guardian.gateway.server import Handler
+        old, Handler.timeout = Handler.timeout, 1
+        env = Env()
+        try:
+            s = socket.create_connection(("127.0.0.1", env.port))
+            s.settimeout(5)
+            t0 = time.time()
+            s.recv(10)  # não envia nada: o servidor desiste sozinho
+            self.assertLess(time.time() - t0, 4)
+            s.close()
+        finally:
+            Handler.timeout = old
             env.close()
 
     def test_user_requests(self):

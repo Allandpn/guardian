@@ -1,0 +1,32 @@
+[Unit]
+Description=Executor do guardião (Pi-hole v6)
+After=network-online.target pihole-FTL.service
+Wants=network-online.target
+
+[Service]
+User=guardian-exec
+Group=guardian-exec
+EnvironmentFile=/etc/guardian-executor.env
+StateDirectory=guardian-executor
+StateDirectoryMode=0700
+WorkingDirectory=/opt/guardian
+Environment=PYTHONPATH=/opt/guardian/src PYTHONUNBUFFERED=1 EXECUTOR_STATE=/var/lib/guardian-executor
+ExecStart=/opt/guardian/.venv/bin/python -m guardian.executor run
+Restart=always
+RestartSec=5
+# endurecimento
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=128M
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

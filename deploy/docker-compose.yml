@@ -1,0 +1,61 @@
+# Gateway isolado: nó Tailscale próprio (userspace, tag:gateway) + gateway Python, sem acesso à LAN.
+# Antes de subir: deploy/firewall.sh (regras que impedem o container de alcançar a LAN e o host).
+#   cp deploy/gateway.env.example deploy/gateway.env   # e preencha
+#   docker compose --env-file deploy/gateway.env -f deploy/docker-compose.yml up -d --build
+services:
+  tailscale:
+    image: tailscale/tailscale:stable          # em produção, fixe por digest (image@sha256:...)
+    hostname: ${TS_HOSTNAME:-guardian-gw}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}                # chave efêmera, pré-autorizada, com tag:gateway (uso único)
+      TS_EXTRA_ARGS: --advertise-tags=tag:gateway
+      TS_USERSPACE: "true"                     # sem /dev/net/tun e sem NET_ADMIN
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    networks: [guardian_net]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    mem_limit: 128m
+    pids_limit: 128
+    restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "5m", max-file: "3" } }
+
+  gateway:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    network_mode: service:tailscale            # o gateway só escuta em 127.0.0.1 dentro do nó Tailscale
+    depends_on: [tailscale]
+    user: "10001:10001"
+    environment:
+      GATEWAY_ORIGIN: ${GATEWAY_ORIGIN}        # https://guardian-gw.<sua-tailnet>.ts.net
+      GATEWAY_BIND: 127.0.0.1
+      GATEWAY_PORT: "8080"
+      GATEWAY_DB: /data/gateway.db
+    volumes:
+      - gateway-data:/data
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "5m", max-file: "3" } }
+
+networks:
+  guardian_net:
+    name: guardian_net
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-guardian   # nome fixo: o firewall.sh usa
+    ipam:
+      config: [{ subnet: 172.29.250.0/24 }]
+
+volumes:
+  ts-state:
+  gateway-data:

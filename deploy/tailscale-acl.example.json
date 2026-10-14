@@ -1,0 +1,19 @@
+// Exemplo de trechos da ACL da tailnet (HuJSON). Adapte tags e donos ao que você já tem.
+{
+  "tagOwners": {
+    "tag:gateway":   ["autogroup:admin"],
+    "tag:pi":        ["autogroup:admin"],
+    "tag:protegido": ["autogroup:admin"]
+  },
+  // Só o nó do gateway recebe o Funnel; o nó principal do Pi não pode publicar nada na internet.
+  "nodeAttrs": [
+    { "target": ["tag:gateway"], "attr": ["funnel"] }
+  ],
+  "acls": [
+    // aparelhos protegidos: só DNS no Pi e o gateway
+    { "action": "accept", "src": ["tag:protegido"], "dst": ["tag:pi:53", "tag:gateway:443"] },
+    // o Pi (executor) puxa a fila do gateway
+    { "action": "accept", "src": ["tag:pi"], "dst": ["tag:gateway:443"] }
+    // tag:gateway não aparece como origem: o nó do gateway não alcança ninguém da tailnet.
+  ]
+}
