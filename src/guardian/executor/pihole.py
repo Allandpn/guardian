@@ -81,6 +81,37 @@ class Pihole:
         items = body.get("domains", []) if isinstance(body, dict) else body
         return sorted(str(i.get("domain")) for i in items if isinstance(i, dict) and i.get("domain"))
 
+    def list_entries(self, list_: str) -> list[dict]:
+        """Como list_domains, mas com o comentário (quem criou a entrada)."""
+        st, body = self._call("GET", self._p(list_))
+        if st != 200:
+            raise PiholeError(f"listar falhou ({st})")
+        items = body.get("domains", []) if isinstance(body, dict) else body
+        return [{"domain": str(i["domain"]), "comment": str(i.get("comment") or "")}
+                for i in items if isinstance(i, dict) and i.get("domain")]
+
+    def queries(self, since: float, client_ip: str, length: int = 1000, max_pages: int = 5) -> list[dict]:
+        """Consultas de um cliente desde `since` (timestamp Unix). Filtra o status no chamador."""
+        out: list[dict] = []
+        for page in range(max_pages):
+            qs = urllib.parse.urlencode({"from": f"{since:.6f}", "client_ip": client_ip, "length": length, "start": page * length})
+            st, body = self._call("GET", "/api/queries?" + qs)
+            if st != 200:
+                raise PiholeError(f"consultas falharam ({st})")
+            items = body.get("queries", []) if isinstance(body, dict) else []
+            out.extend(i for i in items if isinstance(i, dict))
+            if len(items) < length:
+                break
+        return out
+
+    def list_names(self) -> dict[int, str]:
+        """{id da lista de anúncios: endereço}. Melhor esforço: vazio se a rota não existir."""
+        st, body = self._call("GET", "/api/lists")
+        if st != 200 or not isinstance(body, dict):
+            return {}
+        return {int(i["id"]): str(i.get("address", ""))[:120] for i in body.get("lists", [])
+                if isinstance(i, dict) and isinstance(i.get("id"), int)}
+
     def put_domain(self, list_: str, domain: str, comment: str = "") -> None:
         st, body = self._call("PUT", f"{self._p(list_)}/{urllib.parse.quote(domain, safe='')}",
                               {"comment": comment[:200], "groups": [0], "enabled": True})

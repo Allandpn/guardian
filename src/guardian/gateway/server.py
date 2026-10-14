@@ -13,16 +13,18 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import serialization
 
 from ..protocol import b64, commands as cmds, devauth, webauthn
+from ..executor.domains import normalize as normalize_domain
 from . import webpush
 from .alerts import Alerts, Notifier
 from .config import Config
-from .db import Store
+from .db import REQUEST_DOMAINS_MAX, Store
 from .limits import Limiter, NonceCache
 
 DEVICE_TYPES = {"set_config", "confirm", "cancel", "approve_app", "revoke_app", "request_maintenance",
                 "set_dev_policy", "set_pin", "set_dev_pin", "activate"} | cmds.TRUST_TYPES
-EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove"} | cmds.TRUST_TYPES
-REQUEST_KINDS = {"domain", "app", "other"}
+EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.TRUST_TYPES
+REQUEST_KINDS = {"domain", "app", "other", "unblock"}
+BLOCK_SOURCES = {"own", "list"}
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 STATIC = {
@@ -115,6 +117,12 @@ class Gateway:
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/commands", self.poll_commands),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/report", self.post_report),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests", self.post_request),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests", self.device_requests),
+            ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests/(?P<rid>[0-9]{1,12})/cancel", self.cancel_request),
+            ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.post_blocked),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
+            ("GET", r"/v1/blocked", self.blocked),
+            ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/resolve", self.resolve),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
             ("GET", r"/v1/push/key", self.push_key),
             ("POST", r"/v1/push/subscribe", self.push_subscribe),
@@ -130,7 +138,7 @@ class Gateway:
 
     # ------------------------------------------------------------------ infra
     def body_limit(self, path: str) -> int:
-        if path.endswith("/report"):
+        if path.endswith("/report") or path.endswith("/blocked"):
             return 64 * 1024
         if path.endswith("/commands") or path.endswith("/cosign"):
             return 16 * 1024
@@ -497,7 +505,69 @@ class Gateway:
 
     def requests(self, req):
         self.guardian(req)
-        return 200, {"items": [dict(r) for r in self.store.requests_open()]}, {}
+        out = []
+        for r in self.store.requests_open():
+            d = dict(r)
+            if r["kind"] == "unblock":
+                d["items"] = [{"domain": i["domain"], "state": i["state"]} for i in self.store.request_items(r["id"])]
+            out.append(d)
+        return 200, {"items": out}, {}
+
+    def blocked(self, req):
+        self.guardian(req)
+        q = parse_qs(req.query)
+        dev, src = q.get("dev", [None])[0], q.get("src", [None])[0]
+        if dev is not None and not re.fullmatch(r"[a-z2-7]{20}", dev):
+            raise HttpError(400, "aparelho inválido")
+        if src is not None and src not in BLOCK_SOURCES:
+            raise HttpError(400, "origem inválida")
+        return 200, {"items": [self._blocked_row(r) for r in self.store.blocked_list(dev, src)], "now": int(time.time())}, {}
+
+    @staticmethod
+    def _blocked_row(r) -> dict:
+        return {"dev": r["dev"], "domain": r["domain"], "src": r["src"], "list": r["list"], "cname": bool(r["cname"]),
+                "count": r["count"], "first": r["first"], "last": r["last"]}
+
+    def resolve(self, req, rid):
+        gid = self.guardian(req)
+        if not self.l_cmd.allow(gid):
+            raise HttpError(429, "devagar")
+        d = req.json()
+        row = self.store.request(int(rid))
+        if not row or row["kind"] != "unblock" or row["status"] != "open":
+            raise HttpError(404, "pedido não encontrado ou já resolvido")
+        open_domains = {i["domain"] for i in self.store.request_items(row["id"]) if i["state"] == "open"}
+        states: dict[str, tuple[str, int | None]] = {}
+        cid = d.get("cmd")
+        if cid is not None:
+            c = self.store.command(cid) if isinstance(cid, int) and not isinstance(cid, bool) else None
+            ex = self.store.device(c["dev"]) if c else None
+            if not c or c["guardian"] != gid or not ex or ex["kind"] != "executor":
+                raise HttpError(400, "comando não confere")
+            try:
+                cmd = cmds.parse_payload(b64.dec(json.loads(c["envelope"])["payload"]))
+            except (cmds.CommandError, ValueError, KeyError):
+                raise HttpError(400, "comando ilegível")
+            if cmd["type"] != "pihole_batch":
+                raise HttpError(400, "comando não é uma liberação")
+            for it in cmd["args"].get("items", []):
+                try:
+                    dom = normalize_domain(it.get("domain"))
+                except (ValueError, AttributeError):
+                    continue
+                if dom in open_domains:
+                    states[dom] = ("allowed", it.get("ttl_s") if isinstance(it.get("ttl_s"), int) else None)
+        deny = d.get("deny", [])
+        if not isinstance(deny, list) or len(deny) > REQUEST_DOMAINS_MAX:
+            raise HttpError(400, "lista de negados inválida")
+        for dom in deny:
+            if isinstance(dom, str) and dom in open_domains and dom not in states:
+                states[dom] = ("denied", None)
+        if not states:
+            raise HttpError(400, "nada para resolver")
+        self.store.resolve_domains(row["id"], states, gid)
+        self.store.audit(row["dev"], "request", f"{gid}: " + ", ".join(f"{k} {v[0]}" for k, v in sorted(states.items()))[:250])
+        return 200, {"ok": True}, {}
 
     def dismiss(self, req, rid):
         self.guardian(req)
@@ -565,11 +635,76 @@ class Gateway:
         self.store.save_report(dev, report)
         return 200, {"ok": True}, {}
 
+    def post_blocked(self, req, dev):
+        row = self.device(req, dev)
+        if row["kind"] != "executor":
+            raise HttpError(403, "só o executor envia bloqueios")
+        d = req.json()
+        target = d.get("dev")
+        trow = self.store.device(target) if isinstance(target, str) and re.fullmatch(r"[a-z2-7]{20}", target) else None
+        if not trow or trow["kind"] != "device":
+            raise HttpError(400, "aparelho de destino inválido")
+        raw = d.get("items")
+        if not isinstance(raw, list) or len(raw) > 200:
+            raise HttpError(400, "lista inválida")
+        items, now = [], int(time.time())
+        for it in raw:
+            try:
+                dom = normalize_domain(it.get("domain"))
+                src = it["src"]
+                cnt, first, last = it["count"], it["first"], it["last"]
+                lst = it.get("list", "")
+                ok = (src in BLOCK_SOURCES and all(isinstance(x, int) and not isinstance(x, bool) for x in (cnt, first, last))
+                      and 1 <= cnt <= 10_000_000 and 0 < first <= last <= now + 300 and isinstance(lst, str))
+            except (ValueError, KeyError, AttributeError, TypeError):
+                ok = False
+            if ok:
+                items.append({"domain": dom, "src": src, "list": lst[:120], "cname": 1 if it.get("cname") else 0,
+                              "count": cnt, "first": first, "last": last})
+        self.store.merge_blocked(target, items)
+        return 200, {"ok": True, "accepted": len(items)}, {}
+
+    def device_blocked(self, req, dev):
+        row = self.device(req, dev)
+        if row["kind"] != "device":
+            raise HttpError(403, "aparelho inválido")
+        src = parse_qs(req.query).get("src", [None])[0]
+        if src is not None and src not in BLOCK_SOURCES:
+            raise HttpError(400, "origem inválida")
+        self.store.touch(dev)
+        return 200, {"items": [self._blocked_row(r) for r in self.store.blocked_list(dev, src, 300)], "now": int(time.time())}, {}
+
+    def device_requests(self, req, dev):
+        self.device(req, dev)
+        return 200, {"requests": self.store.device_requests(dev), "now": int(time.time())}, {}
+
+    def cancel_request(self, req, dev, rid):
+        self.device(req, dev)
+        if not self.store.cancel_request(int(rid), dev):
+            raise HttpError(404, "pedido não encontrado ou já resolvido")
+        self.store.audit(dev, "request", f"pedido {rid} cancelado pelo aparelho")
+        return 200, {"ok": True}, {}
+
     def post_request(self, req, dev):
         self.device(req, dev)
         d = req.json()
         if d.get("kind") not in REQUEST_KINDS:
             raise HttpError(400, "tipo inválido")
+        if d["kind"] == "unblock":
+            raw = d.get("domains")
+            if not isinstance(raw, list) or not 1 <= len(raw) <= REQUEST_DOMAINS_MAX:
+                raise HttpError(400, "lista de domínios inválida")
+            try:
+                doms = sorted({normalize_domain(x) for x in raw})
+            except ValueError:
+                raise HttpError(400, "domínio inválido")
+            if not all(self.store.blocked_has(dev, x) for x in doms):
+                raise HttpError(400, "só dá para pedir domínios que foram bloqueados")
+            rid = self.store.add_unblock_request(dev, doms)
+            if rid is None:
+                raise HttpError(429, "pedidos demais em aberto")
+            self.store.audit(dev, "request", f"pedido de liberação: {', '.join(doms)[:250]}")
+            return 200, {"ok": True, "id": rid or None}, {}
         if not self.store.add_request(dev, d["kind"], _str(d, "text", 500)):
             raise HttpError(429, "pedidos demais em aberto")
         return 200, {"ok": True}, {}

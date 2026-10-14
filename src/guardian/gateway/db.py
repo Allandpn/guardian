@@ -21,11 +21,19 @@ CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, guardian TEXT NO
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TEXT NOT NULL, ts INTEGER NOT NULL,
   kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open');
+CREATE TABLE IF NOT EXISTS blocked(dev TEXT NOT NULL, domain TEXT NOT NULL, src TEXT NOT NULL, list TEXT NOT NULL DEFAULT '',
+  cname INTEGER NOT NULL DEFAULT 0, count INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(dev, domain));
+CREATE INDEX IF NOT EXISTS blocked_last ON blocked(dev, last);
+CREATE TABLE IF NOT EXISTS request_domains(rid INTEGER NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open',
+  ttl_s INTEGER, by TEXT, ts INTEGER NOT NULL, PRIMARY KEY(rid, domain));
 """
 
 AUDIT_MAX = 5000
 REQUESTS_MAX = 200
 DELIVERED_KEEP_S = 7 * 24 * 3600
+BLOCKED_KEEP_S = 24 * 3600
+BLOCKED_MAX_PER_DEV = 1000
+REQUEST_DOMAINS_MAX = 20
 
 
 class Store:
@@ -110,8 +118,9 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests"):
+            for t in ("commands", "ctrs", "requests", "blocked"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
+            self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
 
     def save_report(self, dev: str, report: dict):
@@ -163,6 +172,9 @@ class Store:
     def purge(self):
         cutoff = int(time.time()) - DELIVERED_KEEP_S
         self.x("DELETE FROM commands WHERE created<?", (cutoff,))
+        self.x("DELETE FROM blocked WHERE last<?", (int(time.time()) - BLOCKED_KEEP_S,))
+        self.x("DELETE FROM requests WHERE status<>'open' AND ts<?", (cutoff,))
+        self.x("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
         self.x("DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)", (AUDIT_MAX,))
 
     # --- meta e inscrições de push ------------------------------------------------
@@ -214,3 +226,83 @@ class Store:
 
     def dismiss_request(self, rid: int):
         self.x("UPDATE requests SET status='done' WHERE id=?", (rid,))
+
+    # --- bloqueios e pedidos de liberação ---------------------------------------------
+    def merge_blocked(self, dev: str, items: list[dict]) -> None:
+        """Soma as contagens recebidas do executor e mantém só os BLOCKED_MAX_PER_DEV mais recentes."""
+        with self.lock:
+            self.db.execute("BEGIN")
+            try:
+                for it in items:
+                    self.db.execute(
+                        "INSERT INTO blocked(dev,domain,src,list,cname,count,first,last) VALUES(?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(dev,domain) DO UPDATE SET count=count+excluded.count, last=MAX(last,excluded.last), "
+                        "first=MIN(first,excluded.first), src=excluded.src, list=excluded.list, cname=excluded.cname",
+                        (dev, it["domain"], it["src"], it["list"], it["cname"], it["count"], it["first"], it["last"]))
+                self.db.execute("DELETE FROM blocked WHERE dev=? AND last<?", (dev, int(time.time()) - BLOCKED_KEEP_S))
+                self.db.execute("DELETE FROM blocked WHERE dev=? AND domain NOT IN "
+                                "(SELECT domain FROM blocked WHERE dev=? ORDER BY last DESC LIMIT ?)", (dev, dev, BLOCKED_MAX_PER_DEV))
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def blocked_list(self, dev: str | None = None, src: str | None = None, limit: int = 500):
+        sql, args = "SELECT * FROM blocked WHERE last>=?", [int(time.time()) - BLOCKED_KEEP_S]
+        if dev:
+            sql += " AND dev=?"
+            args.append(dev)
+        if src:
+            sql += " AND src=?"
+            args.append(src)
+        return self.q(sql + " ORDER BY last DESC LIMIT ?", args + [limit])
+
+    def blocked_has(self, dev: str, domain: str) -> bool:
+        return self.one("SELECT 1 FROM blocked WHERE dev=? AND domain=? AND last>=?",
+                        (dev, domain, int(time.time()) - BLOCKED_KEEP_S)) is not None
+
+    def add_unblock_request(self, dev: str, domains: list[str]) -> int | None:
+        """Cria o pedido com os domínios que ainda não têm pedido aberto. None se nada novo ou se há pedidos demais."""
+        with self.lock:
+            if self.one("SELECT COUNT(*) c FROM requests WHERE status='open'")["c"] >= REQUESTS_MAX:
+                return None
+            fresh = [d for d in domains if not self.one(
+                "SELECT 1 FROM request_domains rd JOIN requests r ON r.id=rd.rid "
+                "WHERE r.dev=? AND rd.domain=? AND rd.state='open'", (dev, d))]
+            if not fresh:
+                return 0
+            now = int(time.time())
+            cur = self.db.execute("INSERT INTO requests(dev,ts,kind,text) VALUES(?,?,?,?)",
+                                  (dev, now, "unblock", ("liberar: " + ", ".join(fresh))[:500]))
+            for d in fresh:
+                self.db.execute("INSERT INTO request_domains(rid,domain,ts) VALUES(?,?,?)", (cur.lastrowid, d, now))
+            return cur.lastrowid
+
+    def request_items(self, rid: int):
+        return self.q("SELECT * FROM request_domains WHERE rid=? ORDER BY domain", (rid,))
+
+    def request(self, rid: int):
+        return self.one("SELECT * FROM requests WHERE id=?", (rid,))
+
+    def resolve_domains(self, rid: int, states: dict[str, tuple[str, int | None]], by: str) -> None:
+        """states: {domínio: (estado, ttl_s)}. Fecha o pedido quando nenhum domínio sobra aberto."""
+        with self.lock:
+            for d, (state, ttl) in states.items():
+                self.db.execute("UPDATE request_domains SET state=?, ttl_s=?, by=?, ts=? WHERE rid=? AND domain=? AND state='open'",
+                                (state, ttl, by, int(time.time()), rid, d))
+            if not self.one("SELECT 1 FROM request_domains WHERE rid=? AND state='open'", (rid,)):
+                self.db.execute("UPDATE requests SET status='done' WHERE id=?", (rid,))
+
+    def cancel_request(self, rid: int, dev: str) -> bool:
+        with self.lock:
+            if not self.one("SELECT 1 FROM requests WHERE id=? AND dev=? AND status='open'", (rid, dev)):
+                return False
+            self.db.execute("UPDATE request_domains SET state='cancelled', ts=? WHERE rid=? AND state='open'", (int(time.time()), rid))
+            self.db.execute("UPDATE requests SET status='done' WHERE id=?", (rid,))
+            return True
+
+    def device_requests(self, dev: str, limit: int = 20):
+        rows = self.q("SELECT * FROM requests WHERE dev=? AND kind='unblock' ORDER BY id DESC LIMIT ?", (dev, limit))
+        return [{"id": r["id"], "ts": r["ts"], "status": r["status"],
+                 "items": [{"domain": i["domain"], "state": i["state"], "ttl_s": i["ttl_s"]} for i in self.request_items(r["id"])]}
+                for r in rows]

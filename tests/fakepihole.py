@@ -2,7 +2,7 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 class FakePihole:
@@ -13,6 +13,8 @@ class FakePihole:
         self.sessions_valid = True
         self.down = False
         self.logins = 0
+        self.queries = []   # [{"time","domain","status","client":{"ip"},"cname"?,"list_id"?}]
+        self.lists_api = {"lists": [{"id": 7, "address": "https://listas.example/ads.txt"}]}
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -48,6 +50,16 @@ class FakePihole:
                     return self._reply(204)
                 if not self._auth():
                     return self._reply(401, {})
+                u = urlsplit(p)
+                if u.path == "/api/queries" and self.command == "GET":
+                    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                    rows = [x for x in fake.queries if x["client"]["ip"] == q.get("client_ip", x["client"]["ip"])
+                            and x["time"] >= float(q.get("from", 0))]
+                    rows.sort(key=lambda x: x["time"])
+                    start, n = int(q.get("start", 0)), int(q.get("length", 100))
+                    return self._reply(200, {"queries": rows[start:start + n], "recordsTotal": len(rows)})
+                if u.path == "/api/lists" and self.command == "GET":
+                    return self._reply(200, fake.lists_api)
                 parts = p.split("/")  # ['', 'api', 'domains', type, kind, (domain)]
                 if len(parts) >= 5 and parts[2] == "domains" and parts[3] in fake.lists and parts[4] == "exact":
                     lst = fake.lists[parts[3]]

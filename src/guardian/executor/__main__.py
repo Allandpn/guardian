@@ -6,6 +6,7 @@ Configuração por variáveis de ambiente:
   PIHOLE_PASSWORD_FILE  arquivo com a senha de aplicativo do Pi-hole (modo 0600)
   PIHOLE_CA             CA para HTTPS do Pi-hole (opcional)
   CANARY                domínio-canário que nunca pode ser alterado
+  CLIENTS               aparelhos protegidos: "IP=id,IP=id" (IP do aparelho na Tailscale, v4 e v6, e o id do aparelho no site)
 """
 import argparse
 import os
@@ -22,8 +23,13 @@ def cfg_from_env() -> ExecConfig:
     if e.get("PIHOLE_PASSWORD_FILE"):
         with open(e["PIHOLE_PASSWORD_FILE"]) as f:
             pw = f.read().strip()
+    clients = {}
+    for part in e.get("CLIENTS", "").split(","):
+        if "=" in part:
+            ip, dev = part.strip().split("=", 1)
+            clients[ip.strip()] = dev.strip()
     return ExecConfig(e.get("EXECUTOR_STATE", "/var/lib/guardian-executor"), e.get("PIHOLE_URL", "http://127.0.0.1:8080"),
-                      pw, e.get("CANARY", ""), e.get("PIHOLE_CA"))
+                      pw, e.get("CANARY", ""), e.get("PIHOLE_CA"), clients)
 
 
 def main(argv=None) -> int:

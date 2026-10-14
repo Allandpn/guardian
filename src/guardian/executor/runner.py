@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +15,12 @@ from .pihole import Pihole, PiholeError
 MIN_TTL_S, MAX_TTL_S = 60, 30 * 24 * 3600
 REPORT_EVERY_S = 60
 LIST_CAP = 500
+BATCH_MAX = 50
+BLOCKS_EVERY_S = 10
+BLOCKS_CHUNK = 150
+BLOCKS_BACKFILL_S = 3600
+OWN_STATUSES = {"REGEX", "DENYLIST", "REGEX_CNAME", "DENYLIST_CNAME"}
+LIST_STATUSES = {"GRAVITY", "GRAVITY_CNAME"}
 
 
 @dataclass
@@ -23,6 +30,7 @@ class ExecConfig:
     pihole_password: str
     canary: str
     pihole_ca: str | None = None
+    clients: dict | None = None       # {IP do aparelho na Tailscale: id do aparelho protegido}
 
 
 def _fmt_ttl(s: int) -> str:
@@ -68,12 +76,17 @@ class State:
 
     def __init__(self, path: str):
         self.path = path
-        self.data = {"gateway": None, "consumer": None, "after": 0, "temp": []}
+        self.lock = threading.RLock()
+        self.data = {"gateway": None, "consumer": None, "after": 0, "temp": [], "blocked_since": 0}
         if os.path.exists(path):
             with open(path) as f:
                 self.data.update(json.load(f))
 
     def save(self) -> None:
+        with self.lock:
+            self._save()
+
+    def _save(self) -> None:
         tmp = self.path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -126,6 +139,8 @@ class Executor:
         self.pihole = pihole or Pihole(cfg.pihole_url, cfg.pihole_password, cfg.pihole_ca)
         self.executed: list[dict] = []
         self.last_report = 0.0
+        self._lists: dict | None = None
+        self._lists_ts = 0.0
 
     # --- execução ---------------------------------------------------------------
     def _guard(self, domain) -> str:
@@ -162,6 +177,26 @@ class Executor:
             if ttl:
                 self.state.data["temp"].append({"list": list_, "domain": d, "expires": int(self.now()) + ttl})
             return f"{'liberado' if list_ == 'allow' else 'bloqueado'} {d}" + (f" por {_fmt_ttl(ttl)}" if ttl else " (sem prazo)")
+        if t == "pihole_batch":
+            items = a.get("items")
+            if not isinstance(items, list) or not 1 <= len(items) <= BATCH_MAX:
+                raise ValueError("lote inválido")
+            ok, bad = [], []
+            for it in items:
+                try:
+                    if not isinstance(it, dict):
+                        raise ValueError("item inválido")
+                    d, ttl = self._guard(it.get("domain")), self._ttl(it)
+                    self.pihole.put_domain("allow", d, f"guardian:{who}")
+                    self._drop_temp("allow", d)
+                    if ttl:
+                        self.state.data["temp"].append({"list": "allow", "domain": d, "expires": int(self.now()) + ttl})
+                    ok.append(f"{d} por {_fmt_ttl(ttl)}" if ttl else d)
+                except ValueError as e:
+                    bad.append(f"{str(it.get('domain'))[:60] if isinstance(it, dict) else '?'}: {e}")
+            if bad and not ok:
+                raise ValueError("; ".join(bad))
+            return "liberados: " + ", ".join(ok) + (f" | falharam: {'; '.join(bad)}" if bad else "")
         if t == "pihole_remove":
             if a.get("list") not in ("allow", "deny"):
                 raise ValueError("lista inválida")
@@ -207,13 +242,72 @@ class Executor:
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
              "executed": self.executed[-50:]}
         try:
-            r["allow"], r["deny"] = self.pihole.list_domains("allow")[:LIST_CAP], self.pihole.list_domains("deny")[:LIST_CAP]
+            allow, deny = self.pihole.list_entries("allow"), self.pihole.list_entries("deny")
+            r["allow"], r["deny"] = sorted(e["domain"] for e in allow)[:LIST_CAP], sorted(e["domain"] for e in deny)[:LIST_CAP]
+            r["allow_by"] = {e["domain"]: e["comment"][9:] for e in allow if e["comment"].startswith("guardian:")}
+            r["deny_by"] = {e["domain"]: e["comment"][9:] for e in deny if e["comment"].startswith("guardian:")}
             r["pihole_ok"] = True
         except PiholeError as e:
             r["pihole_ok"], r["pihole_error"] = False, str(e)[:200]
         self.gw.call("POST", f"/v1/devices/{self.dev}/report", r)
         self.executed.clear()
         self.last_report = time.monotonic()
+
+    # --- bloqueios ---------------------------------------------------------------
+    def _list_name(self, list_id) -> str:
+        if self._lists is None or self.now() - self._lists_ts > 600:
+            try:
+                self._lists = self.pihole.list_names()
+            except PiholeError:
+                self._lists = self._lists or {}
+            self._lists_ts = self.now()
+        return self._lists.get(list_id, "") if isinstance(list_id, int) else ""
+
+    def collect_blocks(self) -> int:
+        """Lê no Pi-hole o que foi bloqueado para os aparelhos pareados e envia ao gateway. Devolve quantos domínios."""
+        clients = self.cfg.clients or {}
+        if not clients:
+            return 0
+        since = self.state.data.get("blocked_since") or self.now() - BLOCKS_BACKFILL_S
+        newest = since
+        per_dev: dict[str, dict] = {}
+        for ip, dev in clients.items():
+            for q in self.pihole.queries(since, ip):
+                status, t = q.get("status"), q.get("time")
+                kind = "own" if status in OWN_STATUSES else "list" if status in LIST_STATUSES else None
+                if kind is None or not isinstance(t, (int, float)):
+                    continue
+                newest = max(newest, float(t))
+                cname = str(status).endswith("_CNAME")
+                raw = q.get("cname") if cname and q.get("cname") else q.get("domain")
+                try:
+                    d = domains.normalize(raw)
+                except ValueError:
+                    continue
+                e = per_dev.setdefault(dev, {}).setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t),
+                                                               "src": kind, "list": "", "cname": cname})
+                e["count"] += 1
+                e["first"], e["last"] = min(e["first"], int(t)), max(e["last"], int(t))
+                if kind == "list" and not e["list"]:
+                    e["list"] = self._list_name(q.get("list_id"))
+        total = 0
+        for dev, ents in per_dev.items():
+            items = sorted(ents.values(), key=lambda x: x["last"], reverse=True)
+            for i in range(0, len(items), BLOCKS_CHUNK):
+                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": dev, "items": items[i:i + BLOCKS_CHUNK]})
+            total += len(items)
+        if newest > since:
+            self.state.data["blocked_since"] = newest + 0.000001
+            self.state.save()
+        return total
+
+    def _blocks_loop(self, stop) -> None:
+        while not stop.is_set():
+            try:
+                self.collect_blocks()
+            except (GatewayError, PiholeError) as e:
+                print("bloqueios:", e, file=sys.stderr)
+            stop.wait(BLOCKS_EVERY_S)
 
     # --- laço --------------------------------------------------------------------
     def step(self, wait_s: int = 25) -> int:
@@ -233,6 +327,7 @@ class Executor:
 
     def run(self, stop) -> None:
         delay = 2
+        threading.Thread(target=self._blocks_loop, args=(stop,), daemon=True).start()
         while not stop.is_set():
             try:
                 self.step()

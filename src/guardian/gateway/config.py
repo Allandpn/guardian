@@ -13,7 +13,7 @@ class Config:
     max_connections: int = 64                  # conexões simultâneas (cada uma uma thread)
     max_pending_per_dev: int = 200
     max_poll_s: int = 25
-    session_ttl_s: int = 12 * 3600
+    session_ttl_s: int = 30 * 24 * 3600
     invite_ttl_s: int = 24 * 3600
     challenge_ttl_s: int = 120
     alerts_enabled: bool = True                # avisos por Web Push (aparelho sem sinal, filtro caiu, pedidos…)
