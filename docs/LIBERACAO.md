@@ -1,6 +1,6 @@
 # Fluxo de liberação de domínios
 
-Estado: gateway, executor e site implementados e testados. O app (Kotlin) vem em seguida.
+Estado: implementado e testado (gateway, executor, site e app). Falta validar em hardware real: Pi-hole v6 de verdade (formato de `/api/queries`), IP do aparelho no log e o app num celular.
 
 Objetivo: quem usa o aparelho tenta acessar algo, vê o que o Pi-hole bloqueou, toca em um botão para pedir a liberação, e o guardião libera com o mínimo de passos. Ninguém digita nome de domínio.
 
