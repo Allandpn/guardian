@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/
+# segredos e estado local
+*.pem
+*.key
+*.db
+*.db-wal
+*.db-shm
+state/
+.env

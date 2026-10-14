@@ -1,0 +1,16 @@
+[project]
+name = "guardian"
+version = "0.1.0"
+description = "Sistema guardião do NotToday: gateway, executor do Pi-hole v6 e site de controle"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=42"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"guardian.gateway" = ["static/*"]
