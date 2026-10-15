@@ -552,7 +552,7 @@ async function domainsView(tab) {
   if (tab === 'pedidos') {
     const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
     const info = new Map(blocked.map((b) => [`${b.dev}|${b.domain}`, b]));
-    body = [unb.length ? unb.map((q) => {
+    body = [unb.length ? h('div', { class: 'grid2' }, unb.map((q) => {
       const rows = q.items.filter((i) => i.state === 'open');
       const key = (d) => `${q.id}|${d}`;
       const val = (d) => reqChoice.get(key(d)) || 'always';
@@ -583,7 +583,7 @@ async function domainsView(tab) {
         }),
         h('button', { class: 'btn pri block', type: 'button', style: 'margin-top:12px', onclick: confirm },
           rows.every((i) => val(i.domain) === 'deny') ? 'Negar' : 'Confirmar com passkey'));
-    }) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de liberação.')),
+    })) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de liberação.')),
     otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
       h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
       h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
@@ -640,7 +640,7 @@ async function domainsView(tab) {
         h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null];
   }
   show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
-    h('div', { class: 'wrap' }, segTabs(tabs, tab), body));
+    h('div', { class: 'wrap wide' }, segTabs(tabs, tab), body));
   timer = setTimeout(autoRefresh, 20000);
 }
 

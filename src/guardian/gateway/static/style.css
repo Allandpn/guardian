@@ -48,7 +48,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .top h1 { font-size: 18px; font-weight: 600; flex: 1; padding-left: 8px; }
 .ib { width: 44px; height: 44px; border: 0; border-radius: 10px; background: transparent; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .ib:hover { background: var(--s2); }
-.wrap { max-width: 1100px; margin: 0 auto; padding: 4px 0 12px; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 4px 0 12px; }  /* tablet e celular deitado: linhas curtas e centradas */
 .pad { padding: 0 14px; }
 .cols { display: flex; flex-wrap: wrap; gap: 0 18px; }
 .cols > .list { flex: 1 1 380px; min-width: 0; }
@@ -83,7 +83,7 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 .card > .kvbox { border: 0; padding: 0; margin: 0; }
 .btn.grow { flex: 1; }
 .btn:disabled { opacity: .5; cursor: default; border-style: dashed; }
-.inp, .sel { width: 100%; min-height: 46px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.inp, select.sel { width: 100%; min-height: 46px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 .inp::placeholder { color: var(--muted); }
 textarea.ta { width: 100%; min-height: 96px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text);
   font-family: var(--mono); font-size: 12px; word-break: break-all; resize: vertical; }
@@ -189,4 +189,16 @@ form.f { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin:
   .sticky .sp { flex-basis: 100%; }
   .sticky .btn { flex: 1; }
   body:has(.sticky) #toast { bottom: calc(196px + env(safe-area-inset-bottom, 0px)); }  /* o aviso não cobre a barra de salvar */
+}
+
+/* ---- computador ---- */
+@media (min-width: 900px) {
+  .wrap { max-width: 880px; }
+  .wrap:has(.cols), .wrap.wide { max-width: 1180px; }
+  /* Parear sai do canto (cobria o fim da página) e vai para a barra do topo */
+  .fab { top: 8px; bottom: auto; right: 24px; min-height: 40px; padding: 0 16px; font-size: 14px; box-shadow: none; z-index: 6; }
+}
+@media (min-width: 1100px) {
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4px; align-items: start; }
+  .grid2 > .card { margin-left: 14px; margin-right: 14px; }
 }
