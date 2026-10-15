@@ -12,6 +12,7 @@ const drafts = new Map();    // aparelho -> { chave: novoValor } (regras ainda n
 const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regras abertos
 let selected = null;         // aparelho aberto no painel (computador)
 let pair = null;             // andamento do pareamento
+let inviteRole = 'domains';  // papel escolhido no convite
 let domDur = 0;              // duração do formulário manual de domínio (0 = sem prazo)
 
 const fail = (e) => toast(e && e.message ? e.message : String(e));
@@ -96,6 +97,11 @@ async function confirmSend(dev, type, args, spec) {
   return (await sendCommand(dev, type, args)) || true;
 }
 const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
+const isAdmin = () => !!me && me.guardian.role === 'admin';
+const canSee = (k) => isAdmin() || !!(me && me.guardian.see && me.guardian.see[k]);
+const SEE_LABELS = [['devices', 'Estado dos aparelhos'], ['rules', 'Regras (só leitura)'], ['apps', 'Apps (só leitura)'], ['history', 'Histórico completo']];
+/** Confiança que vai na string de pareamento: o aparelho só precisa dos administradores; o executor, de todos. */
+const trustFor = (kind) => Object.fromEntries(Object.entries(me.trust).filter(([, g]) => kind === 'executor' || g.role !== 'domains'));
 
 // ---------- dados ----------
 async function loadAll() {
@@ -133,9 +139,11 @@ function renderNav(active) {
   if (!me) return;
   const item = (href, label, ic, key, badge) => h('a', { class: 'navitem' + (active === key ? ' on' : ''), href, 'aria-current': active === key ? 'page' : null },
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
-  nav.replaceChildren(h('div', { class: 'brand' }, 'NotToday Guardian'),
-    item('#/', 'Início', 'home', 'home', counts.apps), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
-    item('#/people', 'Pessoas', 'people', 'people', counts.cosign), item('#/history', 'Histórico', 'clock', 'history', 0),
+  const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', counts.apps), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
+    item('#/people', 'Pessoas', 'people', 'people', counts.cosign), item('#/history', 'Histórico', 'clock', 'history', 0)] :
+    [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
+      item('#/history', 'Histórico', 'clock', 'history', 0), item('#/people', 'Conta', 'people', 'people', 0)];
+  nav.replaceChildren(h('div', { class: 'brand' }, 'NotToday Guardian'), ...items.filter(Boolean),
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
 }
 
@@ -205,7 +213,7 @@ async function inicioView() {
   const cos = aw.filter((c) => c.can_cosign);
   if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/people' });
   if (reqs.length) todos.push({ n: reqs.length, title: 'Pedidos dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains/pedidos' });
-  for (const d of devices) {
+  for (const d of isAdmin() ? devices : []) {
     const r = d.report || {};
     const apps = r.pendingApps || [];
     if (apps.length) todos.push({ n: apps.length, title: 'Apps aguardando aprovação', sub: `${d.name}${apps.some((a) => (a.risks || []).length) ? ' · com risco' : ''}`, href: `#/device/${d.id}/apps` });
@@ -231,7 +239,7 @@ async function inicioView() {
     resumoNodes(sel, now)) : null;
 
   show(top('Início'), h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)),
-    h('a', { class: 'fab', href: '#/pair' }, icon('plus', 20), 'Parear'));
+    isAdmin() ? h('a', { class: 'fab', href: '#/pair' }, icon('plus', 20), 'Parear') : null);
   timer = setTimeout(route, 20000);
 }
 
@@ -260,6 +268,7 @@ async function deviceView(id, tab) {
   renderNav('home');
   const d = devices.find((x) => x.id === id);
   if (!d) { show(top('Aparelho', { back: '#/' }), h('p', { class: 'empty' }, 'Aparelho não encontrado.')); return; }
+  if (!isAdmin()) return deviceReadOnly(d, now);
   const base = `#/device/${id}`;
   const tabs = d.kind === 'executor' ? [[base, 'Resumo', 'resumo'], [`${base}/avancado`, 'Avançado', 'avancado']] :
     [[base, 'Resumo', 'resumo'], [`${base}/regras`, 'Regras', 'regras'], [`${base}/apps`, 'Apps', 'apps'], [`${base}/avancado`, 'Avançado', 'avancado']];
@@ -270,6 +279,35 @@ async function deviceView(id, tab) {
   else { tab = 'resumo'; body = d.kind === 'executor' ? executorNodes(d, now) : resumoNodes(d, now); }
   show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, deviceBanner(d, now), segTabs(tabs, tab), body));
   if (tab !== 'regras') timer = setTimeout(route, 20000);
+}
+
+/** O que um guardião de domínios vê de um aparelho: só o que o administrador liberou, sem nenhuma ação. */
+function deviceReadOnly(d, now) {
+  const r = d.report || {};
+  const parts = [];
+  if (d.kind === 'executor') parts.push(h('div', { class: 'card' }, h('a', { class: 'btn pri', href: '#/domains', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Abrir domínios')));
+  if (canSee('devices')) parts.unshift(deviceBanner(d, now));
+  if (canSee('rules') && r.snapshot) {
+    const labels = r.labels || {};
+    const groups = new Map();
+    for (const [k, v] of Object.entries(r.snapshot)) {
+      const g = (r.groups || {})[k] || 'Outras';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push([ruleLabel(k, labels), fmtVal(String(v))]);
+    }
+    for (const [g, rows] of groups) parts.push(h('div', { class: 'sec' }, g), h('div', { class: 'card' }, kvRows(rows)));
+  }
+  if (canSee('apps')) {
+    const pend = r.pendingApps || [];
+    const ok = r.approvedApps || [];
+    parts.push(h('div', { class: 'sec' }, `Apps aguardando · ${pend.length}`),
+      h('div', { class: 'card' }, pend.length ? kvRows(pend.map((a) => [a.label || a.pkg, (a.risks || []).join(', ') || 'sem risco aparente'])) : h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum.')),
+      h('div', { class: 'sec' }, `Apps aprovados · ${ok.length}`),
+      h('div', { class: 'card' }, ok.length ? kvRows(ok.map((a) => [a.label || a.pkg, a.pkg])) : h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum.')));
+  }
+  if (!parts.length) parts.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O administrador não liberou a visualização deste aparelho.')));
+  show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, parts, h('p', { class: 'muted', style: 'margin:12px 14px' }, 'Somente leitura.')));
+  timer = setTimeout(route, 20000);
 }
 
 function executorNodes(d, now) {
@@ -638,7 +676,10 @@ async function peopleView() {
   const missing = (d) => {
     const have = (d.report && d.report.trust) || {};
     const out = [];
-    for (const [gid, g] of gs) for (const cred of Object.keys(g.creds)) if (!(have[gid] || []).includes(cred)) out.push({ gid, g, cred });
+    for (const [gid, g] of gs) {
+      if (d.kind !== 'executor' && g.role === 'domains') continue;  // o aparelho não precisa conhecer guardiões de domínios
+      for (const cred of Object.keys(g.creds)) if (!(have[gid] || []).includes(cred)) out.push({ gid, g, cred });
+    }
     return out;
   };
   const propagate = (d) => act(async () => {
@@ -648,37 +689,61 @@ async function peopleView() {
       note: `Serão ${miss.length} toque(s) de passkey, um por item.`, noteKind: 'warn' }))) return;
     const seen = new Set(Object.keys((d.report && d.report.trust) || {}));
     for (const m of miss) {
-      if (!seen.has(m.gid)) { await sendCommand(d.id, 'add_guardian', { id: m.gid, name: m.g.name, cred: m.cred, spki: m.g.creds[m.cred] }); seen.add(m.gid); }
+      if (!seen.has(m.gid)) { await sendCommand(d.id, 'add_guardian', { id: m.gid, name: m.g.name, cred: m.cred, spki: m.g.creds[m.cred], role: m.g.role || 'admin' }); seen.add(m.gid); }
       else await sendCommand(d.id, 'add_credential', { id: m.gid, cred: m.cred, spki: m.g.creds[m.cred] });
     }
     route();
   });
   const out = h('div', {});
-  const link = (kind, name) => act(async () => {
-    const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}) });
+  const link = (kind, name, role) => act(async () => {
+    const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}), ...(role ? { role } : {}) });
     const text = `${me.origin}/#invite=${r.token}`;
     out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
       h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text))));
   });
   const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', 'aria-label': 'Nome do guardião' });
+  const myCreds = Object.keys((me.trust[me.guardian.id] || { creds: {} }).creds).length;
   const cos = aw.filter((c) => c.can_cosign);
   show(top('Pessoas'), h('div', { class: 'wrap' },
     h('div', { class: 'sec' }, 'Guardiões'),
+    myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
+      h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é administrador e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
+      h('button', { class: 'btn pri', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey')) : null,
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, gs.map(([gid, g]) => {
       const n = Object.keys(g.creds).length;
-      return h('div', { class: 'li' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
-        h('div', { class: 'sp' }, h('strong', {}, g.name), gid === me.guardian.id ? ' ' : null, gid === me.guardian.id ? chip('você') : null,
-          n < 2 ? h('div', { class: 'muted', style: 'color:var(--orange)' }, 'Só 1 passkey: se perder o celular, perde o acesso.') : null),
-        chip(`${n} passkey${n === 1 ? '' : 's'}`, n < 2 ? 'warn' : 'ok'),
-        gid !== me.guardian.id && gs.length > 1 ? h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
-          if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões + espera', effectKind: 'warn',
-            note: 'Exige a co-assinatura do outro guardião e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
-          for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
-          route();
-        }) }, 'Remover') : null);
+      const dom = g.role === 'domains';
+      const see = (me.see_of || {})[gid] || {};
+      const removeDomain = act(async () => {
+        const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
+        if (!(await sheet({ title: `Remover ${g.name}?`, rows: [['Guardião', g.name], ['Papel', 'domínios'], ['Aparelhos que confiam', String(on.length)]], effect: 'vale na hora', effectKind: 'ok',
+          note: on.length ? `Um toque de passkey por aparelho (${on.length}). O acesso ao site acaba na hora.` : 'O acesso ao site acaba na hora.', confirm: 'Remover', danger: true }))) return;
+        for (const d of on) await sendCommand(d.id, 'remove_guardian', { id: gid });
+        await api('POST', `/v1/guardians/${gid}/remove`, {});
+        toast(`${g.name} removido.`);
+        route();
+      });
+      return h('div', { class: 'li', style: 'flex-wrap:wrap' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
+        h('div', { class: 'sp' }, h('strong', {}, g.name), ' ', gid === me.guardian.id ? chip('você') : null, ' ', chip(dom ? 'domínios' : 'admin', dom ? '' : 'ok'),
+          h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
+        gid === me.guardian.id ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
+          h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
+            if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover administrador'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois administradores + espera', effectKind: 'warn',
+              note: 'Exige a co-assinatura do outro administrador e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
+            for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
+            route();
+          }) }, 'Remover'),
+        dom ? h('div', { style: 'flex-basis:100%;padding:4px 0 6px 46px' }, h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Pode ver, além de domínios:'),
+          h('div', { class: 'durs', role: 'group', 'aria-label': `O que ${g.name} pode ver` }, SEE_LABELS.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(!!see[k]),
+            onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))) : null);
     })),
-    h('div', { class: 'card' }, h('div', { class: 'row' }, nm, h('button', { class: 'btn pri', type: 'button', style: 'flex:none', onclick: act(async () => { if (!nm.value.trim()) throw new Error('Digite o nome.'); await link('new_guardian', nm.value.trim())(); }) }, 'Convidar')),
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn grow', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outro passkey para mim'))),
+    h('div', { class: 'sec' }, 'Convidar guardião'),
+    h('div', { class: 'card' }, nm,
+      h('div', { class: 'durs', role: 'group', 'aria-label': 'Papel do convidado' },
+        [['domains', 'Só domínios'], ['admin', 'Administrador']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
+      h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
+        'Libera e bloqueia sites e responde aos pedidos. Não mexe em regras, apps, PIN nem pessoas. O que mais ele pode ver você escolhe depois.'),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => { if (!nm.value.trim()) throw new Error('Digite o nome.'); await link('new_guardian', nm.value.trim(), inviteRole)(); }) }, 'Gerar link de convite')),
+      myCreds < 2 ? null : h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn grow', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey para mim'))),
     out,
     h('div', { class: 'sec' }, 'Confiança nos aparelhos'),
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, devices.length ? devices.map((d) => {
@@ -698,6 +763,44 @@ async function peopleView() {
         toast('Co-assinado.');
         route();
       }) }, 'Co-assinar') : chip('aguardando o outro guardião'))) : h('p', { class: 'muted', style: 'margin:10px 0' }, cos.length ? '' : 'Nenhuma.')),
+    h('div', { class: 'sec' }, 'Notificações neste aparelho'), await pushCard(),
+    h('div', { class: 'pad', style: 'margin-top:14px' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair'))));
+}
+
+// ---------- conta (guardião de domínios) ----------
+async function contaView() {
+  me = await api('GET', '/v1/me');
+  const { devices } = await loadAll();
+  renderNav('people');
+  const gid = me.guardian.id;
+  const creds = me.trust[gid] ? me.trust[gid].creds : {};
+  const n = Object.keys(creds).length;
+  const ex = devices.find((x) => x.kind === 'executor');
+  const exHave = ex ? (((ex.report || {}).trust || {})[gid] || null) : null;
+  const miss = exHave ? Object.keys(creds).filter((c) => !exHave.includes(c)) : [];
+  const out = h('div', {});
+  const invite = act(async () => {
+    const r = await api('POST', '/v1/invites', { kind: 'add_passkey' });
+    const text = `${me.origin}/#invite=${r.token}`;
+    out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Abra este link no outro celular ou com a chave física (vale 24 h, uso único):'),
+      h('textarea', { class: 'ta', readonly: true }, text), h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text))));
+  });
+  const seen = SEE_LABELS.filter(([k]) => canSee(k)).map(([, label]) => label);
+  show(top('Conta'), h('div', { class: 'wrap' },
+    h('div', { class: 'card' }, h('div', { class: 'row' }, h('div', { class: 'av' }, me.guardian.name.slice(0, 1).toUpperCase()),
+      h('div', { class: 'sp' }, h('strong', {}, me.guardian.name), h('div', { class: 'muted' }, 'guardião de domínios')), chip('domínios'))),
+    h('div', { class: 'sec' }, 'Minhas passkeys'),
+    h('div', { class: 'card' + (n < 2 ? ' warnb' : '') }, h('p', { style: 'margin:0 0 10px' }, `${n} passkey${n === 1 ? '' : 's'} cadastrada${n === 1 ? '' : 's'}.` + (n < 2 ? ' Cadastre outra para não perder o acesso se trocar de celular.' : '')),
+      h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: invite }, 'Cadastrar outra passkey')),
+    out,
+    ex && miss.length ? h('div', { class: 'card warnb' }, h('p', { style: 'margin:0 0 10px' }, `O executor ainda não conhece ${miss.length} passkey${miss.length > 1 ? 's' : ''} sua${miss.length > 1 ? 's' : ''}.`),
+      h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+        for (const c of miss) await sendCommand(ex.id, 'add_credential', { id: gid, cred: c, spki: creds[c] });
+        route();
+      }) }, 'Propagar ao executor')) : null,
+    ex && !exHave ? h('div', { class: 'card warnb' }, h('p', { style: 'margin:0' }, 'O executor ainda não confia em você. Peça ao administrador para abrir Pessoas e tocar em Propagar.')) : null,
+    h('div', { class: 'sec' }, 'O que você pode ver'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, ['Domínios', ...seen].join(' · ') + '. Quem define é o administrador.')),
     h('div', { class: 'sec' }, 'Notificações neste aparelho'), await pushCard(),
     h('div', { class: 'pad', style: 'margin-top:14px' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair'))));
 }
@@ -761,7 +864,7 @@ async function pairView() {
   const { devices } = await loadAll();
   renderNav('home');
   if (!pair) pair = { step: 1, kind: 'device' };
-  const names = Object.values(me.trust).map((g) => `${g.name} (${Object.keys(g.creds).length} passkey${Object.keys(g.creds).length === 1 ? '' : 's'})`).join(', ');
+  const names = Object.values(trustFor(pair.kind)).map((g) => `${g.name} (${Object.keys(g.creds).length} passkey${Object.keys(g.creds).length === 1 ? '' : 's'})`).join(', ');
   const steps = STEPS[pair.kind];
   const card = (n, title, detail, body) => {
     const state = n < pair.step ? 'done' : n === pair.step ? 'cur' : 'lock';
@@ -779,7 +882,7 @@ async function pairView() {
     h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
       const before = devices.map((d) => d.id);
       const r = await api('POST', '/v1/pairings', { kind: pair.kind });
-      pair = { ...pair, step: 2, before, string: pairingString(me.origin, me.rp_id, r.token, me.trust) };
+      pair = { ...pair, step: 2, before, string: pairingString(me.origin, me.rp_id, r.token, trustFor(pair.kind)) };
       route();
     }) }, 'Gerar código')]));
 
@@ -864,10 +967,11 @@ async function route() {
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);
-    else if (hash === '#/people') await peopleView();
+    else if (hash === '#/people') await (isAdmin() ? peopleView() : contaView());
     else if (his) await historyView(his[1]);
-    else if (hash === '#/pair') await pairView();
-    else await inicioView();
+    else if (hash === '#/pair' && isAdmin()) await pairView();
+    else if (isAdmin() || canSee('devices')) await inicioView();
+    else await domainsView();
   } catch (e) {
     if (e.status === 401) { me = null; nav.hidden = true; return loginView(); }
     show(top('Erro'), h('div', { class: 'card badb' }, e.message));

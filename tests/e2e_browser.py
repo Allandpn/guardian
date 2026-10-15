@@ -283,9 +283,65 @@ def main():
         # 9) pessoas e histórico
         page.goto(f"{origin}/#/people")
         page.get_by_role("heading", name="Pessoas").wait_for()
-        page.get_by_text("Só 1 passkey").wait_for()
+        page.get_by_text("Cadastre uma chave de reserva").wait_for()
         shot("12-pessoas", PHONE)
         back()
+
+        # 10) guardião só de domínios, num segundo navegador
+        page.get_by_placeholder("nome do guardião").fill("Bia")
+        page.get_by_role("button", name="Gerar link de convite").click()
+        link = page.locator("textarea").first.input_value()
+        ctx2 = browser.new_context(viewport=PHONE)
+        page2 = ctx2.new_page()
+        page2.on("pageerror", lambda e: logs.append("PAGEERROR2 " + str(e)))
+        cdp2 = ctx2.new_cdp_session(page2)
+        cdp2.send("WebAuthn.enable")
+        cdp2.send("WebAuthn.addVirtualAuthenticator", {"options": {
+            "protocol": "ctap2", "transport": "internal", "hasResidentKey": True, "hasUserVerification": True,
+            "isUserVerified": True, "automaticPresenceSimulation": True}})
+        page2.goto(link)
+        page2.get_by_role("button", name="Cadastrar passkey").click()
+        page2.get_by_role("heading", name="Domínios").wait_for(timeout=10000)
+        navtext = page2.locator("#nav").inner_text()
+        out["domain_guardian_nav"] = "Conta" in navtext and "Pessoas" not in navtext and "Início" not in navtext
+        page.reload()
+        page.get_by_text("Bia").first.wait_for(timeout=10000)
+        exrow = page.locator(".li", has_text="executor")
+        exrow.get_by_role("button", name="Propagar").click()
+        sign()
+        run_executor(lambda: any(g.name == "Bia" for g in ex.consumer.trust.guardians.values()))
+        ana = next((g for g in ex.consumer.trust.guardians.values() if g.name == "Bia"), None)
+        out["executor_knows_domain_role"] = bool(ana) and ana.role == "domains"
+        ex.report()
+        page.reload()
+        devrow = page.locator(".li", has_text="Tab S8")
+        devrow.wait_for(timeout=10000)
+        out["device_does_not_need_domain_guardian"] = "Bia" not in devrow.inner_text()
+        shot("17-pessoas-papeis", PHONE)
+        back()
+        fake.queries.append({"time": _t.time() - 5, "domain": "escola.exemplo.com", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
+        ex.collect_blocks()
+        page2.goto(f"{origin}/#/domains/bloqueios")
+        row = page2.locator(".li", has_text="escola.exemplo.com")
+        row.get_by_role("button", name="Liberar").click()
+        page2.get_by_role("dialog").get_by_role("button", name="Assinar", exact=False).click(timeout=8000)
+        page2.get_by_role("dialog").wait_for(state="detached", timeout=10000)
+        run_executor(lambda: "escola.exemplo.com" in fake.lists["allow"])
+        out["domain_guardian_allowed"] = "escola.exemplo.com" in fake.lists["allow"]
+        page2.goto(f"{origin}/#/device/{dev}")
+        page2.get_by_text("não liberou a visualização").wait_for(timeout=10000)
+        page.goto(f"{origin}/#/people")
+        page.get_by_role("group", name="O que Bia pode ver").get_by_role("button", name="Estado dos aparelhos").click()
+        page.get_by_role("group", name="O que Bia pode ver").get_by_role("button", name="Estado dos aparelhos", pressed=True).wait_for(timeout=10000)
+        page2.goto(f"{origin}/#/device/{dev}")
+        page2.reload()
+        page2.get_by_text("Filtro CONFIRMADO").wait_for(timeout=10000)
+        out["visibility_toggle"] = True
+        page2.goto(f"{origin}/#/people")
+        page2.get_by_role("heading", name="Conta").wait_for(timeout=10000)
+        if shots:
+            page2.screenshot(path=os.path.join(shots, "18-conta.png"), full_page=True)
+        ctx2.close()
         page.goto(f"{origin}/#/history")
         page.get_by_text("liberar domínio").first.wait_for(timeout=10000)
         out["history_ui"] = True
@@ -296,7 +352,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 
