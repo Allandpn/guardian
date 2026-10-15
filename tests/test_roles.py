@@ -23,7 +23,7 @@ class Roles(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.env = Env()
-        # o primeiro guardião é sempre administrador, mesmo com convite de outro papel
+        # o primeiro guardião é sempre guardião-mor, mesmo com convite de outro papel
         cls.c, cls.a, cls.gid = register(cls.env, create_invite(cls.env.store, "new_guardian", None, "Allan", 3600, "domains"))
         st, inv, _ = cls.c.call("POST", "/v1/invites", {"kind": "new_guardian", "name": "Ana"})  # padrão: domínios
         assert st == 200, inv

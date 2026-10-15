@@ -44,7 +44,7 @@ Envelope: `{ "payload": b64url(bytes), "sigs": [ {guardian, cred, authenticatorD
 
 1. `payload` ≤ 8 KiB, JSON válido, `v == 1`, campos `dev`, `guardian`, `type` (texto), `args` (objeto), `ctr` (inteiro ≥ 1).
 2. 1 a 4 assinaturas; todas válidas; guardiões distintos formam o conjunto de signatários; `guardian` do payload está nele.
-3. Papel e quórum: cada guardião na confiança tem `role` (`admin` ou `domains`; sem o campo vale `admin`). Um guardião `domains` só assina `pihole_allow`, `pihole_deny`, `pihole_remove`, `pihole_batch` e `add_credential` para o próprio `id`; qualquer outro comando dele é recusado. `remove_guardian` exige **2 administradores distintos** quando há 2+ administradores; os demais tipos exigem 1. Veja docs/PAPEIS.md.
+3. Papel e quórum: cada guardião na confiança tem `role` (`admin` ou `domains`; sem o campo vale `admin`). Um guardião `domains` só assina `pihole_allow`, `pihole_deny`, `pihole_remove`, `pihole_batch` e `add_credential` para o próprio `id`; qualquer outro comando dele é recusado. `remove_guardian` exige **2 guardiões-mor distintos** quando há 2+ guardiões-mor; os demais tipos exigem 1. Veja docs/PAPEIS.md.
 4. `dev` do payload é o id do próprio consumidor.
 5. `ctr > último ctr aceito` para aquele `guardian` (contador **por guardião**, persistido, sobrevive a reinício). Aceitar grava o novo contador mesmo que a execução falhe.
 
@@ -53,7 +53,7 @@ Afrouxar passa pelo `Gate` do aparelho (atraso); isso é do consumidor, não do 
 ## Catálogo de comandos
 
 Confiança (todo consumidor): `add_guardian {id,name,cred,spki,role}` (`role` obrigatório; só admin) · `add_credential {id,cred,spki}` ·
-`remove_guardian {id}` (só admin; nunca remove o último administrador; no aparelho, remover um admin passa pelo atraso e remover um guardião `domains` vale na hora).
+`remove_guardian {id}` (só admin; nunca remove o último guardião-mor; no aparelho, remover um admin passa pelo atraso e remover um guardião `domains` vale na hora).
 
 Aparelho: `set_config {patch:{chave:valor}}` (passa por `Gate.split`) · `confirm {kind}` · `cancel {kind}`
 (`kind` = `SETTINGS|RELEASE|MAINTENANCE`) · `approve_app {pkg}` · `revoke_app {pkg}` · `request_maintenance {}` ·

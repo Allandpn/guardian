@@ -123,7 +123,7 @@ class CommandTests(unittest.TestCase):
         self.assertNotIn("cris", c.trust.guardians)
         c.apply_trust({"type": "remove_guardian", "args": {"id": "bia"}})
         with self.assertRaises(CommandError):
-            c.apply_trust({"type": "remove_guardian", "args": {"id": "ana"}})  # último administrador
+            c.apply_trust({"type": "remove_guardian", "args": {"id": "ana"}})  # último guardião-mor
         for bad in ({"id": "x", "name": "X", "cred": "c", "spki": "s"}, {"id": "x", "name": "X", "cred": "c", "spki": "s", "role": "root"}):
             with self.assertRaises(CommandError):  # papel ausente ou inválido
                 c.apply_trust({"type": "add_guardian", "args": bad})
@@ -145,11 +145,11 @@ class CommandTests(unittest.TestCase):
             with self.assertRaises(CommandError, msg=t):
                 verify_envelope(trust, env("dora", dom, t, a))
         verify_envelope(trust, env("dora", dom, "add_credential", {"id": "dora"}))  # passkey nova para si mesma
-        # a assinatura de um guardião de domínios não conta para o quórum de administradores
+        # a assinatura de um guardião não conta para o quórum de guardiões-mor
         with self.assertRaises(CommandError):
             verify_envelope(trust, env("ana", self.a, "remove_guardian", {"id": "bia"}, ("dora", dom)))
         verify_envelope(trust, env("ana", self.a, "remove_guardian", {"id": "bia"}, ("bia", self.b)))
-        # com um administrador só, ele remove sozinho; nunca o último administrador
+        # com um guardião-mor só, ele remove sozinho; nunca o último guardião-mor
         solo = trust_with(("ana", self.a))
         solo.guardians["dora"] = Guardian("Dora", {dom.cred_id_b64: b64.enc(dom.spki)}, "domains")
         verify_envelope(solo, env("ana", self.a, "remove_guardian", {"id": "dora"}))
@@ -157,7 +157,7 @@ class CommandTests(unittest.TestCase):
         c.apply_trust({"type": "remove_guardian", "args": {"id": "dora"}})
         with self.assertRaises(CommandError):
             c.apply_trust({"type": "remove_guardian", "args": {"id": "ana"}})
-        # papel sobrevive à serialização; confiança antiga (sem papel) é de administrador
+        # papel sobrevive à serialização; confiança antiga (sem papel) é de guardião-mor
         j = json.loads(json.dumps(trust.to_json()))
         self.assertEqual(Trust.from_json(j).guardians["dora"].role, "domains")
         del j["guardians"]["ana"]["role"]

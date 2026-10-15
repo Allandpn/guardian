@@ -23,7 +23,7 @@ from .limits import Limiter, NonceCache
 DEVICE_TYPES = {"set_config", "confirm", "cancel", "approve_app", "revoke_app", "request_maintenance",
                 "set_dev_policy", "set_pin", "set_dev_pin", "activate"} | cmds.TRUST_TYPES
 EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.TRUST_TYPES
-SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião de domínios ver
+SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião ver
 STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet"}
 RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows"}
 APP_KEYS = {"pendingApps", "approvedApps"}
@@ -294,7 +294,7 @@ class Gateway:
     def admin(self, req: Req) -> str:
         gid, role, _ = self.who(req)
         if role != "admin":
-            raise HttpError(403, "só o administrador")
+            raise HttpError(403, "só o guardião-mor")
         return gid
 
     def trust(self) -> cmds.Trust:
@@ -428,7 +428,7 @@ class Gateway:
         if kind not in ("new_guardian", "add_passkey"):
             raise HttpError(400, "tipo de convite inválido")
         if kind == "new_guardian" and role != "admin":
-            raise HttpError(403, "só o administrador convida")
+            raise HttpError(403, "só o guardião-mor convida")
         new_role = d.get("role", "domains")
         if new_role not in cmds.ROLES:
             raise HttpError(400, "papel inválido")
@@ -490,7 +490,7 @@ class Gateway:
         g = trust.guardians.get(gid)
         if g and g.role != "admin" and cmd["type"] not in cmds.DOMAIN_TYPES and not (
                 cmd["type"] == cmds.T_ADD_CREDENTIAL and cmd["args"].get("id") == gid):
-            raise HttpError(403, "o guardião de domínios não pode mandar este comando")
+            raise HttpError(403, "o guardião não pode mandar este comando")
         allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES
         if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or cmd["type"] not in allowed:
             raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
@@ -561,7 +561,7 @@ class Gateway:
         self.admin(req)
         g = self.store.guardian(gid)
         if not g or g["role"] == "admin":
-            raise HttpError(404, "guardião de domínios não encontrado")
+            raise HttpError(404, "guardião não encontrado")
         d = req.json()
         see = {k: bool(d.get(k)) for k in SEE_FLAGS}
         self.store.set_see(gid, see)
@@ -574,7 +574,7 @@ class Gateway:
         if not g:
             raise HttpError(404, "guardião não encontrado")
         if gid == me or (g["role"] == "admin" and self.store.admin_count() <= 1):
-            raise HttpError(400, "não remove o último administrador nem a si mesmo")
+            raise HttpError(400, "não remove o último guardião-mor nem a si mesmo")
         self.store.delete_guardian(gid)
         with self.lock:
             self.sessions = {k: v for k, v in self.sessions.items() if v[0] != gid}
@@ -653,7 +653,7 @@ class Gateway:
         if not row:
             raise HttpError(404, "pedido não encontrado")
         if role != "admin" and row["kind"] not in ("domain", "unblock"):
-            raise HttpError(403, "só o administrador")
+            raise HttpError(403, "só o guardião-mor")
         self.store.dismiss_request(int(rid))
         return 200, {"ok": True}, {}
 

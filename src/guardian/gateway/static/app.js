@@ -100,7 +100,7 @@ const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
 const isAdmin = () => !!me && me.guardian.role === 'admin';
 const canSee = (k) => isAdmin() || !!(me && me.guardian.see && me.guardian.see[k]);
 const SEE_LABELS = [['devices', 'Estado dos aparelhos'], ['rules', 'Regras (só leitura)'], ['apps', 'Apps (só leitura)'], ['history', 'Histórico completo']];
-/** Confiança que vai na string de pareamento: o aparelho só precisa dos administradores; o executor, de todos. */
+/** Confiança que vai na string de pareamento: o aparelho só precisa dos guardiões-mor; o executor, de todos. */
 const trustFor = (kind) => Object.fromEntries(Object.entries(me.trust).filter(([, g]) => kind === 'executor' || g.role !== 'domains'));
 
 // ---------- dados ----------
@@ -289,7 +289,7 @@ async function deviceView(id, tab) {
   if (tab !== 'regras') timer = setTimeout(autoRefresh, 20000);
 }
 
-/** O que um guardião de domínios vê de um aparelho: só o que o administrador liberou, sem nenhuma ação. */
+/** O que um guardião vê de um aparelho: só o que o guardião-mor liberou, sem nenhuma ação. */
 function deviceReadOnly(d, now) {
   const r = d.report || {};
   const parts = [];
@@ -313,7 +313,7 @@ function deviceReadOnly(d, now) {
       h('div', { class: 'sec' }, `Apps aprovados · ${ok.length}`),
       h('div', { class: 'card' }, ok.length ? kvRows(ok.map((a) => [a.label || a.pkg, a.pkg])) : h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum.')));
   }
-  if (!parts.length) parts.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O administrador não liberou a visualização deste aparelho.')));
+  if (!parts.length) parts.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O guardião-mor não liberou a visualização deste aparelho.')));
   show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, parts, h('p', { class: 'muted', style: 'margin:12px 14px' }, 'Somente leitura.')));
   timer = setTimeout(autoRefresh, 20000);
 }
@@ -685,7 +685,7 @@ async function peopleView() {
     const have = (d.report && d.report.trust) || {};
     const out = [];
     for (const [gid, g] of gs) {
-      if (d.kind !== 'executor' && g.role === 'domains') continue;  // o aparelho não precisa conhecer guardiões de domínios
+      if (d.kind !== 'executor' && g.role === 'domains') continue;  // o aparelho não precisa conhecer guardiões
       for (const cred of Object.keys(g.creds)) if (!(have[gid] || []).includes(cred)) out.push({ gid, g, cred });
     }
     return out;
@@ -715,7 +715,7 @@ async function peopleView() {
   show(top('Pessoas'), h('div', { class: 'wrap' },
     h('div', { class: 'sec' }, 'Guardiões'),
     myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
-      h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é administrador e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
+      h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é o guardião-mor e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
       h('button', { class: 'btn pri', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey')) : null,
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, gs.map(([gid, g]) => {
       const n = Object.keys(g.creds).length;
@@ -723,7 +723,7 @@ async function peopleView() {
       const see = (me.see_of || {})[gid] || {};
       const removeDomain = act(async () => {
         const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
-        if (!(await sheet({ title: `Remover ${g.name}?`, rows: [['Guardião', g.name], ['Papel', 'domínios'], ['Aparelhos que confiam', String(on.length)]], effect: 'vale na hora', effectKind: 'ok',
+        if (!(await sheet({ title: `Remover ${g.name}?`, rows: [['Guardião', g.name], ['Papel', 'guardião'], ['Aparelhos que confiam', String(on.length)]], effect: 'vale na hora', effectKind: 'ok',
           note: on.length ? `Um toque de passkey por aparelho (${on.length}). O acesso ao site acaba na hora.` : 'O acesso ao site acaba na hora.', confirm: 'Remover', danger: true }))) return;
         for (const d of on) await sendCommand(d.id, 'remove_guardian', { id: gid });
         await api('POST', `/v1/guardians/${gid}/remove`, {});
@@ -731,12 +731,12 @@ async function peopleView() {
         route();
       });
       return h('div', { class: 'li', style: 'flex-wrap:wrap' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
-        h('div', { class: 'sp' }, h('strong', {}, g.name), ' ', gid === me.guardian.id ? chip('você') : null, ' ', chip(dom ? 'domínios' : 'admin', dom ? '' : 'ok'),
+        h('div', { class: 'sp' }, h('strong', {}, g.name), ' ', gid === me.guardian.id ? chip('você') : null, ' ', chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok'),
           h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
         gid === me.guardian.id ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
           h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
-            if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover administrador'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois administradores + espera', effectKind: 'warn',
-              note: 'Exige a co-assinatura do outro administrador e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
+            if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
+              note: 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
             for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
             route();
           }) }, 'Remover'),
@@ -747,7 +747,7 @@ async function peopleView() {
     h('div', { class: 'sec' }, 'Convidar guardião'),
     h('div', { class: 'card' }, nm,
       h('div', { class: 'durs', role: 'group', 'aria-label': 'Papel do convidado' },
-        [['domains', 'Só domínios'], ['admin', 'Administrador']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
+        [['domains', 'Guardião (só domínios)'], ['admin', 'Guardião-mor']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
         'Libera e bloqueia sites e responde aos pedidos. Não mexe em regras, apps, PIN nem pessoas. O que mais ele pode ver você escolhe depois.'),
       h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => { if (!nm.value.trim()) throw new Error('Digite o nome.'); await link('new_guardian', nm.value.trim(), inviteRole)(); }) }, 'Gerar link de convite')),
@@ -775,7 +775,7 @@ async function peopleView() {
     h('div', { class: 'pad', style: 'margin-top:14px' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair'))));
 }
 
-// ---------- conta (guardião de domínios) ----------
+// ---------- conta (guardião) ----------
 async function contaView() {
   me = await api('GET', '/v1/me');
   const { devices } = await loadAll();
@@ -796,7 +796,7 @@ async function contaView() {
   const seen = SEE_LABELS.filter(([k]) => canSee(k)).map(([, label]) => label);
   show(top('Conta'), h('div', { class: 'wrap' },
     h('div', { class: 'card' }, h('div', { class: 'row' }, h('div', { class: 'av' }, me.guardian.name.slice(0, 1).toUpperCase()),
-      h('div', { class: 'sp' }, h('strong', {}, me.guardian.name), h('div', { class: 'muted' }, 'guardião de domínios')), chip('domínios'))),
+      h('div', { class: 'sp' }, h('strong', {}, me.guardian.name), h('div', { class: 'muted' }, 'guardião')), chip('guardião'))),
     h('div', { class: 'sec' }, 'Minhas passkeys'),
     h('div', { class: 'card' + (n < 2 ? ' warnb' : '') }, h('p', { style: 'margin:0 0 10px' }, `${n} passkey${n === 1 ? '' : 's'} cadastrada${n === 1 ? '' : 's'}.` + (n < 2 ? ' Cadastre outra para não perder o acesso se trocar de celular.' : '')),
       h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: invite }, 'Cadastrar outra passkey')),
@@ -806,9 +806,9 @@ async function contaView() {
         for (const c of miss) await sendCommand(ex.id, 'add_credential', { id: gid, cred: c, spki: creds[c] });
         route();
       }) }, 'Propagar ao executor')) : null,
-    ex && !exHave ? h('div', { class: 'card warnb' }, h('p', { style: 'margin:0' }, 'O executor ainda não confia em você. Peça ao administrador para abrir Pessoas e tocar em Propagar.')) : null,
+    ex && !exHave ? h('div', { class: 'card warnb' }, h('p', { style: 'margin:0' }, 'O executor ainda não confia em você. Peça ao guardião-mor para abrir Pessoas e tocar em Propagar.')) : null,
     h('div', { class: 'sec' }, 'O que você pode ver'),
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, ['Domínios', ...seen].join(' · ') + '. Quem define é o administrador.')),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, ['Domínios', ...seen].join(' · ') + '. Quem define é o guardião-mor.')),
     h('div', { class: 'sec' }, 'Notificações neste aparelho'), await pushCard(),
     h('div', { class: 'pad', style: 'margin-top:14px' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair'))));
 }
