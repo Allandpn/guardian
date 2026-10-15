@@ -154,6 +154,14 @@ async function logout() {
   route();
 }
 
+/** No celular: abre a folha de compartilhar do sistema (WhatsApp, e-mail…). Some onde não há Web Share. */
+function shareBtn(getText, title = 'NotToday Guardian') {
+  if (!navigator.share) return null;
+  return h('button', { class: 'btn', type: 'button', onclick: async () => {
+    try { await navigator.share({ title, text: getText() }); } catch (e) { if (e && e.name !== 'AbortError') toast('Não foi possível compartilhar: copie o texto.'); }
+  } }, 'Compartilhar');
+}
+
 function copyBtn(getText, label = 'Copiar') {
   return h('button', { class: 'btn', type: 'button', onclick: act(async () => {
     try { await navigator.clipboard.writeText(getText()); toast('Copiado.'); } catch (_) { toast('Não foi possível copiar: selecione o texto.'); }
@@ -240,7 +248,7 @@ async function inicioView() {
 
   show(top('Início'), h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)),
     isAdmin() ? h('a', { class: 'fab', href: '#/pair' }, icon('plus', 20), 'Parear') : null);
-  timer = setTimeout(route, 20000);
+  timer = setTimeout(autoRefresh, 20000);
 }
 
 function statusRow(d, now) {
@@ -278,7 +286,7 @@ async function deviceView(id, tab) {
   else if (tab === 'avancado') body = avancadoNodes(d, now);
   else { tab = 'resumo'; body = d.kind === 'executor' ? executorNodes(d, now) : resumoNodes(d, now); }
   show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, deviceBanner(d, now), segTabs(tabs, tab), body));
-  if (tab !== 'regras') timer = setTimeout(route, 20000);
+  if (tab !== 'regras') timer = setTimeout(autoRefresh, 20000);
 }
 
 /** O que um guardião de domínios vê de um aparelho: só o que o administrador liberou, sem nenhuma ação. */
@@ -307,7 +315,7 @@ function deviceReadOnly(d, now) {
   }
   if (!parts.length) parts.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O administrador não liberou a visualização deste aparelho.')));
   show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, parts, h('p', { class: 'muted', style: 'margin:12px 14px' }, 'Somente leitura.')));
-  timer = setTimeout(route, 20000);
+  timer = setTimeout(autoRefresh, 20000);
 }
 
 function executorNodes(d, now) {
@@ -583,7 +591,7 @@ async function domainsView(tab) {
     const qs = new URLSearchParams();
     if (blkDev) qs.set('dev', blkDev);
     if (blkSrc) qs.set('src', blkSrc);
-    const items = (await api('GET', '/v1/blocked' + (qs.size ? `?${qs}` : ''))).items;
+    const items = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items;
     const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
     body = [h('div', { class: 'sec' }, 'Aparelho'),
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Filtrar por aparelho' },
@@ -613,7 +621,7 @@ async function domainsView(tab) {
         rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
         note: name === 'allow' ? 'Volta a valer a regra do Pi-hole para este domínio.' : null }) }, name === 'allow' ? 'Bloquear de novo' : 'Remover')))) :
       h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Vazio.'));
-    const dom = h('input', { class: 'inp', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocomplete: 'off', 'aria-label': 'Domínio' });
+    const dom = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Domínio' });
     const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
     const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
     const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
@@ -633,7 +641,7 @@ async function domainsView(tab) {
   }
   show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
     h('div', { class: 'wrap' }, segTabs(tabs, tab), body));
-  timer = setTimeout(route, 20000);
+  timer = setTimeout(autoRefresh, 20000);
 }
 
 // ---------- pessoas ----------
@@ -699,9 +707,9 @@ async function peopleView() {
     const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}), ...(role ? { role } : {}) });
     const text = `${me.origin}/#invite=${r.token}`;
     out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
-      h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text))));
+      h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text), shareBtn(() => text))));
   });
-  const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', 'aria-label': 'Nome do guardião' });
+  const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião' });
   const myCreds = Object.keys((me.trust[me.guardian.id] || { creds: {} }).creds).length;
   const cos = aw.filter((c) => c.can_cosign);
   show(top('Pessoas'), h('div', { class: 'wrap' },
@@ -783,7 +791,7 @@ async function contaView() {
     const r = await api('POST', '/v1/invites', { kind: 'add_passkey' });
     const text = `${me.origin}/#invite=${r.token}`;
     out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Abra este link no outro celular ou com a chave física (vale 24 h, uso único):'),
-      h('textarea', { class: 'ta', readonly: true }, text), h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text))));
+      h('textarea', { class: 'ta', readonly: true }, text), h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text), shareBtn(() => text))));
   });
   const seen = SEE_LABELS.filter(([k]) => canSee(k)).map(([, label]) => label);
   show(top('Conta'), h('div', { class: 'wrap' },
@@ -889,7 +897,7 @@ async function pairView() {
   body.push(card(2, steps[1], pair.kind === 'executor' ? 'Enviado ao Pi' : 'Enviado por mensagem; vale 24 h, uso único', [
     h('div', { class: 'note' }, `O ${pair.kind === 'executor' ? 'executor' : 'aparelho'} passará a confiar em: ${names}. ${pair.kind === 'executor' ? 'Ele' : 'O aparelho'} mostra esta lista antes de parear: se algum nome não for o esperado, NÃO prossiga.`),
     h('textarea', { class: 'ta', readonly: true, 'aria-label': 'String de pareamento' }, pair.string || ''),
-    h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => pair.string)),
+    h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => pair.string), shareBtn(() => pair.string)),
     h('p', { class: 'muted', style: 'margin:10px 0 0' }, pair.kind === 'executor' ?
       'No Pi: python -m guardian.executor pair --pairing "<string>". Aguardando o executor aparecer aqui…' :
       'No NotToday: tela de PIN → “Parear com Guardian remoto” → cole a string. Aguardando o aparelho aparecer aqui…')]));
@@ -955,6 +963,15 @@ async function pairView() {
 }
 
 // ---------- roteamento ----------
+/** Atualização periódica que não atropela quem está digitando (no celular se digita devagar) nem uma folha aberta. */
+function autoRefresh() {
+  const a = document.activeElement;
+  const typing = a && a.matches && a.matches('input, textarea, select');
+  const dirty = [...document.querySelectorAll('#main input.inp, #main textarea:not([readonly])')].some((e) => e.value.trim());
+  if (typing || dirty || document.querySelector('.overlay') || document.hidden) { timer = setTimeout(autoRefresh, 20000); return; }
+  route();
+}
+
 async function route() {
   clearTimeout(timer);
   const hash = location.hash || '#/';
@@ -984,6 +1001,8 @@ async function boot() {
 }
 
 addEventListener('hashchange', route);
+// No celular o navegador congela a aba em segundo plano: ao voltar, recarrega os dados (se ninguém estiver digitando).
+document.addEventListener('visibilitychange', () => { if (!document.hidden && me) { clearTimeout(timer); autoRefresh(); } });
 window.matchMedia('(min-width: 900px)').addEventListener('change', () => route());
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 boot();

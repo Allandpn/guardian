@@ -62,9 +62,17 @@ export function sheet({ title, rows = [], effect, effectKind = 'ok', note, noteK
     const prev = document.activeElement;
     let overlay;
     const onKey = (e) => { if (e.key === 'Escape') close(false); };
+    // No Android, o botão/gesto de voltar fecha a folha em vez de sair da tela.
+    let pushed = true;
+    const onPop = () => { pushed = false; close(false); };
+    history.pushState({ sheet: true }, '');
+    addEventListener('popstate', onPop);
     const close = (v) => {
+      if (!overlay.isConnected) return;
       overlay.remove();
       document.removeEventListener('keydown', onKey);
+      removeEventListener('popstate', onPop);
+      if (pushed) { pushed = false; history.back(); }
       if (prev && prev.focus) prev.focus();
       resolve(v);
     };

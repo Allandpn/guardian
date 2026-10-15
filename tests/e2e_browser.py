@@ -44,7 +44,35 @@ def main():
             "protocol": "ctap2", "transport": "internal", "hasResidentKey": True, "hasUserVerification": True,
             "isUserVerified": True, "automaticPresenceSimulation": True}})
 
+        audit_js = """() => {
+          const W = innerWidth, out = [];
+          if (document.documentElement.scrollWidth > W + 1) out.push('rolagem horizontal: ' + document.documentElement.scrollWidth + 'px');
+          const desc = (e) => (e.tagName.toLowerCase() + (e.className && typeof e.className === 'string' ? '.' + e.className.split(' ').join('.') : '') + ' "' + (e.innerText || e.value || e.getAttribute('aria-label') || '').trim().slice(0, 40) + '"');
+          for (const e of document.querySelectorAll('#main *, #nav *, .sheet *')) {
+            const r = e.getBoundingClientRect();
+            if (!r.width || !r.height || getComputedStyle(e).visibility === 'hidden') continue;
+            let clip = false;
+            for (let p = e.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p); if (/(auto|scroll|hidden)/.test(o.overflowX)) { clip = true; break; } }
+            if (r.right > W + 1 && !clip) out.push('vaza ' + Math.round(r.right - W) + 'px: ' + desc(e));
+            const tap = e.matches('button, a[href], [role=button], input:not([type=hidden]), select, textarea');
+            if (tap && (r.height < 40 || r.width < 40)) out.push('alvo pequeno ' + Math.round(r.width) + 'x' + Math.round(r.height) + ': ' + desc(e));
+            if (e.matches('input, select, textarea') && parseFloat(getComputedStyle(e).fontSize) < 16) out.push('zoom no iPhone (fonte ' + getComputedStyle(e).fontSize + '): ' + desc(e));
+          }
+          return [...new Set(out)];
+        }"""
+
+        def audit(name):
+            for w in (320, 360):
+                page.set_viewport_size({"width": w, "height": 740})
+                page.wait_for_timeout(300)
+                issues = page.evaluate(audit_js)
+                if issues:
+                    out.setdefault("mobile_issues", {})[f"{name}@{w}"] = issues
+                    print(f"AUDIT {name}@{w}: " + json.dumps(issues, ensure_ascii=False), file=sys.stderr, flush=True)
+
         def shot(name, viewport=None):
+            if os.environ.get("AUDIT") and viewport == PHONE:
+                audit(name)
             if not shots:
                 return
             os.makedirs(shots, exist_ok=True)
@@ -179,6 +207,10 @@ def main():
         page.get_by_role("button", name="Aprovar").first.click()
         shot("08-confirmar-app", PHONE)
         back()
+        page.go_back()  # voltar do Android/navegador fecha a folha e fica na mesma tela
+        page.get_by_role("dialog").wait_for(state="detached", timeout=10000)
+        out["back_closes_sheet"] = page.url.endswith(f"#/device/{dev}/apps")
+        page.get_by_role("button", name="Aprovar").first.click()
         sign()
         got = fetch(gw, dev, last)
         v = consumer.accept(got[0]["envelope"])
@@ -255,9 +287,14 @@ def main():
         page.goto(f"{origin}/#/domains/liberados")
         page.get_by_text("Avançado").click()
         page.get_by_role("group", name="Duração").get_by_role("button", name="1 hora").click()
+        page.get_by_role("group", name="Duração").get_by_role("button", name="1 hora", pressed=True).wait_for()  # a tela redesenha
         page.get_by_placeholder("exemplo.com").fill("Liberado.Exemplo.com")
         page.get_by_role("button", name="Liberar", exact=True).click()
-        page.get_by_role("dialog").get_by_text("1 hora").first.wait_for()
+        try:
+            page.get_by_role("dialog").get_by_text("1 hora").first.wait_for(timeout=8000)
+        except Exception:
+            print("DEBUG", page.inner_text("body")[:1500], file=sys.stderr)
+            raise
         sign()
         run_executor(lambda: "liberado.exemplo.com" in fake.lists["allow"])
         out["allowed"] = "liberado.exemplo.com" in fake.lists["allow"]
@@ -352,7 +389,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 

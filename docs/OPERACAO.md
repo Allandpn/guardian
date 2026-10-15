@@ -64,3 +64,14 @@ outros serviços seus, mude em `pihole.toml` (`webserver.port`) e ajuste `PIHOLE
 - **Monitorar:** o site marca "sem sinal" quando um aparelho fica 5 min sem consultar a fila. `docker logs` tem rotação (5 MB × 3).
 - **Rotacionar a chave do Tailscale:** chaves efêmeras expiram; o nó guarda o estado em `ts-state`.
 - **Se o hostname mudar**, os passkeys deixam de valer e é preciso refazer o cadastro e o pareamento.
+
+## Site do Guardian no celular
+
+O site foi feito primeiro para o celular. Para o guardião ter um ícone como de app:
+
+- **Android (Chrome ou Samsung Internet):** abrir o link, menu ⋮ → "Adicionar à tela inicial" (ou "Instalar app").
+- **iPhone (Safari):** abrir o link, botão Compartilhar → "Adicionar à Tela de Início". No iPhone, as notificações só funcionam com o site instalado assim (iOS 16.4 ou mais).
+
+Detalhes que o site trata no celular: áreas seguras (notch e barra de gestos), campos com o teclado certo e sem zoom no iPhone, o voltar do Android fecha a folha de confirmação, a atualização automática não apaga o que está sendo digitado e, ao voltar para o app, os dados são recarregados. Os links de convite e de pareamento têm o botão "Compartilhar" (WhatsApp, e-mail…) onde o navegador oferece.
+
+O teste de navegador (`AUDIT=1 PYTHONPATH=src python tests/e2e_browser.py`) mede cada tela em 320 e 360 px de largura: rolagem para o lado, alvos de toque menores que 40 px e campos que dariam zoom no iPhone.
