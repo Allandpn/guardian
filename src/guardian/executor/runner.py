@@ -270,6 +270,7 @@ class Executor:
             return 0
         since = self.state.data.get("blocked_since") or self.now() - BLOCKS_BACKFILL_S
         newest = since
+        canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
         per_dev: dict[str, dict] = {}
         for ip, dev in clients.items():
             for q in self.pihole.queries(since, ip):
@@ -283,6 +284,8 @@ class Executor:
                 try:
                     d = domains.normalize(raw)
                 except ValueError:
+                    continue
+                if d == canary:  # o canário é o teste de saúde do aparelho: bloqueado de propósito, não é pedido de ninguém
                     continue
                 e = per_dev.setdefault(dev, {}).setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t),
                                                                "src": kind, "list": "", "cname": cname})

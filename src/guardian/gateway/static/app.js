@@ -42,6 +42,13 @@ function ago(ts, now) {
 }
 const fp = (id) => id.match(/.{1,4}/g).join('-');
 const fmtVal = (v) => (v === 'true' ? 'ligado' : v === 'false' ? 'desligado' : v === '' ? '(vazio)' : v);
+const PKG_KEYS = new Set(['routed_extra', 'protected_pkgs', 'store_extra', 'browsers_exempt']);
+// Pacote -> "Nome do app (pacote)". O aparelho manda os nomes em pkgNames; apps aprovados/pendentes completam.
+const pkgText = (val, r) => {
+  const names = new Map([...(r.approvedApps || []), ...(r.pendingApps || [])].filter((a) => a.pkg && a.label).map((a) => [a.pkg, a.label]));
+  Object.entries(r.pkgNames || {}).forEach(([p, n]) => names.set(p, n));
+  return String(val).split(',').map((x) => x.trim()).filter(Boolean).map((p) => (names.get(p) && names.get(p) !== p ? `${names.get(p)} (${p})` : p)).join(', ');
+};
 const ruleLabel = (key, labels) => (key === 'unlock_delay_min' ? 'Atraso para afrouxar (horas)' : labels[key] || key);
 function dur(ms) {
   const min = Math.max(1, Math.ceil(ms / 60000));
@@ -301,7 +308,7 @@ function deviceReadOnly(d, now) {
     for (const [k, v] of Object.entries(r.snapshot)) {
       const g = (r.groups || {})[k] || 'Outras';
       if (!groups.has(g)) groups.set(g, []);
-      groups.get(g).push([ruleLabel(k, labels), fmtVal(String(v))]);
+      groups.get(g).push([ruleLabel(k, labels), PKG_KEYS.has(k) && v ? pkgText(v, r) : fmtVal(String(v))]);
     }
     for (const [g, rows] of groups) parts.push(h('div', { class: 'sec' }, g), h('div', { class: 'card' }, kvRows(rows)));
   }
@@ -423,6 +430,7 @@ function regrasNodes(d) {
     const label = ruleLabel(key, labels);
     const chg = key in dr;
     const left = h('div', { class: 't' }, label, hints[key] ? h('div', { class: 'muted' }, hints[key]) : null,
+      PKG_KEYS.has(key) && v ? h('div', { class: 'muted' }, pkgText(v, r)) : null,
       chg ? h('div', { class: 'muted', style: 'margin-top:2px' }, key === 'unlock_delay_min' ? `${Number(snap[key]) / 60} h → ${Number(dr[key]) / 60} h` : `${fmtVal(snap[key])} → ${fmtVal(dr[key])}`) : null);
     let ctl;
     if (snap[key] === 'true' || snap[key] === 'false') {
@@ -708,6 +716,7 @@ async function peopleView() {
     const text = `${me.origin}/#invite=${r.token}`;
     out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
       h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text), shareBtn(() => text))));
+    if (out.scrollIntoView) out.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
   const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião' });
   const myCreds = Object.keys((me.trust[me.guardian.id] || { creds: {} }).creds).length;
@@ -733,7 +742,7 @@ async function peopleView() {
       return h('div', { class: 'li', style: 'flex-wrap:wrap' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
         h('div', { class: 'sp' }, h('strong', {}, g.name), ' ', gid === me.guardian.id ? chip('você') : null, ' ', chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok'),
           h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
-        gid === me.guardian.id ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
+        gid === me.guardian.id ? h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey') : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
           h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
             if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
               note: 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
@@ -751,7 +760,7 @@ async function peopleView() {
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
         'Libera e bloqueia sites e responde aos pedidos. Não mexe em regras, apps, PIN nem pessoas. O que mais ele pode ver você escolhe depois.'),
       h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => { if (!nm.value.trim()) throw new Error('Digite o nome.'); await link('new_guardian', nm.value.trim(), inviteRole)(); }) }, 'Gerar link de convite')),
-      myCreds < 2 ? null : h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn grow', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey para mim'))),
+      ),
     out,
     h('div', { class: 'sec' }, 'Confiança nos aparelhos'),
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, devices.length ? devices.map((d) => {

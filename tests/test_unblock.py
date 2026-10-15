@@ -57,6 +57,7 @@ class UnblockFlow(unittest.TestCase):
             q(t + 5, "de-outro.com", "REGEX", ip="192.168.1.5"),
             q(t + 6, "ipv6.exemplo.org", "REGEX", ip="fd7a::7"),
             q(t + 7, "*.invalido", "REGEX"),
+            q(t + 8, "canario.example", "DENYLIST"),  # o canário nunca entra na lista de bloqueios
         ]
         self.assertEqual(self.ex.collect_blocks(), 4)
         got = self.blocked()
@@ -67,6 +68,7 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(got["ads.tracker.net"]["list"], "https://listas.example/ads.txt")
         self.assertTrue(got["cdn.alvo.com"]["cname"])
         self.assertNotIn("de-outro.com", got)
+        self.assertNotIn("canario.example", got)
         self.assertEqual(set(self.blocked("own")), {"cdn.exemplo.com", "cdn.alvo.com", "ipv6.exemplo.org"})
 
     def test_02_no_double_count_on_next_poll(self):
