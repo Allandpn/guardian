@@ -80,6 +80,13 @@ def main():
                 page.set_viewport_size(viewport)
                 page.wait_for_timeout(250)
             page.screenshot(path=os.path.join(shots, name + ".png"), full_page=True)
+            if os.environ.get("WIDE") and viewport == PHONE:  # também em tablet e computador, para conferir o layout largo
+                for tag, vp in (("t", {"width": 820, "height": 1100}), ("d", {"width": 1366, "height": 800})):
+                    page.set_viewport_size(vp)
+                    page.wait_for_timeout(900)
+                    page.screenshot(path=os.path.join(shots, f"{name}-{tag}.png"), full_page=True)
+                page.set_viewport_size(PHONE)
+                page.wait_for_timeout(500)
 
         def back():
             """Volta ao computador e espera a página redesenhar (cruzar 900 px refaz a tela)."""
