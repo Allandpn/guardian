@@ -117,13 +117,51 @@ class CommandTests(unittest.TestCase):
         c = Consumer("dev1", self.trust)
         third = FakeAuthenticator(RP, ORIGIN)
         c.apply_trust({"type": "add_guardian", "args": {"id": "cris", "name": "Cris", "cred": third.cred_id_b64,
-                                                        "spki": b64.enc(third.spki)}})
+                                                        "spki": b64.enc(third.spki), "role": "admin"}})
         self.assertIn("cris", c.trust.guardians)
         c.apply_trust({"type": "remove_guardian", "args": {"id": "cris"}})
         self.assertNotIn("cris", c.trust.guardians)
         c.apply_trust({"type": "remove_guardian", "args": {"id": "bia"}})
         with self.assertRaises(CommandError):
-            c.apply_trust({"type": "remove_guardian", "args": {"id": "ana"}})  # último
+            c.apply_trust({"type": "remove_guardian", "args": {"id": "ana"}})  # último administrador
+        for bad in ({"id": "x", "name": "X", "cred": "c", "spki": "s"}, {"id": "x", "name": "X", "cred": "c", "spki": "s", "role": "root"}):
+            with self.assertRaises(CommandError):  # papel ausente ou inválido
+                c.apply_trust({"type": "add_guardian", "args": bad})
+
+    def test_roles(self):
+        dom = FakeAuthenticator(RP, ORIGIN)
+        trust = trust_with(("ana", self.a), ("bia", self.b))
+        trust.guardians["dora"] = Guardian("Dora", {dom.cred_id_b64: b64.enc(dom.spki)}, "domains")
+
+        def env(author, auth, type_, args=None, *more):
+            p = command("dev1", author, 1, type_, args)
+            return envelope(p, auth.sign_command(author, p), *[a.sign_command(g, p) for g, a in more])
+
+        # domínios: liberar e bloquear sim; o resto não
+        for t in ("pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"):
+            verify_envelope(trust, env("dora", dom, t, {"domain": "a.com"}))
+        for t, a in (("approve_app", {"pkg": "x"}), ("set_config", {"patch": {}}), ("set_pin", {}), ("activate", {}),
+                     ("add_guardian", {"id": "z"}), ("remove_guardian", {"id": "bia"}), ("add_credential", {"id": "ana"})):
+            with self.assertRaises(CommandError, msg=t):
+                verify_envelope(trust, env("dora", dom, t, a))
+        verify_envelope(trust, env("dora", dom, "add_credential", {"id": "dora"}))  # passkey nova para si mesma
+        # a assinatura de um guardião de domínios não conta para o quórum de administradores
+        with self.assertRaises(CommandError):
+            verify_envelope(trust, env("ana", self.a, "remove_guardian", {"id": "bia"}, ("dora", dom)))
+        verify_envelope(trust, env("ana", self.a, "remove_guardian", {"id": "bia"}, ("bia", self.b)))
+        # com um administrador só, ele remove sozinho; nunca o último administrador
+        solo = trust_with(("ana", self.a))
+        solo.guardians["dora"] = Guardian("Dora", {dom.cred_id_b64: b64.enc(dom.spki)}, "domains")
+        verify_envelope(solo, env("ana", self.a, "remove_guardian", {"id": "dora"}))
+        c = Consumer("dev1", solo)
+        c.apply_trust({"type": "remove_guardian", "args": {"id": "dora"}})
+        with self.assertRaises(CommandError):
+            c.apply_trust({"type": "remove_guardian", "args": {"id": "ana"}})
+        # papel sobrevive à serialização; confiança antiga (sem papel) é de administrador
+        j = json.loads(json.dumps(trust.to_json()))
+        self.assertEqual(Trust.from_json(j).guardians["dora"].role, "domains")
+        del j["guardians"]["ana"]["role"]
+        self.assertEqual(Trust.from_json(j).guardians["ana"].role, "admin")
 
     def test_consumer_json_roundtrip(self):
         c = Consumer("dev1", self.trust, {"ana": 4})

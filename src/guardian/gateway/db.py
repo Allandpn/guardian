@@ -45,6 +45,12 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")
             self.db.executescript(SCHEMA)
+            for table, col in (("guardians", "role TEXT NOT NULL DEFAULT 'admin'"), ("guardians", "see TEXT NOT NULL DEFAULT '{}'"),
+                               ("invites", "role TEXT NOT NULL DEFAULT 'admin'")):
+                try:  # bancos criados antes dos papéis
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
 
     def q(self, sql: str, args=()):
         with self.lock:
@@ -62,11 +68,11 @@ class Store:
     def guardian_count(self) -> int:
         return self.one("SELECT COUNT(*) c FROM guardians")["c"]
 
-    def add_guardian(self, gid: str, name: str, cred: str, spki: str):
+    def add_guardian(self, gid: str, name: str, cred: str, spki: str, role: str = "admin"):
         with self.lock:
             self.db.execute("BEGIN")
             try:
-                self.db.execute("INSERT INTO guardians VALUES(?,?,?)", (gid, name, int(time.time())))
+                self.db.execute("INSERT INTO guardians(id,name,created,role) VALUES(?,?,?,?)", (gid, name, int(time.time()), role))
                 self.db.execute("INSERT INTO credentials VALUES(?,?,?,?)", (cred, gid, spki, int(time.time())))
                 self.db.execute("COMMIT")
             except Exception:
@@ -81,16 +87,31 @@ class Store:
 
     def trust_dict(self) -> dict:
         """{gid: {name, creds:{cred: spki}}} do que o gateway conhece."""
-        out = {r["id"]: {"name": r["name"], "creds": {}} for r in self.q("SELECT * FROM guardians ORDER BY created")}
+        out = {r["id"]: {"name": r["name"], "creds": {}, "role": r["role"]} for r in self.q("SELECT * FROM guardians ORDER BY created")}
         for r in self.q("SELECT * FROM credentials ORDER BY created"):
             if r["guardian"] in out:
                 out[r["guardian"]]["creds"][r["cred"]] = r["spki"]
         return out
 
+    def guardian(self, gid: str):
+        return self.one("SELECT * FROM guardians WHERE id=?", (gid,))
+
+    def admin_count(self) -> int:
+        return self.one("SELECT COUNT(*) c FROM guardians WHERE role='admin'")["c"]
+
+    def set_see(self, gid: str, see: dict):
+        self.x("UPDATE guardians SET see=? WHERE id=?", (json.dumps(see), gid))
+
+    def delete_guardian(self, gid: str):
+        with self.lock:
+            self.db.execute("DELETE FROM credentials WHERE guardian=?", (gid,))
+            self.db.execute("DELETE FROM push_subs WHERE guardian=?", (gid,))
+            self.db.execute("DELETE FROM guardians WHERE id=?", (gid,))
+
     # --- convites e pareamentos ---------------------------------------------------
-    def put_invite(self, h: str, kind: str, guardian: str | None, name: str | None, expires: int):
+    def put_invite(self, h: str, kind: str, guardian: str | None, name: str | None, expires: int, role: str = "admin"):
         self.x("DELETE FROM invites WHERE expires<?", (int(time.time()),))
-        self.x("INSERT INTO invites VALUES(?,?,?,?,?)", (h, kind, guardian, name, expires))
+        self.x("INSERT INTO invites(hash,kind,guardian,name,expires,role) VALUES(?,?,?,?,?,?)", (h, kind, guardian, name, expires, role))
 
     def invite(self, h: str):
         return self.one("SELECT * FROM invites WHERE hash=? AND expires>?", (h, int(time.time())))

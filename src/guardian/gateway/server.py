@@ -23,6 +23,10 @@ from .limits import Limiter, NonceCache
 DEVICE_TYPES = {"set_config", "confirm", "cancel", "approve_app", "revoke_app", "request_maintenance",
                 "set_dev_policy", "set_pin", "set_dev_pin", "activate"} | cmds.TRUST_TYPES
 EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.TRUST_TYPES
+SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião de domínios ver
+STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet"}
+RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows"}
+APP_KEYS = {"pendingApps", "approvedApps"}
 REQUEST_KINDS = {"domain", "app", "other", "unblock"}
 BLOCK_SOURCES = {"own", "list"}
 
@@ -131,6 +135,8 @@ class Gateway:
             ("GET", r"/v1/commands/awaiting", self.awaiting),
             ("POST", r"/v1/commands/(?P<cid>[0-9]{1,12})/cosign", self.cosign),
             ("GET", r"/v1/audit", self.audit),
+            ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/see", self.set_see),
+            ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/remove", self.remove_guardian),
             ("GET", r"/v1/requests", self.requests),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/dismiss", self.dismiss),
         ]
@@ -269,6 +275,28 @@ class Gateway:
             raise HttpError(401, "faça login")
         return s[0]
 
+    def who(self, req: Req):
+        """(gid, papel, o que pode ver) do guardião logado."""
+        gid = self.guardian(req)
+        g = self.store.guardian(gid)
+        if not g:
+            raise HttpError(401, "faça login")
+        try:
+            see = json.loads(g["see"] or "{}")
+        except ValueError:
+            see = {}
+        return gid, g["role"], {k: bool(see.get(k)) for k in SEE_FLAGS}
+
+    def admin(self, req: Req) -> str:
+        gid, role, _ = self.who(req)
+        if role != "admin":
+            raise HttpError(403, "só o administrador")
+        return gid
+
+    def trust(self) -> cmds.Trust:
+        return cmds.Trust(self.cfg.rp_id, self.cfg.origin,
+                          {g: cmds.Guardian(v["name"], v["creds"], v["role"]) for g, v in self.store.trust_dict().items()})
+
     # ------------------------------------------------------------------ autenticação do aparelho
     def _device_headers(self, req: Req, spki: bytes, dev: str) -> None:
         h = req.headers
@@ -318,7 +346,8 @@ class Gateway:
                 raise HttpError(400, "convite inválido")
             gid, name = g["id"], g["name"]
             exclude = [c["cred"] for c in self.store.q("SELECT cred FROM credentials WHERE guardian=?", (gid,))]
-        cid, ch = self.new_challenge("register", {"gid": gid, "name": name, "kind": inv["kind"], "invite": _hash(token)})
+        role = "admin" if self.store.guardian_count() == 0 else inv["role"]
+        cid, ch = self.new_challenge("register", {"gid": gid, "name": name, "kind": inv["kind"], "invite": _hash(token), "role": role})
         return 200, {"challengeId": cid, "publicKey": {
             "challenge": b64.enc(ch), "rp": {"id": self.cfg.rp_id, "name": "NotToday Guardian"},
             "user": {"id": b64.enc(gid.encode()), "name": name, "displayName": name},
@@ -343,7 +372,7 @@ class Gateway:
         if self.store.credential(cred_b64):
             raise HttpError(409, "credencial já cadastrada")
         if ctx["kind"] == "new_guardian":
-            self.store.add_guardian(ctx["gid"], ctx["name"], cred_b64, b64.enc(spki))
+            self.store.add_guardian(ctx["gid"], ctx["name"], cred_b64, b64.enc(spki), ctx.get("role", "domains"))
         else:
             self.store.add_credential(ctx["gid"], cred_b64, b64.enc(spki))
         self.store.audit(None, "guardian", f"{ctx['kind']}: {ctx['gid']}")
@@ -382,23 +411,30 @@ class Gateway:
 
     # ------------------------------------------------------------------ rotas do guardião
     def me(self, req):
-        gid = self.guardian(req)
-        g = self.store.one("SELECT * FROM guardians WHERE id=?", (gid,))
-        return 200, {"guardian": {"id": gid, "name": g["name"]}, "trust": self.store.trust_dict(),
+        gid, role, see = self.who(req)
+        g = self.store.guardian(gid)
+        others = {r["id"]: json.loads(r["see"] or "{}") for r in self.store.q("SELECT id, see FROM guardians")} if role == "admin" else {}
+        return 200, {"guardian": {"id": gid, "name": g["name"], "role": role, "see": see}, "see_of": others, "trust": self.store.trust_dict(),
                      "rp_id": self.cfg.rp_id, "origin": self.cfg.origin}, {}
 
     def make_invite(self, req):
-        gid = self.guardian(req)
+        gid, role, _ = self.who(req)
         d = req.json()
         kind = d.get("kind")
         if kind not in ("new_guardian", "add_passkey"):
             raise HttpError(400, "tipo de convite inválido")
+        if kind == "new_guardian" and role != "admin":
+            raise HttpError(403, "só o administrador convida")
+        new_role = d.get("role", "domains")
+        if new_role not in cmds.ROLES:
+            raise HttpError(400, "papel inválido")
         token = create_invite(self.store, kind, gid if kind == "add_passkey" else None,
-                              _str(d, "name", 64) if kind == "new_guardian" else None, self.cfg.invite_ttl_s)
+                              _str(d, "name", 64) if kind == "new_guardian" else None, self.cfg.invite_ttl_s,
+                              new_role if kind == "new_guardian" else role)
         return 200, {"token": token, "expires_in": self.cfg.invite_ttl_s}, {}
 
     def make_pairing(self, req):
-        self.guardian(req)
+        self.admin(req)
         kind = req.json().get("kind")
         if kind not in ("device", "executor"):
             raise HttpError(400, "tipo inválido")
@@ -407,12 +443,18 @@ class Gateway:
         return 200, {"token": token, "expires_in": self.cfg.invite_ttl_s}, {}
 
     def list_devices(self, req):
-        self.guardian(req)
+        _, role, see = self.who(req)
         out = []
         for r in self.store.devices():
-            out.append({"id": r["id"], "kind": r["kind"], "name": r["name"], "spki": r["spki"], "created": r["created"],
-                        "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"],
-                        "report": json.loads(r["report"]) if r["report"] else None})
+            report = json.loads(r["report"]) if r["report"] else None
+            d = {"id": r["id"], "kind": r["kind"], "name": r["name"], "spki": r["spki"], "created": r["created"],
+                 "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"], "report": report}
+            if role != "admin" and r["kind"] != "executor":
+                keep = (STATUS_KEYS if see["devices"] else set()) | (RULE_KEYS if see["rules"] else set()) | (APP_KEYS if see["apps"] else set())
+                d["report"] = {k: v for k, v in report.items() if k in keep} if report and keep else None
+                if not see["devices"]:
+                    d.update(last_seen=0, report_ts=0, pending=0)
+            out.append(d)
         return 200, {"devices": out, "now": int(time.time())}, {}
 
     def next_ctr(self, req, dev):
@@ -434,20 +476,23 @@ class Gateway:
         if not row:
             raise HttpError(404, "aparelho desconhecido")
         env = req.json()
-        trust = cmds.Trust(self.cfg.rp_id, self.cfg.origin,
-                           {g: cmds.Guardian(v["name"], v["creds"]) for g, v in self.store.trust_dict().items()})
+        trust = self.trust()
         try:
             payload = b64.dec(_str(env, "payload", 12000))
             cmd = cmds.parse_payload(payload)
             signers = cmds.verify_sigs(trust, payload, env.get("sigs"))
         except (cmds.CommandError, ValueError) as e:
             raise HttpError(400, str(e))
+        g = trust.guardians.get(gid)
+        if g and g.role != "admin" and cmd["type"] not in cmds.DOMAIN_TYPES and not (
+                cmd["type"] == cmds.T_ADD_CREDENTIAL and cmd["args"].get("id") == gid):
+            raise HttpError(403, "o guardião de domínios não pode mandar este comando")
         allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES
         if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or cmd["type"] not in allowed:
             raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
         if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
             raise HttpError(429, "fila cheia")
-        ready = len(signers) >= cmds.required_signers(trust, cmd["type"])
+        ready = cmd["type"] in cmds.DOMAIN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd["type"])
         cid = self.store.enqueue(dev, gid, cmd["ctr"], {"payload": env["payload"], "sigs": env["sigs"]}, ready)
         if cid is None:
             raise HttpError(409, "contador repetido")
@@ -461,8 +506,10 @@ class Gateway:
             self.cond.notify_all()
 
     def awaiting(self, req):
-        gid = self.guardian(req)
+        gid, role, _ = self.who(req)
         out = []
+        if role != "admin":
+            return 200, {"commands": out}, {}
         for r in self.store.awaiting():
             env = json.loads(r["envelope"])
             signed = {s.get("guardian") for s in env.get("sigs", [])}
@@ -471,7 +518,7 @@ class Gateway:
         return 200, {"commands": out}, {}
 
     def cosign(self, req, cid):
-        gid = self.guardian(req)
+        gid = self.admin(req)
         if not self.l_cmd.allow(gid):
             raise HttpError(429, "devagar")
         row = self.store.command(int(cid))
@@ -481,8 +528,7 @@ class Gateway:
         sig = req.json().get("sig")
         if not isinstance(sig, dict) or sig.get("guardian") != gid or any(s.get("guardian") == gid for s in env["sigs"]):
             raise HttpError(400, "assinatura inválida para este guardião")
-        trust = cmds.Trust(self.cfg.rp_id, self.cfg.origin,
-                           {g: cmds.Guardian(v["name"], v["creds"]) for g, v in self.store.trust_dict().items()})
+        trust = self.trust()
         payload = b64.dec(env["payload"])
         sigs = env["sigs"] + [sig]
         try:
@@ -490,7 +536,7 @@ class Gateway:
         except cmds.CommandError as e:
             raise HttpError(400, str(e))
         cmd = cmds.parse_payload(payload)
-        if len(signers) < cmds.required_signers(trust, cmd["type"]):
+        if len(signers & trust.admins()) < cmds.required_signers(trust, cmd["type"]):
             raise HttpError(400, "ainda faltam assinaturas")
         self.store.make_ready(row["id"], {"payload": env["payload"], "sigs": sigs})
         self.store.audit(row["dev"], "queued", f"{gid} co-assinou {cmd['type']}")
@@ -498,10 +544,38 @@ class Gateway:
         return 200, {"status": "ready"}, {}
 
     def audit(self, req):
-        self.guardian(req)
+        _, role, see = self.who(req)
         q = parse_qs(req.query)
         limit = min(int(q.get("limit", ["100"])[0]) if q.get("limit", ["100"])[0].isdigit() else 100, 500)
-        return 200, {"items": [dict(r) for r in self.store.audit_list(limit)]}, {}
+        rows = [dict(r) for r in self.store.audit_list(limit)]
+        if role != "admin" and not see["history"]:  # sem permissão: só o que é de domínio (executor e pedidos)
+            ex = {r["id"] for r in self.store.q("SELECT id FROM devices WHERE kind='executor'")}
+            rows = [r for r in rows if r["dev"] in ex or r["kind"] == "request"]
+        return 200, {"items": rows}, {}
+
+    def set_see(self, req, gid):
+        self.admin(req)
+        g = self.store.guardian(gid)
+        if not g or g["role"] == "admin":
+            raise HttpError(404, "guardião de domínios não encontrado")
+        d = req.json()
+        see = {k: bool(d.get(k)) for k in SEE_FLAGS}
+        self.store.set_see(gid, see)
+        self.store.audit(None, "guardian", f"visibilidade de {gid}: " + ", ".join(k for k, v in see.items() if v))
+        return 200, {"see": see}, {}
+
+    def remove_guardian(self, req, gid):
+        me = self.admin(req)
+        g = self.store.guardian(gid)
+        if not g:
+            raise HttpError(404, "guardião não encontrado")
+        if gid == me or (g["role"] == "admin" and self.store.admin_count() <= 1):
+            raise HttpError(400, "não remove o último administrador nem a si mesmo")
+        self.store.delete_guardian(gid)
+        with self.lock:
+            self.sessions = {k: v for k, v in self.sessions.items() if v[0] != gid}
+        self.store.audit(None, "guardian", f"{me} removeu {gid} do gateway")
+        return 200, {"ok": True}, {}
 
     def requests(self, req):
         self.guardian(req)
@@ -570,12 +644,17 @@ class Gateway:
         return 200, {"ok": True}, {}
 
     def dismiss(self, req, rid):
-        self.guardian(req)
+        _, role, _ = self.who(req)
+        row = self.store.request(int(rid))
+        if not row:
+            raise HttpError(404, "pedido não encontrado")
+        if role != "admin" and row["kind"] not in ("domain", "unblock"):
+            raise HttpError(403, "só o administrador")
         self.store.dismiss_request(int(rid))
         return 200, {"ok": True}, {}
 
     def forget(self, req, dev):
-        self.guardian(req)
+        self.admin(req)
         self.store.forget_device(dev)
         self.store.audit(dev, "forget", "aparelho removido do gateway")
         return 200, {"ok": True}, {}
@@ -710,9 +789,9 @@ class Gateway:
         return 200, {"ok": True}, {}
 
 
-def create_invite(store: Store, kind: str, guardian: str | None, name: str | None, ttl: int) -> str:
+def create_invite(store: Store, kind: str, guardian: str | None, name: str | None, ttl: int, role: str = "admin") -> str:
     token = secrets.token_urlsafe(24)
-    store.put_invite(_hash(token), kind, guardian, name, int(time.time()) + ttl)
+    store.put_invite(_hash(token), kind, guardian, name, int(time.time()) + ttl, role)
     return token
 
 

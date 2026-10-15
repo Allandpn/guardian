@@ -17,8 +17,15 @@ T_ADD_GUARDIAN = "add_guardian"
 T_ADD_CREDENTIAL = "add_credential"
 T_REMOVE_GUARDIAN = "remove_guardian"
 TRUST_TYPES = {T_ADD_GUARDIAN, T_ADD_CREDENTIAL, T_REMOVE_GUARDIAN}
-# Pedem a assinatura de dois guardiões distintos (se houver dois ou mais).
+# Pedem a assinatura de dois administradores distintos (se houver dois ou mais).
 TWO_SIG_TYPES = {T_REMOVE_GUARDIAN}
+
+# Papéis. O papel fica fixado na confiança de cada consumidor, junto com as passkeys (veja docs/PAPEIS.md).
+ROLE_ADMIN = "admin"
+ROLE_DOMAINS = "domains"
+ROLES = {ROLE_ADMIN, ROLE_DOMAINS}
+# O que um guardião de domínios pode assinar (além de add_credential para si mesmo).
+DOMAIN_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"}
 
 
 class CommandError(ValueError):
@@ -29,6 +36,7 @@ class CommandError(ValueError):
 class Guardian:
     name: str
     creds: dict[str, str] = field(default_factory=dict)  # credId (b64url) -> SPKI (b64url)
+    role: str = ROLE_ADMIN                                # pareamentos antigos (sem papel) são de administradores
 
 
 @dataclass
@@ -40,12 +48,22 @@ class Trust:
 
     def to_json(self) -> dict:
         return {"rp_id": self.rp_id, "origin": self.origin,
-                "guardians": {g: {"name": v.name, "creds": v.creds} for g, v in self.guardians.items()}}
+                "guardians": {g: {"name": v.name, "creds": v.creds, "role": v.role} for g, v in self.guardians.items()}}
 
     @staticmethod
     def from_json(d: dict) -> "Trust":
         return Trust(d["rp_id"], d["origin"],
-                     {g: Guardian(v["name"], dict(v["creds"])) for g, v in d.get("guardians", {}).items()})
+                     {g: Guardian(v["name"], dict(v["creds"]), _role(v.get("role", ROLE_ADMIN)))
+                      for g, v in d.get("guardians", {}).items()})
+
+    def admins(self) -> set:
+        return {g for g, v in self.guardians.items() if v.role == ROLE_ADMIN}
+
+
+def _role(r) -> str:
+    if r not in ROLES:
+        raise CommandError("papel inválido")
+    return r
 
 
 @dataclass
@@ -98,7 +116,24 @@ def verify_sigs(trust: Trust, payload: bytes, sigs: list) -> set:
 
 
 def required_signers(trust: Trust, cmd_type: str) -> int:
-    return 2 if cmd_type in TWO_SIG_TYPES and len(trust.guardians) >= 2 else 1
+    """Quantos administradores precisam assinar (comandos de domínio: o autor basta)."""
+    return 2 if cmd_type in TWO_SIG_TYPES and len(trust.admins()) >= 2 else 1
+
+
+def authorize(trust: Trust, cmd: dict, signers: set) -> None:
+    """O autor pode mandar este comando? Guardião de domínios: só domínios e passkey nova para si mesmo."""
+    author = trust.guardians.get(cmd["guardian"])
+    if author is None:
+        raise CommandError("autor desconhecido")
+    t = cmd["type"]
+    if t in DOMAIN_TYPES:
+        return
+    if author.role != ROLE_ADMIN:
+        if t == T_ADD_CREDENTIAL and cmd["args"].get("id") == cmd["guardian"]:
+            return
+        raise CommandError("o guardião de domínios não pode mandar este comando")
+    if len(signers & trust.admins()) < required_signers(trust, t):
+        raise CommandError("faltam assinaturas de outro administrador")
 
 
 def verify_envelope(trust: Trust, env: dict) -> Verified:
@@ -113,8 +148,7 @@ def verify_envelope(trust: Trust, env: dict) -> Verified:
     signers = verify_sigs(trust, payload, env.get("sigs"))
     if cmd["guardian"] not in signers:
         raise CommandError("o autor do comando não assinou")
-    if len(signers) < required_signers(trust, cmd["type"]):
-        raise CommandError("faltam assinaturas de outro guardião")
+    authorize(trust, cmd, signers)
     return Verified(cmd, payload, signers)
 
 
@@ -147,14 +181,14 @@ class Consumer:
                 gid = a["id"]
                 if gid in self.trust.guardians:
                     raise CommandError("guardião já existe")
-                self.trust.guardians[gid] = Guardian(str(a["name"])[:64], {a["cred"]: a["spki"]})
+                self.trust.guardians[gid] = Guardian(str(a["name"])[:64], {a["cred"]: a["spki"]}, _role(a["role"]))
             elif t == T_ADD_CREDENTIAL:
                 self.trust.guardians[a["id"]].creds[a["cred"]] = a["spki"]
             elif t == T_REMOVE_GUARDIAN:
-                if len(self.trust.guardians) <= 1:
-                    raise CommandError("não remove o último guardião")
                 if a["id"] not in self.trust.guardians:
                     raise CommandError("guardião inexistente")
+                if self.trust.admins() == {a["id"]}:
+                    raise CommandError("não remove o último administrador")
                 del self.trust.guardians[a["id"]]
                 self.last_ctr.pop(a["id"], None)
             else:

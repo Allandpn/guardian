@@ -182,7 +182,7 @@ class ExecutorEndToEnd(unittest.TestCase):
         c2, a2, g2 = self.env.register_guardian("Bia")
         me = c2.call("GET", "/v1/me")[1]["trust"][g2]
         cred, spki = next(iter(me["creds"].items()))
-        self.send("add_guardian", {"id": g2, "name": "Bia", "cred": cred, "spki": spki})
+        self.send("add_guardian", {"id": g2, "name": "Bia", "cred": cred, "spki": spki, "role": "domains"})
         self.ex.step(wait_s=0)
         self.assertIn(g2, self.ex.consumer.trust.guardians)
         (st, r, _), _ = self.env.sign_post(c2, a2, g2, self.dev, "pihole_allow", {"domain": "bia.example"})
