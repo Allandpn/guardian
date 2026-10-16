@@ -500,7 +500,22 @@ def main():
         run_executor(lambda: "recusado.exemplo.com" in fake.lists["allow"])
         out["guardian_my_decisions"] = "recusado.exemplo.com" in fake.lists["allow"]
         ctx2.close()
-        page.goto(f"{origin}/#/history")
+        # guardião-mor: filtro por guardião em Liberados e Bloqueios; Histórico é seção própria
+        ex.report()
+        page.goto(f"{origin}/#/domains/liberados")
+        grp = page.get_by_role("group", name="Filtrar por guardião")
+        grp.get_by_role("button", name="Bia").click()
+        grp.get_by_role("button", name="Bia", pressed=True).wait_for(timeout=10000)
+        page.get_by_text("escola.exemplo.com").first.wait_for(timeout=10000)
+        out["admin_guardian_filter"] = page.get_by_text("liberado.exemplo.com").count() == 0
+        shot("28-liberados-filtro", PHONE)
+        back()
+        grp.get_by_role("button", name="Todos").click()
+        grp.get_by_role("button", name="Todos", pressed=True).wait_for(timeout=10000)
+        page.goto(f"{origin}/#/domains/bloqueios")
+        page.get_by_role("group", name="Filtrar por guardião").wait_for(timeout=10000)
+        out["admin_history_in_nav"] = "Histórico" in page.locator("#nav").inner_text()
+        page.get_by_role("link", name="Histórico").click()
         page.get_by_text("liberar domínio").first.wait_for(timeout=10000)
         out["history_ui"] = True
         shot("13-historico", PHONE)
@@ -551,7 +566,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "domain_guardian_minimal", "guardian_sees_pending_app", "guardian_refuse_app", "guardian_approved_app", "guardian_revoked_own_app", "guardian_my_decisions", "release_all_one_passkey", "domain_refused", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "admin_guardian_filter", "admin_history_in_nav", "domain_guardian_nav", "domain_guardian_minimal", "guardian_sees_pending_app", "guardian_refuse_app", "guardian_approved_app", "guardian_revoked_own_app", "guardian_my_decisions", "release_all_one_passkey", "domain_refused", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 

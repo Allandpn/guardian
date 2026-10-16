@@ -178,7 +178,7 @@ function renderNav(active) {
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/apps', 'Apps', 'grid', 'apps', counts.apps), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
-    item('#/devices', 'Dispositivos', 'device', 'devices', 0)] :
+    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
@@ -362,7 +362,7 @@ async function inicioView() {
     phones.length ? phones.map((d) => deviceCard(d, now, pick(d.id))) :
       h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum aparelho pareado ainda. Use Dispositivos → Parear.')),
     gs.length ? [h('div', { class: 'sec' }, 'Guardiões'), gs.map(([id, g]) => guardianCard(id, g, wide() ? pick(id) : {}))] : null,
-    isAdmin() || canSee('history') ? h('div', { class: 'pad', style: 'margin-top:14px' }, h('a', { class: 'btn block', href: '#/history', style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Ver histórico')) : null);
+    null);
 
   let pane = null;
   if (wide() && selected) {
@@ -716,6 +716,7 @@ function avancadoNodes(d, now) {
 
 // ---------- domínios ----------
 let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
+let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que liberou/bloqueou ('' = todos)
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let blkDev = '';             // filtro do log: aparelho ('' = todos)
 let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
@@ -744,6 +745,9 @@ async function domainsView(tab) {
   const covers = (dom) => entryOf(dom) !== undefined;
   const coverBy = (dom) => { const e = entryOf(dom); return e !== undefined ? (r.allow_by || {})[e] : undefined; };
   const canary = canaryOf(devices);
+  const guardianPills = Object.entries(me.trust || {}).length > 1 && admin ? [h('div', { class: 'sec' }, 'Guardião'),
+    pillGroup('Filtrar por guardião', [['', 'Todos'], ...Object.entries(me.trust).map(([id, g]) => [id, g.name])], domGuardian, (k) => { domGuardian = k; route(); })] : null;
+  if (domGuardian && !(me.trust || {})[domGuardian]) domGuardian = '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
   const tabs = admin ? [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados']] :
     [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/liberados', 'Liberados', 'liberados'], ['#/domains/recusados', 'Recusados', 'recusados']];
@@ -812,12 +816,13 @@ async function domainsView(tab) {
     const qs = new URLSearchParams();
     if (blkDev) qs.set('dev', blkDev);
     if (blkSrc) qs.set('src', blkSrc);
-    const items = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items;
+    const items = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items.filter((x) => !domGuardian || coverBy(x.domain) === domGuardian);  // com guardião escolhido: só o que ele liberou
     const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
     body = [h('div', { class: 'sec' }, 'Aparelho'),
       pillGroup('Filtrar por aparelho', [['', 'Todos'], ...protectedDevs.map((x) => [x.id, x.name])], blkDev, (k) => { blkDev = k; route(); }),
       h('div', { class: 'sec' }, 'Quem bloqueou'),
       pillGroup('Filtrar por origem', [['own', 'Regras próprias'], ['list', 'Listas'], ['', 'Tudo']], blkSrc, (k) => { blkSrc = k; route(); }),
+      guardianPills,
       h('div', { class: 'sec' }, 'Liberar direto por'),
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
         TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, s]) => pill(label, blkTtl === s, () => { blkTtl = s; route(); }))),
@@ -846,10 +851,10 @@ async function domainsView(tab) {
         h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
   } else {
     const by = r.allow_by || {};
-    const mine = (r.allow || []).filter((d) => by[d] !== undefined);
-    const others = (r.allow_total || (r.allow || []).length) - mine.length;
+    const mine = (r.allow || []).filter((d) => by[d] !== undefined && (!domGuardian || by[d] === domGuardian));
+    const others = (r.allow_total || (r.allow || []).length) - (r.allow || []).filter((d) => by[d] !== undefined).length;
     const denyBy = r.deny_by || {};
-    const denyMine = (r.deny || []).filter((d) => denyBy[d] !== undefined);
+    const denyMine = (r.deny || []).filter((d) => denyBy[d] !== undefined && (!domGuardian || denyBy[d] === domGuardian));
     const denyOthers = (r.deny_total || (r.deny || []).length) - denyMine.length;
     const listCard = (name, list) => list.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, list.map((x) => h('div', { class: 'li' },
       h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
@@ -861,7 +866,7 @@ async function domainsView(tab) {
     const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
     const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
     const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
-    body = [listCard('allow', mine),
+    body = [guardianPills, listCard('allow', mine),
       others ? h('p', { class: 'muted', style: 'margin:8px 14px 0' }, `Mais ${others} entrada${others > 1 ? 's' : ''} criada${others > 1 ? 's' : ''} direto no Pi-hole. Elas não aparecem nem são alteradas aqui.`) : null,
       h('details', { class: 'card flat', style: 'margin-top:12px', open: advOpen, ontoggle: (e) => { advOpen = e.target.open; } }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Avançado: bloqueados e domínio manual'),
         h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${denyMine.length}`), listCard('deny', denyMine),
