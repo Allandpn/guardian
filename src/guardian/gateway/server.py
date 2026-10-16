@@ -130,6 +130,10 @@ class Gateway:
             if os.path.exists(p):
                 with open(p, "rb") as f:
                     self.static[path] = (f.read(), ctype)
+        h = hashlib.sha256()
+        for path in sorted(self.static):
+            h.update(path.encode() + b"|" + self.static[path][0])
+        self.build = h.hexdigest()[:12]
         self.routes = [
             ("GET", r"/healthz", self.healthz),
             ("POST", r"/v1/register/options", self.register_options),
@@ -150,6 +154,7 @@ class Gateway:
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests", self.device_requests),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests/(?P<rid>[0-9]{1,12})/cancel", self.cancel_request),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/clients", self.executor_clients),
+            ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/refuse", self.refuse_app),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.post_blocked),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
             ("GET", r"/v1/blocked", self.blocked),
@@ -510,12 +515,15 @@ class Gateway:
     def list_devices(self, req):
         _, role, see = self.who(req)
         out = []
+        refused = self.store.refused_apps()
         for r in self.store.devices():
             report = json.loads(r["report"]) if r["report"] else None
             d = {"id": r["id"], "kind": r["kind"], "name": r["name"], "spki": r["spki"], "created": r["created"],
-                 "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"], "report": report}
+                 "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"], "report": report,
+                 "refused": refused.get(r["id"], [])}
             if role != "admin" and r["kind"] != "executor":
-                keep = (STATUS_KEYS if see["devices"] else set()) | (RULE_KEYS if see["rules"] else set()) | (APP_KEYS if see["apps"] else set())
+                # apps pendentes todo guardião vê (ele também aprova e recusa); o resto depende do que o guardião-mor liberou
+                keep = (STATUS_KEYS if see["devices"] else set()) | (RULE_KEYS if see["rules"] else set()) | (APP_KEYS if see["apps"] else {"pendingApps"})
                 d["report"] = {k: v for k, v in report.items() if k in keep} if report and keep else None
                 if not see["devices"]:
                     d.update(last_seen=0, report_ts=0, pending=0)
@@ -557,7 +565,7 @@ class Gateway:
             raise HttpError(403, str(e))
         if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
             raise HttpError(429, "fila cheia")
-        ready = cmd["type"] in cmds.DOMAIN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd["type"])
+        ready = cmd["type"] in cmds.GUARDIAN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd["type"])
         cid = self.store.enqueue(dev, gid, cmd["ctr"], {"payload": env["payload"], "sigs": env["sigs"]}, ready)
         if cid is None:
             raise HttpError(409, "contador repetido")
@@ -793,6 +801,26 @@ class Gateway:
         self.store.save_report(dev, report)
         return 200, {"ok": True}, {}
 
+    def refuse_app(self, req, dev):
+        """Recusar um app pendente: some da lista dos guardiões; o aparelho o mantém suspenso. `undo` reconsidera."""
+        gid = self.guardian(req)
+        if not self.l_cmd.allow(gid):
+            raise HttpError(429, "devagar")
+        row = self.store.device(dev)
+        if not row or row["kind"] != "device":
+            raise HttpError(404, "aparelho desconhecido")
+        d = req.json()
+        pkg = d.get("pkg")
+        if not isinstance(pkg, str) or not re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg):
+            raise HttpError(400, "pacote inválido")
+        if d.get("undo") is True:
+            self.store.unrefuse_app(dev, pkg)
+            self.store.audit(dev, "app", f"{gid}: reconsiderou {pkg}")
+        else:
+            self.store.refuse_app(dev, pkg, gid)
+            self.store.audit(dev, "app", f"{gid}: recusou {pkg}")
+        return 200, {"ok": True}, {}
+
     def executor_clients(self, req, dev):
         """Os IPs na Tailscale que cada aparelho declarou no relatório assinado dele (o executor monta o mapeamento IP -> aparelho)."""
         row = self.device(req, dev)
@@ -940,6 +968,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("X-Build", self.server.gw.build)  # o site recarrega sozinho quando o servidor passa a servir outra versão
         if self.server.gw.cfg.secure_cookies:
             self.send_header("Strict-Transport-Security", "max-age=31536000")
         if not ctype.startswith(("text/javascript", "text/css", "image/")):

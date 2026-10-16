@@ -24,8 +24,21 @@ _PREFIX = r"^([a-zA-Z0-9-]+\.)*"
 _SHAPE = re.compile(r"^\^\(\[a-zA-Z0-9-\]\+\\\.\)\*((?:[a-z0-9-]+\\\.)+[a-z0-9-]+)\$$")
 
 
+def rule_domain(domain: str) -> str:
+    """O domínio que a regra cobre: sem o "www." da frente (www.science.org e science.org são o mesmo site)."""
+    d = normalize(domain)
+    base = d[4:] if d.startswith("www.") else d
+    return base if "." in base else d
+
+
 def to_regex(domain: str) -> str:
-    return _PREFIX + normalize(domain).replace(".", r"\.") + "$"
+    return _PREFIX + rule_domain(domain).replace(".", r"\.") + "$"
+
+
+def regex_forms(domain: str) -> list[str]:
+    """Todas as formas que o executor já gravou para o domínio: a atual (sem "www.") e a antiga (com o host todo)."""
+    d = normalize(domain)
+    return list(dict.fromkeys([to_regex(d), _PREFIX + d.replace(".", r"\.") + "$"]))
 
 
 def from_regex(pattern) -> str | None:
@@ -37,4 +50,4 @@ def from_regex(pattern) -> str | None:
         d = normalize(m.group(1).replace("\\.", "."))
     except ValueError:
         return None
-    return d if to_regex(d) == pattern else None
+    return d if pattern in regex_forms(d) else None

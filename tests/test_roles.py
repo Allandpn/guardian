@@ -53,21 +53,23 @@ class Roles(unittest.TestCase):
         self.assertEqual(self.dc.call("POST", f"/v1/guardians/{self.gid}/remove", {})[0], 403)
         self.assertEqual(self.dc.call("GET", "/v1/commands/awaiting")[1]["commands"], [])
         (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "approve_app", {"pkg": "x"})
-        self.assertEqual(st, 403, r)
+        self.assertEqual((st, r.get("status")), (200, "ready"))  # aprovar app: o guardião comum também pode
+        (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "revoke_app", {"pkg": "x"})
+        self.assertEqual(st, 403, r)  # revogar continua só do guardião-mor
         (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.ex, "pihole_allow", {"domain": "a.com"})
         self.assertEqual((st, r.get("status")), (200, "ready"))
 
     def test_03_visibility_is_set_by_admin(self):
         def dev_view():
             return next(d for d in self.dc.call("GET", "/v1/devices")[1]["devices"] if d["id"] == self.dev)
-        self.assertIsNone(dev_view()["report"])
+        self.assertNotIn("snapshot", dev_view()["report"] or {})  # sem liberação: só os apps pendentes (o guardião aprova e recusa)
+        self.assertNotIn("filterActive", dev_view()["report"] or {})
         self.assertEqual(self.dc.call("POST", f"/v1/guardians/{self.dgid}/see", {"devices": True})[0], 403)
         self.assertEqual(self.c.call("POST", f"/v1/guardians/{self.gid}/see", {"devices": True})[0], 404)  # admin vê tudo
         self.assertEqual(self.c.call("POST", f"/v1/guardians/{self.dgid}/see", {"devices": True})[0], 200)
         r = dev_view()["report"]
         self.assertTrue(r["filterActive"])
         self.assertNotIn("snapshot", r)
-        self.assertNotIn("pendingApps", r)
         self.c.call("POST", f"/v1/guardians/{self.dgid}/see", {"devices": True, "rules": True, "apps": True})
         r = dev_view()["report"]
         self.assertIn("snapshot", r)
@@ -75,6 +77,19 @@ class Roles(unittest.TestCase):
         self.assertNotIn("trust", r)
         ex = next(d for d in self.dc.call("GET", "/v1/devices")[1]["devices"] if d["id"] == self.ex)
         self.assertEqual(ex["kind"], "executor")
+
+    def test_03b_guardian_refuses_and_reconsiders_a_pending_app(self):
+        def refuse(body, who=None):
+            return (who or self.dc).call("POST", f"/v1/devices/{self.dev}/apps/refuse", body)
+        def refused():
+            return next(d for d in self.dc.call("GET", "/v1/devices")[1]["devices"] if d["id"] == self.dev)["refused"]
+        self.assertEqual(refuse({"pkg": "com.exemplo.jogo"})[0], 200)
+        self.assertEqual(refused(), ["com.exemplo.jogo"])
+        self.assertEqual(refuse({"pkg": "../x"})[0], 400)
+        self.assertEqual(refuse({"pkg": "com.exemplo.jogo", "undo": True})[0], 200)
+        self.assertEqual(refused(), [])
+        self.assertEqual(self.env.client().call("POST", f"/v1/devices/{self.dev}/apps/refuse", {"pkg": "a.b"})[0], 401)
+        self.assertEqual(self.dc.call("POST", f"/v1/devices/{self.ex}/apps/refuse", {"pkg": "a.b"})[0], 404)  # só aparelho, não o executor
 
     def test_04_history_filtered_unless_allowed(self):
         self.c.call("POST", f"/v1/guardians/{self.dgid}/see", {"history": False})

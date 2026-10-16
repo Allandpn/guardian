@@ -24,6 +24,21 @@ class RegexShape(unittest.TestCase):
         for no in ("itau.com.br", "www.itau.com.br", "apixitau.com.br", "evil-api.itau.com.br", "api.itau.com.br.evil.com", "api.itau.combr"):
             self.assertFalse(rx.match(no), no)
 
+    def test_www_is_dropped_so_the_rule_covers_the_site(self):
+        self.assertEqual(domains.rule_domain("www.science.org"), "science.org")
+        self.assertEqual(domains.rule_domain("api.science.org"), "api.science.org")
+        self.assertEqual(domains.rule_domain("www.com"), "www.com")
+        r = domains.to_regex("www.science.org")
+        self.assertEqual(r, r"^([a-zA-Z0-9-]+\.)*science\.org$")
+        rx = re.compile(r)
+        for ok in ("science.org", "www.science.org", "x.science.org"):
+            self.assertTrue(rx.match(ok), ok)
+        self.assertFalse(rx.match("notscience.org"))
+        # a regra antiga (host inteiro, gravada antes) continua reconhecida e removível
+        old = r"^([a-zA-Z0-9-]+\.)*www\.science\.org$"
+        self.assertEqual(domains.from_regex(old), "www.science.org")
+        self.assertIn(old, domains.regex_forms("www.science.org"))
+
     def test_hand_written_rules_are_never_recognized(self):
         for r in (r"^([a-zA-Z0-9-]+\.)*itau.com.br", r"^([a-zA-Z0-9-]+\.)*itau\.com\.br", r".*", r"^([a-zA-Z0-9-]+\.)*itau\.com\.br$$",
                   r"^([a-zA-Z0-9-]+\.)*\.\.com$", r"(^([a-zA-Z0-9-]+\.)*itau\.com\.br$)", "", None, 5):
@@ -82,6 +97,16 @@ class RegexAllow(unittest.TestCase):
         self.assertNotIn("static.itau.com.br", [domains.from_regex(r) for r in self.fake.regex["allow"]])
         self.assertIn(domains.to_regex("static.itau.com.br"), self.fake.regex["deny"])
         self.assertEqual(self.fake.regex["deny"][self.mine], "meu")
+
+    def test_03b_www_is_stored_without_www_and_removal_also_clears_the_old_form(self):
+        old = r"^([a-zA-Z0-9-]+\.)*www\.science\.org$"
+        self.fake.regex["allow"][old] = "guardian:x"  # liberação gravada antes da mudança
+        self.send("pihole_allow", {"domain": "www.science.org"})
+        self.assertIn(r"^([a-zA-Z0-9-]+\.)*science\.org$", self.fake.regex["allow"])
+        self.assertNotIn(r"^([a-zA-Z0-9-]+\.)*www\.science\.org$", [r for r in self.fake.regex["allow"] if r != old])
+        self.send("pihole_remove", {"list": "allow", "domain": "www.science.org"})
+        self.assertNotIn(old, self.fake.regex["allow"])
+        self.assertNotIn(r"^([a-zA-Z0-9-]+\.)*science\.org$", self.fake.regex["allow"])
 
     def test_04_release_that_would_cover_the_canary_is_refused(self):
         self.send("pihole_allow", {"domain": "exemplo.com"})

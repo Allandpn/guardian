@@ -20,7 +20,9 @@ Objetivo: o **guardião-mor** controla tudo; os demais **guardiões** só cuidam
 
 | Ação | Guardião-mor | Guardião |
 |---|---|---|
-| Regras, apps, PIN, janelas, ativar, pedidos do aparelho | sim | não |
+| Regras, PIN, janelas, ativar, revogar app, pedidos do aparelho | sim | não |
+| `approve_app` (aprovar app novo) | sim | **sim** (decisão de 2026-10-16; a assinatura do guardião basta) |
+| Recusar app pendente (some da lista; o app continua suspenso) | sim | sim (sem passkey, só no gateway) |
 | `pihole_allow`, `pihole_deny`, `pihole_remove`, `pihole_batch` | sim | sim |
 | Responder pedidos de liberação, ver o log de bloqueios | sim | sim |
 | Convidar guardião, parear aparelho ou executor, esquecer aparelho | sim | não |
@@ -45,7 +47,7 @@ Quem aplica é quem recebe o comando: o aparelho (Kotlin) e o executor (Python),
 - `/v1/me` devolve o papel e a visibilidade (`see: {devices, rules, apps, history}`). Rotas de admin respondem 403 para o guardião. `/v1/devices` devolve para ele o executor completo e, dos aparelhos, só o que `see` libera; `/v1/audit` sem `history` traz só as linhas do executor e dos pedidos.
 - `POST /v1/guardians/{id}/see` (admin) grava a visibilidade. `POST /v1/guardians/{id}/remove` (admin) tira o guardião do gateway e derruba as sessões dele na hora; nunca o último guardião-mor nem a si mesmo. A visibilidade é regra do gateway (é ele quem guarda os relatórios); as ações continuam sendo conferidas no aparelho e no executor.
 - Site do admin: Pessoas mostra o papel de cada um, o convite tem a escolha do papel e um aviso vermelho enquanto o admin tiver só uma passkey. Propagar um guardião só vai para o executor (o aparelho não precisa conhecê-lo).
-- Site do guardião: Domínios, Histórico (só domínios) e Conta (as próprias passkeys e "Cadastrar outra passkey").
+- Site do guardião (mínimo): **Domínios** (só os pedidos de liberação, com Recusar, Liberar todos e Confirmar), **Apps** (aprovar com passkey ou recusar apps pendentes) e **Conta** (as próprias passkeys). Histórico só se o guardião-mor liberar.
 
 ## Riscos
 

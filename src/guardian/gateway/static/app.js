@@ -32,12 +32,22 @@ const fail = (e) => toast(e && e.message ? e.message : String(e));
 const show = (...nodes) => { main.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); };
 const wide = () => window.matchMedia('(min-width: 900px)').matches;
 
+let BUILD = null;  // versão do site que esta página carregou (cabeçalho X-Build)
+function checkBuild(r) {
+  const b = r.headers.get('X-Build');
+  if (!b) return;
+  if (BUILD === null) { BUILD = b; return; }
+  // outra versão no servidor: recarrega quando não há folha aberta nem campo em uso (não perde o que está sendo digitado)
+  if (b !== BUILD && !document.querySelector('.overlay, .sheet, input:focus, textarea:focus, select:focus')) location.reload();
+}
+
 async function api(method, path, body) {
   const r = await fetch(path, {
     method, credentials: 'same-origin', cache: 'no-store',
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   });
+  checkBuild(r);
   let data = {};
   try { data = await r.json(); } catch (_) { /* corpo vazio */ }
   if (!r.ok) { const e = new Error(data.error || `erro ${r.status}`); e.status = r.status; throw e; }
@@ -126,6 +136,13 @@ const trustFor = (kind) => Object.fromEntries(Object.entries(me.trust).filter(([
 // ---------- dados ----------
 async function loadAll() {
   const [d, r, a] = await Promise.all([api('GET', '/v1/devices'), api('GET', '/v1/requests'), api('GET', '/v1/commands/awaiting')]);
+  for (const x of d.devices) {  // apps recusados saem das pendências e ficam em refusedApps (dá para reconsiderar)
+    const ref = new Set(x.refused || []);
+    if (x.report && x.report.pendingApps) {
+      x.refusedApps = x.report.pendingApps.filter((a) => ref.has(a.pkg));
+      x.report.pendingApps = x.report.pendingApps.filter((a) => !ref.has(a.pkg));
+    }
+  }
   const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).length, 0);
   counts = { apps, reqs: r.items.length, cosign: a.commands.filter((c) => c.can_cosign).length };
   return { devices: d.devices, now: d.now, reqs: r.items, aw: a.commands };
@@ -162,6 +179,7 @@ function renderNav(active) {
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', counts.apps), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/people', 'Pessoas', 'people', 'people', counts.cosign), item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
+      item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
   nav.replaceChildren(h('div', { class: 'brand' }, 'NotToday Guardian'), ...items.filter(Boolean),
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
@@ -505,22 +523,54 @@ function regrasNodes(d) {
 }
 
 // ---------- apps ----------
-function appsNodes(d) {
+const appRisky = (x) => /vpn|shizuku|shell|hail|test dpc/i.test(x);
+
+/** Apps pendentes de um aparelho (Aprovar com passkey ou Recusar) e os já recusados (Reconsiderar). Serve ao guardião-mor e ao guardião. */
+function pendingAppNodes(d) {
   const r = d.report || {};
   const pend = r.pendingApps || [];
-  const approved = r.approvedApps || [];
-  const risky = (x) => /vpn|shizuku|shell|hail|test dpc/i.test(x);
   const nodes = [h('div', { class: 'sec' }, `Aguardando aprovação · ${pend.length}`)];
   if (!pend.length) nodes.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando.')));
+  const refuse = (a, undo) => act(async () => {
+    if (!undo && !(await sheet({ title: `Recusar “${a.label || a.pkg}” em ${d.name}?`, rows: [['Aparelho', d.name], ['Pacote', a.pkg]],
+      note: 'O app continua suspenso no aparelho e sai desta lista. Dá para reconsiderar depois.', confirm: 'Recusar', danger: true }))) return;
+    await api('POST', `/v1/devices/${d.id}/apps/refuse`, { pkg: a.pkg, ...(undo ? { undo: true } : {}) });
+    route();
+  });
   for (const a of pend) {
     const risks = a.risks || [];
-    nodes.push(h('div', { class: 'card' + (risks.some(risky) ? ' badb' : '') },
+    nodes.push(h('div', { class: 'card' + (risks.some(appRisky) ? ' badb' : '') },
       h('div', { class: 'row' }, h('div', { class: 'sp' }, h('strong', {}, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
+        h('button', { class: 'btn', type: 'button', onclick: refuse(a, false) }, 'Recusar'),
         h('button', { class: 'btn pri', type: 'button', onclick: act(() => confirmSend(d.id, 'approve_app', { pkg: a.pkg }, {
           title: `Aprovar “${a.label || a.pkg}” em ${d.name}?`, rows: [['Ação', 'Aprovar app'], ['Aparelho', d.name], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok',
           note: risks.length ? `Risco: ${risks.join(', ')}.` : null, noteKind: 'bad' }).then(() => route())) }, 'Aprovar')),
-      risks.length ? h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, risks.map((x) => chip(`risco: ${x}`, risky(x) ? 'bad' : 'warn'))) : null));
+      risks.length ? h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, risks.map((x) => chip(`risco: ${x}`, appRisky(x) ? 'bad' : 'warn'))) : null));
   }
+  const ref = d.refusedApps || [];
+  if (ref.length) {
+    nodes.push(h('div', { class: 'sec' }, `Recusados · ${ref.length}`),
+      h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, ref.map((a) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
+        h('button', { class: 'btn', type: 'button', onclick: refuse(a, true) }, 'Reconsiderar')))));
+  }
+  return nodes;
+}
+
+/** Apps aguardando aprovação, de todos os aparelhos (tela do guardião comum). */
+async function appsInboxView() {
+  const { devices } = await loadAll();
+  renderNav('apps');
+  const devs = devices.filter((x) => x.kind === 'device' && (((x.report || {}).pendingApps || []).length || (x.refusedApps || []).length));
+  show(top('Apps'), h('div', { class: 'wrap wide' }, devs.length ? devs.map((d) => [h('div', { class: 'sec' }, d.name), pendingAppNodes(d)]) :
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando aprovação.'))));
+  timer = setTimeout(autoRefresh, 20000);
+}
+
+function appsNodes(d) {
+  const r = d.report || {};
+  const approved = r.approvedApps || [];
+  const nodes = pendingAppNodes(d);
   nodes.push(h('div', { class: 'sec' }, `Aprovados · ${approved.length}`));
   const listBox = h('div', {});
   const draw = (q) => {
@@ -573,7 +623,7 @@ async function domainsView(tab) {
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const protectedDevs = devices.filter((x) => x.kind === 'device');
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
-  const allowed = new Set(r.allow || []);
+  const covers = (dom) => (r.allow || []).some((a) => dom === a || dom.endsWith('.' + a));  // a regra cobre o domínio e os subdomínios
   const canary = (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
   const tabs = minimal ? [] : [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'],
@@ -616,13 +666,27 @@ async function domainsView(tab) {
       }
       route();
     });
+    const refuseEvery = act(async () => {  // recusar não solta nada: sem passkey
+      for (const { q, rows } of openReqs) {
+        await api('POST', `/v1/requests/${q.id}/resolve`, { deny: rows.map((i) => i.domain) });
+        rows.forEach((i) => reqChoice.delete(`${q.id}|${i.domain}`));
+      }
+      route();
+    });
     body = [openReqs.length > 1 ? h('div', { class: 'card' },
-      h('button', { class: 'btn pri block', type: 'button', onclick: confirmAll }, allItems.length ? `Liberar todos (${total}) com um passkey` : 'Negar todos'),
+      h('div', { class: 'row', style: 'gap:8px' },
+        h('button', { class: 'btn grow', type: 'button', onclick: refuseEvery }, `Recusar todos (${total})`),
+        h('button', { class: 'btn pri grow', type: 'button', onclick: confirmAll }, allItems.length ? `Liberar todos (${total}) com um passkey` : 'Negar todos')),
       h('div', { class: 'muted', style: 'margin-top:8px' }, 'Vale a escolha de cada domínio abaixo (Sempre, se você não mudar). A folha mostra tudo antes de assinar.' + (total > 50 ? ' Só os 50 primeiros entram; os outros continuam pedindo.' : ''))) : null,
       unb.length ? h('div', { class: 'grid2' }, unb.map((q) => {
       const rows = q.items.filter((i) => i.state === 'open');
       const key = (d) => `${q.id}|${d}`;
       const val = (d) => reqChoice.get(key(d)) || 'always';
+      const refuse = act(async () => {
+        await api('POST', `/v1/requests/${q.id}/resolve`, { deny: rows.map((i) => i.domain) });
+        rows.forEach((i) => reqChoice.delete(key(i.domain)));
+        route();
+      });
       const confirm = act(async () => {
         const items = rows.filter((i) => val(i.domain) !== 'deny').map((i) => ({ domain: i.domain, ...(val(i.domain) === 'always' ? {} : { ttl_s: Number(val(i.domain)) }) }));
         const deny = rows.filter((i) => val(i.domain) === 'deny').map((i) => i.domain);
@@ -648,8 +712,10 @@ async function domainsView(tab) {
               TTL_CHOICES.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(val(i.domain) === k),
                 onclick: () => { reqChoice.set(key(i.domain), k); route(); } }, label))));
         }),
-        h('button', { class: 'btn pri block', type: 'button', style: 'margin-top:12px', onclick: confirm },
-          rows.every((i) => val(i.domain) === 'deny') ? 'Negar' : 'Confirmar com passkey'));
+        h('div', { class: 'row', style: 'gap:8px;margin-top:12px' },
+          h('button', { class: 'btn grow', type: 'button', onclick: refuse }, 'Recusar'),
+          h('button', { class: 'btn pri grow', type: 'button', onclick: confirm },
+            rows.every((i) => val(i.domain) === 'deny') ? 'Negar' : 'Confirmar com passkey')));
     })) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de liberação.')),
     otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
       h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
@@ -673,7 +739,7 @@ async function domainsView(tab) {
       items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
           h('div', { class: 'muted' }, `${devName(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${x.src === 'own' ? 'regra própria' : x.list || 'lista'}`, ' ', flags(x))),
-        allowed.has(x.domain) ? chip('liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
+        covers(x.domain) ? chip('liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
           batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) :
         h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada bloqueado com esses filtros.'))];
   } else {
@@ -1100,6 +1166,7 @@ async function route() {
     else if (hash === '#/people') await (isAdmin() ? peopleView() : contaView());
     else if (his) await (isAdmin() || canSee('history') ? historyView(his[1]) : domainsView());
     else if (hash === '#/pair' && isAdmin()) await pairView();
+    else if (hash === '#/apps') await appsInboxView();
     else if (isAdmin() || canSee('devices')) await inicioView();
     else await domainsView();
   } catch (e) {

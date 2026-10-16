@@ -29,6 +29,8 @@ ROLE_DOMAINS = "domains"
 ROLES = {ROLE_ADMIN, ROLE_DOMAINS}
 # O que um guardião pode assinar (além de add_credential para si mesmo).
 DOMAIN_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"}
+# Aprovar app novo também é do guardião comum (decisão de 2026-10-16); revogar, regras, PIN etc. continuam só do guardião-mor.
+GUARDIAN_TYPES = DOMAIN_TYPES | {"approve_app"}
 
 
 class CommandError(ValueError):
@@ -153,7 +155,7 @@ def verify_sigs(trust: Trust, payload: bytes, sigs: list) -> set:
 
 
 def required_signers(trust: Trust, cmd_type: str) -> int:
-    """Quantos guardiões-mor precisam assinar (comandos de domínio: o autor basta)."""
+    """Quantos guardiões-mor precisam assinar (comandos de domínio e aprovar app: o autor basta)."""
     return 2 if cmd_type in TWO_SIG_TYPES and len(trust.admins()) >= 2 else 1
 
 
@@ -161,14 +163,14 @@ def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
     """O autor pode mandar este comando agora? (papel e janela de horário; o quórum é conferido à parte)
 
     A janela de horário do autor vale na hora em que QUEM CONSOME o comando o recebe, pelo relógio dele (não o do navegador).
-    Guardião: só domínios e passkey nova para si mesmo."""
+    Guardião: domínios, aprovar app e passkey nova para si mesmo."""
     author = trust.guardians.get(cmd["guardian"])
     if author is None:
         raise CommandError("autor desconhecido")
     if not in_window(author.window, time.time() if now is None else now):
         raise CommandError("fora da janela de horário deste guardião")
     t = cmd["type"]
-    if t in DOMAIN_TYPES:
+    if t in GUARDIAN_TYPES:
         return author
     if author.role != ROLE_ADMIN:
         if t == T_ADD_CREDENTIAL and cmd["args"].get("id") == cmd["guardian"]:
@@ -179,7 +181,7 @@ def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
 
 def authorize(trust: Trust, cmd: dict, signers: set, now: float | None = None) -> None:
     author = check_author(trust, cmd, now)
-    if cmd["type"] in DOMAIN_TYPES or author.role != ROLE_ADMIN:
+    if cmd["type"] in GUARDIAN_TYPES or author.role != ROLE_ADMIN:
         return
     if len(signers & trust.admins()) < required_signers(trust, cmd["type"]):
         raise CommandError("faltam assinaturas de outro guardião-mor")

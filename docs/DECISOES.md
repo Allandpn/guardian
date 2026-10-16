@@ -51,6 +51,12 @@ Nome do sistema: **Guardian** (em inglês, em todos os textos). Papéis: **guard
 ### Liberação como regex (2026-10-16)
 29. O guardião vê e aprova o domínio simples; o executor grava no Pi-hole uma regex gerada por ele, `^([a-zA-Z0-9-]+\.)*dominio\.com$` (o domínio e os subdomínios, como as regras que o dono já usa), em `allow/regex` (e `deny/regex` ao bloquear). Ninguém digita regex; só essa forma exata é reconhecida, listada e removida, então regras escritas à mão ficam intactas. `ALLOW_MODE=exact` volta ao domínio exato. Liberar `x.itau.com.br` cobre `x.itau.com.br` e os subdomínios dele, não `www.itau.com.br`. O executor recusa liberar um domínio que cobriria o canário. **Não validado num Pi-hole v6 real:** rotas `/api/domains/allow/regex/...`.
 
+### Guardião comum e recusas (2026-10-16)
+30. O guardião comum também **aprova apps** (`approve_app`, assinatura dele basta; o aparelho e o gateway conferem). Revogar app, regras e PIN continuam só do guardião-mor.
+31. **Recusar**: pedido de domínio (por pedido e "Recusar todos") e app pendente. Recusar não precisa de passkey porque não solta nada: o domínio fica negado no pedido; o app fica suspenso no aparelho e sai da lista (tabela `app_refusals` no gateway, "Reconsiderar" desfaz).
+32. Regra regex ao liberar `www.dominio.com` grava `^([a-zA-Z0-9-]+\.)*dominio\.com$` (sem o `www.`); regras antigas com o host inteiro continuam reconhecidas e são removidas junto.
+33. O site recarrega sozinho quando o gateway passa a servir outra versão (cabeçalho `X-Build`), sem folha aberta nem campo em uso.
+
 ### Interface
 27. Paleta "Mar e terra" (dark) no site e no app. O app segue o estilo das Configurações do Android: início com estado e categorias, uma subtela por categoria, rascunho único e barra fixa de "Salvar e aplicar".
 28. O site funciona em celular, tablet e computador (barra de baixo no celular, menu lateral a partir de 900 px, conteúdo centralizado).

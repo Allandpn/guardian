@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TE
 CREATE TABLE IF NOT EXISTS blocked(dev TEXT NOT NULL, domain TEXT NOT NULL, src TEXT NOT NULL, list TEXT NOT NULL DEFAULT '',
   cname INTEGER NOT NULL DEFAULT 0, count INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(dev, domain));
 CREATE INDEX IF NOT EXISTS blocked_last ON blocked(dev, last);
+CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS request_domains(rid INTEGER NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open',
   ttl_s INTEGER, by TEXT, ts INTEGER NOT NULL, PRIMARY KEY(rid, domain));
 """
@@ -159,7 +160,7 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests", "blocked"):
+            for t in ("commands", "ctrs", "requests", "blocked", "app_refusals"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
             self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -216,6 +217,7 @@ class Store:
         self.x("DELETE FROM blocked WHERE last<?", (int(time.time()) - BLOCKED_KEEP_S,))
         self.x("DELETE FROM requests WHERE status<>'open' AND ts<?", (cutoff,))
         self.x("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
+        self.x("DELETE FROM app_refusals WHERE ts<?", (int(time.time()) - 90 * 24 * 3600,))
         self.x("DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)", (AUDIT_MAX,))
 
     # --- meta e inscrições de push ------------------------------------------------
@@ -249,6 +251,19 @@ class Store:
         return self.q("SELECT * FROM push_subs")
 
     # --- auditoria e pedidos ---------------------------------------------------------
+    def refuse_app(self, dev: str, pkg: str, gid: str) -> None:
+        self.x("INSERT INTO app_refusals(dev,pkg,ts,guardian) VALUES(?,?,?,?) ON CONFLICT(dev,pkg) DO UPDATE SET ts=excluded.ts, guardian=excluded.guardian",
+               (dev, pkg, int(time.time()), gid))
+
+    def unrefuse_app(self, dev: str, pkg: str) -> None:
+        self.x("DELETE FROM app_refusals WHERE dev=? AND pkg=?", (dev, pkg))
+
+    def refused_apps(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for r in self.q("SELECT dev, pkg FROM app_refusals ORDER BY ts DESC"):
+            out.setdefault(r["dev"], []).append(r["pkg"])
+        return out
+
     def audit(self, dev: str | None, kind: str, text: str):
         self.x("INSERT INTO audit(dev,ts,kind,text) VALUES(?,?,?,?)", (dev, int(time.time()), kind, text[:300]))
 

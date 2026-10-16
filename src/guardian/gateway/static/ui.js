@@ -24,6 +24,7 @@ const ICONS = {
   chevron: ['M9 5l7 7-7 7'],
   shield: ['M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', 'M9 12l2 2 4-4'],
   x: ['M6 6l12 12', 'M18 6L6 18'],
+  grid: ['M4 4h6v6H4z', 'M14 4h6v6h-6z', 'M4 14h6v6H4z', 'M14 14h6v6h-6z'],
 };
 
 export function icon(name, size = 22) {

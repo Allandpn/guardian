@@ -149,7 +149,7 @@ class Executor:
         canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
         if canary and d == canary:
             raise ValueError("o domínio-canário não pode ser alterado")
-        if allow and canary and self.cfg.allow_mode == "regex" and canary.endswith("." + d):
+        if allow and canary and self.cfg.allow_mode == "regex" and canary.endswith("." + domains.rule_domain(d)):
             raise ValueError("a liberação cobriria o domínio-canário")  # a regex inclui os subdomínios
         return d
 
@@ -162,7 +162,8 @@ class Executor:
     def _del(self, list_: str, d: str) -> None:
         """Tira o domínio da lista nas duas formas (exata e a regex gerada aqui); regras escritas à mão não são tocadas."""
         self.pihole.delete_domain(list_, d)
-        self.pihole.delete_domain(list_, domains.to_regex(d), kind="regex")
+        for rx in domains.regex_forms(d):  # a atual (sem "www.") e a antiga (host inteiro)
+            self.pihole.delete_domain(list_, rx, kind="regex")
 
     def _entries(self, list_: str) -> list[dict]:
         """Entradas da lista como domínios simples: as exatas e as regex geradas aqui."""

@@ -416,6 +416,43 @@ def main():
         page2.get_by_role("heading", name="Conta").wait_for(timeout=10000)
         if shots:
             page2.screenshot(path=os.path.join(shots, "18-conta.png"), full_page=True)
+        # Recusar um pedido de domínio (sem passkey): fica "denied" para o aparelho e nada é liberado
+        fake.queries.append({"time": _t.time() - 3, "domain": "recusado.exemplo.com", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
+        ex.collect_blocks()
+        gw.call("POST", f"/v1/devices/{dev}/requests", {"kind": "unblock", "domains": ["recusado.exemplo.com"]})
+        page2.goto(f"{origin}/#/domains/pedidos")
+        page2.reload()
+        page2.get_by_text("recusado.exemplo.com").first.wait_for(timeout=10000)
+        page2.get_by_role("button", name="Recusar", exact=True).click()
+        page2.get_by_text("Nenhum pedido de liberação").wait_for(timeout=10000)
+        rq = gw.call("GET", f"/v1/devices/{dev}/requests")["requests"]
+        out["domain_refused"] = (any(i["domain"] == "recusado.exemplo.com" and i["state"] == "denied" for r_ in rq for i in r_["items"])
+                                 and "recusado.exemplo.com" not in fake.lists["allow"] and not any("recusado" in k for k in fake.regex["allow"]))
+        # guardião comum: vê os apps pendentes, recusa, reconsidera e aprova (um comando assinado por ele chega ao aparelho)
+        gw.call("POST", f"/v1/devices/{dev}/report", {"kind": "device", "filterActive": True, "owner": False, "tailscale": True, "pinSet": True,
+                "version": "test", "activated": True, "snapshot": {}, "labels": {}, "groups": {}, "hints": {}, "approvedApps": [], "pending": [],
+                "windows": {}, "trust": {}, "ctrs": {},
+                "pendingApps": [{"pkg": "com.exemplo.novo", "label": "Novo App", "risks": ["navegador sem bloqueio de acesso por IP"]}]})
+        page2.goto(f"{origin}/#/apps")
+        page2.reload()
+        page2.get_by_text("Novo App").first.wait_for(timeout=10000)
+        out["guardian_sees_pending_app"] = "Apps" in page2.locator("#nav").inner_text() and "Histórico" not in page2.locator("#nav").inner_text()
+        if shots:
+            page2.set_viewport_size(PHONE)
+            page2.wait_for_timeout(300)
+            page2.screenshot(path=os.path.join(shots, "23-guardiao-apps.png"), full_page=True)
+        page2.get_by_role("button", name="Recusar").first.click()
+        page2.get_by_role("dialog").get_by_role("button", name="Recusar").click()
+        page2.get_by_text("Recusados · 1").wait_for(timeout=10000)
+        page2.get_by_role("button", name="Reconsiderar").click()
+        page2.get_by_text("Aguardando aprovação · 1").wait_for(timeout=10000)
+        out["guardian_refuse_app"] = True
+        page2.get_by_role("button", name="Aprovar").first.click()
+        page2.get_by_role("dialog").get_by_role("button", name="Assinar", exact=False).click(timeout=8000)
+        page2.get_by_role("dialog").wait_for(state="detached", timeout=10000)
+        sent = gw.call("GET", f"/v1/devices/{dev}/commands?after=0&wait=0")["commands"]
+        last = cmds.parse_payload(b64.dec(sent[-1]["envelope"]["payload"])) if sent else {}
+        out["guardian_approved_app"] = last.get("type") == "approve_app" and last.get("args") == {"pkg": "com.exemplo.novo"}
         ctx2.close()
         page.goto(f"{origin}/#/history")
         page.get_by_text("liberar domínio").first.wait_for(timeout=10000)
@@ -467,7 +504,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "domain_guardian_minimal", "release_all_one_passkey", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "domain_guardian_minimal", "guardian_sees_pending_app", "guardian_refuse_app", "guardian_approved_app", "release_all_one_passkey", "domain_refused", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 
