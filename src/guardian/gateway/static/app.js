@@ -457,7 +457,7 @@ function regrasNodes(d) {
     const changed = ks.filter((k) => k in dr).length;
     return h('div', { class: 'group' },
       h('button', { class: 'gh', type: 'button', 'aria-expanded': String(isOpen), onclick: () => { if (open.has(g)) open.delete(g); else open.add(g); route(); } },
-        g, h('span', { class: 'sp' }), changed ? chip(`${changed} alterada(s)`, 'warn') : null, h('span', { class: 'muted' }, `${ks.length} itens`)),
+        g, h('span', { class: 'sp' }), changed ? chip(`${changed} alterada(s)`, 'warn') : null, h('span', { class: 'muted' }, `${ks.length} ${ks.length === 1 ? 'item' : 'itens'}`)),
       isOpen ? ks.map(rowFor) : null);
   });
   const n = Object.keys(dr).length;

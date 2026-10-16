@@ -163,7 +163,7 @@ form.f { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin:
 .sheet .row .btn { flex: 1; }
 .grab { width: 44px; height: 5px; border-radius: 3px; background: var(--line); margin: 0 auto 8px; }
 @media (min-width: 900px) { .overlay { align-items: center; } .sheet { border-radius: 18px; } }
-#toast { position: fixed; left: 50%; bottom: calc(88px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 30; background: var(--s2); color: var(--text); border: 1px solid var(--line);
+#toast { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 30; background: var(--s2); color: var(--text); border: 1px solid var(--line);
   padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
 #toast.show { opacity: 1; }
 
@@ -188,7 +188,6 @@ form.f { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin:
   .sticky { flex-wrap: wrap; row-gap: 8px; }
   .sticky .sp { flex-basis: 100%; }
   .sticky .btn { flex: 1; }
-  body:has(.sticky) #toast { bottom: calc(196px + env(safe-area-inset-bottom, 0px)); }  /* o aviso não cobre a barra de salvar */
 }
 
 /* ---- computador ---- */
