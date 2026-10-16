@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from cryptography.hazmat.primitives import serialization
 
-from ..protocol import b64, commands as cmds, devauth, webauthn
+from ..protocol import b64, commands as cmds, devauth, tailnet, webauthn
 from ..executor.domains import normalize as normalize_domain
 from . import webpush
 from .alerts import Alerts, Notifier
@@ -149,6 +149,7 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests", self.post_request),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests", self.device_requests),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests/(?P<rid>[0-9]{1,12})/cancel", self.cancel_request),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/clients", self.executor_clients),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.post_blocked),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
             ("GET", r"/v1/blocked", self.blocked),
@@ -791,6 +792,18 @@ class Gateway:
                                      f"{'ok' if e.get('ok') else 'FALHOU'}: {str(e.get('msg', ''))[:200]}")
         self.store.save_report(dev, report)
         return 200, {"ok": True}, {}
+
+    def executor_clients(self, req, dev):
+        """Os IPs na Tailscale que cada aparelho declarou no relatório assinado dele (o executor monta o mapeamento IP -> aparelho)."""
+        row = self.device(req, dev)
+        if row["kind"] != "executor":
+            raise HttpError(403, "só o executor lê isto")
+        claims = {}
+        for r in self.store.devices():
+            if r["kind"] == "device" and r["report"]:
+                claims[r["id"]] = tailnet.valid_ips(json.loads(r["report"]).get("tsIps"))
+        ok = tailnet.ip_map(claims)  # IP declarado por dois aparelhos não vale para nenhum
+        return 200, {"clients": [{"dev": d, "ips": [ip for ip in ips if ip in ok]} for d, ips in claims.items() if any(ip in ok for ip in ips)]}, {}
 
     def post_blocked(self, req, dev):
         row = self.device(req, dev)

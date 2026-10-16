@@ -66,7 +66,7 @@ No aparelho o horário usa o relógio do Android: ligar a restrição "Bloquear 
 ## Pendências e ideias
 
 - Executar a migração do guardião-mor ([MIGRACAO.md](MIGRACAO.md)).
-- Configurar `CLIENTS` no executor (IP do aparelho na Tailscale = id do aparelho) e conferir o Query Log do Pi-hole.
+- ~~Configurar `CLIENTS` à mão~~: automático (2026-10-16). O app informa `tsIps` no relatório e o executor monta IP → aparelho sozinho; `CLIENTS` ficou só como reserva para app antigo. Falta conferir o Query Log do Pi-hole com um aparelho novo.
 - Proteger no executor o domínio do gateway e os da Tailscale contra bloqueio (ideia da conversa; não feita).
 - Comando para trocar o horário/regra sem recriar o guardião: descartado de propósito (imutável).
 - Telas do app mais próximas dos wireframes (mais cartões e chips): opcional.

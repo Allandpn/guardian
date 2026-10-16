@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from ..protocol import b64, commands as cmds, devauth
+from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import domains
 from .pihole import Pihole, PiholeError
 
@@ -263,9 +263,19 @@ class Executor:
             self._lists_ts = self.now()
         return self._lists.get(list_id, "") if isinstance(list_id, int) else ""
 
+    def known_clients(self) -> dict:
+        """IP -> aparelho: os que os aparelhos declaram no relatório (via gateway) e, por cima, o CLIENTS escrito à mão."""
+        try:
+            got = self.gw.call("GET", f"/v1/devices/{self.dev}/clients").get("clients", [])
+            self._auto_clients = tailnet.ip_map({c["dev"]: c["ips"] for c in got
+                                                 if isinstance(c, dict) and isinstance(c.get("dev"), str) and isinstance(c.get("ips"), list)})
+        except (GatewayError, KeyError, TypeError) as e:
+            print("clientes:", e, file=sys.stderr)  # sem o gateway, vale o último mapa bom
+        return {**getattr(self, "_auto_clients", {}), **(self.cfg.clients or {})}
+
     def collect_blocks(self) -> int:
         """Lê no Pi-hole o que foi bloqueado para os aparelhos pareados e envia ao gateway. Devolve quantos domínios."""
-        clients = self.cfg.clients or {}
+        clients = self.known_clients()
         if not clients:
             return 0
         since = self.state.data.get("blocked_since") or self.now() - BLOCKS_BACKFILL_S
