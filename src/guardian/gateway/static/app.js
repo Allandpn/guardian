@@ -244,7 +244,8 @@ function inviteView(token) {
   show(h('div', { class: 'login' },
     h('div', { class: 'logo' }, icon('shield', 38)),
     h('h1', {}, 'Cadastrar passkey'),
-    h('p', { class: 'muted' }, 'Você foi convidado como guardião. Cadastre um passkey neste aparelho e, depois, um segundo (outro celular ou chave física) para não ficar sem acesso.'),
+    h('p', { class: 'muted' }, 'Você foi convidado como guardião. Cadastre uma passkey neste aparelho e, depois, uma segunda (outro celular ou chave física) para não ficar sem acesso.'),
+    h('p', { class: 'note ok' }, 'Digital, rosto ou PIN são conferidos só pelo seu aparelho e não saem dele. O Guardian guarda apenas a chave pública, que vale só neste site. Se o seu gerenciador sincronizar (Google, Apple), a chave privada vai criptografada para a sua conta, nunca para o Guardian.'),
     h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
       const o = await api('POST', '/v1/register/options', { invite: token });
       const reg = await passkeyCreate(o);
