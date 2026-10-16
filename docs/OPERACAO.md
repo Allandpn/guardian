@@ -75,3 +75,20 @@ O site foi feito primeiro para o celular. Para o guardião ter um ícone como de
 Detalhes que o site trata no celular: áreas seguras (notch e barra de gestos), campos com o teclado certo e sem zoom no iPhone, o voltar do Android fecha a folha de confirmação, a atualização automática não apaga o que está sendo digitado e, ao voltar para o app, os dados são recarregados. Os links de convite e de pareamento têm o botão "Compartilhar" (WhatsApp, e-mail…) onde o navegador oferece.
 
 O teste de navegador (`AUDIT=1 PYTHONPATH=src python tests/e2e_browser.py`) mede cada tela em 320 e 360 px de largura: rolagem para o lado, alvos de toque menores que 40 px e campos que dariam zoom no iPhone.
+
+## Guardião-mor no computador do trabalho (passkey presa ao computador, horário)
+
+Troca de um guardião-mor antigo (passkey na conta Google) por um novo que só vale no trabalho:
+
+1. Em **Pessoas**, com o guardião antigo: nome (ex.: "Trabalho"), **Guardião-mor**, passkey **Só neste aparelho**, horário **Só em um horário**
+   (seg–sex, 12:00 às 17:00). Gerar link de convite.
+2. No computador do trabalho, num perfil do navegador **sem login na conta Google**: abrir o link, **Cadastrar passkey** e escolher
+   **Windows Hello** na janela do navegador. Se só aparecer o Gerenciador de Senhas do Google, o cadastro é recusado ("seria sincronizada").
+3. De volta ao guardião antigo: **Propagar** o novo guardião para o executor e para cada aparelho.
+4. **Remover** o guardião antigo (exige a co-assinatura do novo, que só assina no trabalho entre 12h e 17h; o aparelho aplica a espera de
+   remover guardião-mor). Depois apague a passkey antiga em passwords.google.com/passkeys e no Windows Hello do computador de casa.
+
+Daqui para frente: nova passkey no mesmo guardião (**Cadastrar outra passkey**, no computador de outro lugar, também Windows Hello),
+**Propagar**, e **Remover** a passkey velha. O horário e a regra de sincronização ficam; se o horário do novo emprego for outro,
+crie um novo guardião-mor com o novo horário e remova o anterior. Faça a troca antes de perder o acesso ao computador antigo:
+sem ele não há como assinar.

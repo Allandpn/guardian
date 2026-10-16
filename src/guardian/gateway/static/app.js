@@ -781,7 +781,7 @@ async function peopleView() {
           h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`),
           h('div', { style: 'margin-top:4px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
             g.window ? chip(describeWindow(g.window), 'warn') : null)),
-        gid === me.guardian.id ? h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey') : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
+        gid === me.guardian.id ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
           h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
             if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
               note: 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
@@ -791,6 +791,7 @@ async function peopleView() {
         dom ? h('div', { style: 'flex-basis:100%;padding:4px 0 6px 46px' }, h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Pode ver, além de domínios:'),
           h('div', { class: 'durs', role: 'group', 'aria-label': `O que ${g.name} pode ver` }, SEE_LABELS.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(!!see[k]),
             onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))) : null,
+        gid === me.guardian.id ? h('div', { style: 'flex-basis:100%;padding:0 0 6px 46px' }, h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey')) : null,
         n > 0 ? h('div', { style: 'flex-basis:100%;padding:2px 0 6px 46px' }, Object.entries(g.creds).map(([cred], i) => {
           const info = (me.cred_info || {})[cred] || {};
           return h('div', { class: 'row', style: 'min-height:40px;gap:8px' },

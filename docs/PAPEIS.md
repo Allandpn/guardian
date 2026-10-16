@@ -51,3 +51,24 @@ Quem aplica é quem recebe o comando: o aparelho (Kotlin) e o executor (Python),
 
 - **Guardião-mor sem nenhuma passkey.** Ninguém mais administra: sobra só o PIN local no aparelho e, sem ele, o reset de fábrica (LOCKOUT #25). Por isso o aviso até cadastrar a reserva.
 - **Guardião mal-intencionado** pode liberar qualquer domínio ou bloquear um domínio de que o sistema precisa (Tailscale, o próprio gateway). Aceito: é uma pessoa de confiança, e o admin desfaz pelo site e o remove na hora.
+
+## Passkey só neste aparelho e horário (por guardião)
+
+Definidos **na criação** do guardião (no convite) e **não mudam**: não existe comando para alterá-los. Para mudar, crie outro guardião.
+
+- **Passkey só neste aparelho** (`allow_sync: false`): o aparelho, o executor e o gateway recusam assinaturas cuja passkey tem a flag BE
+  ("backup eligible") ligada, que é a das passkeys copiadas para a nuvem (Gerenciador de Senhas do Google, iCloud). A flag está
+  dentro do `authenticatorData`, que é assinado. Windows Hello, Touch ID e chaves de segurança têm BE desligada. O gateway também
+  recusa o cadastro de uma passkey sincronizável e não gasta o convite. Passkey extra herda a regra do guardião.
+- **Horário** (`window`): `{days: [0..6, segunda = 0], from, to (minutos do dia), utc_offset_min}`, por exemplo seg–sex, 12h às 17h em
+  Brasília (`-180`; o Brasil não tem horário de verão). O comando de um guardião com horário só vale se **quem o consome** o recebe
+  dentro do horário, pelo relógio dele: o do executor (rede) e o do aparelho. O relógio do navegador não conta. O gateway também
+  recusa o login (a sessão acaba no fim do horário) e os comandos fora do horário, só para dar uma mensagem clara.
+  No aparelho o relógio é o do Android: ligue a restrição "Bloquear mudar data/hora" para o horário não ser burlado ali.
+  Vale para o autor do comando; quem só co-assina não é conferido.
+- **Remover passkey** (`remove_credential {id, cred}`): guardião-mor; com dois ou mais guardiões-mor precisa das duas assinaturas; nunca remove a última passkey
+  (use remover guardião). Vale na hora, sem espera.
+
+Efeito prático para quem se protege: a passkey do computador do trabalho (Windows Hello, sem sincronizar) só existe naquele computador
+e só vale em dia útil das 12h às 17h; em casa, à noite, nem com acesso remoto ao computador do trabalho ela vale.
+Uma segunda passkey do mesmo guardião, cadastrada no computador de casa (Windows Hello), tem a mesma regra: serve de reserva sem reabrir o buraco da noite.
