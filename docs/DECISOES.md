@@ -43,8 +43,8 @@ Nome do sistema: **Guardian** (em inglês, em todos os textos). Papéis: **guard
 ### Passkey e horário (por guardião, definidos na criação, imutáveis)
 21. **Só neste aparelho** ou **Pode sincronizar**. Com "só neste aparelho", passkeys com a flag BE (copiáveis, como as do Gerenciador de Senhas do Google) são recusadas por todos. Padrão: guardião-mor "só neste aparelho"; guardião "pode sincronizar".
 22. **Horário**: dias e horas, no horário de Brasília (deslocamento fixo −3). Fora dele os comandos do guardião não valem, mesmo com a passkey certa; confere quem consome o comando, com o relógio dele. Co-assinatura não é conferida.
-23. Windows Hello é o caminho no computador do trabalho (sem chave física). Perfil do navegador sem login na conta Google.
-24. O guardião-mor do trabalho: **seg–sex, 12:00 às 17:00**, só neste aparelho.
+23. O computador do trabalho é gerenciado e **não permite Windows Hello**: sem chave FIDO2 não há passkey "só neste aparelho" ali. Decisão (2026-10-16): por enquanto o guardião-mor do trabalho usa **passkey sincronizável**, cadastrada pelo celular (QR) para não logar a conta Google pessoal no PC; a barreira é o horário. Quando houver chave FIDO2, cria-se outro guardião-mor "só neste aparelho" e remove-se o sincronizável (e a passkey na conta Google).
+24. O guardião-mor do trabalho: **terça a quinta, 12:00 às 16:00** (escritório; segunda e sexta são home office), **pode sincronizar** por enquanto.
 25. "Remover passkey" existe (guardião-mor; com 2+ guardiões-mor precisa das duas assinaturas; nunca a última).
 26. Mudar o horário ou a regra de sincronização = criar outro guardião e remover o antigo. Detalhes e passo a passo em [MIGRACAO.md](MIGRACAO.md).
 
@@ -58,7 +58,7 @@ Nome do sistema: **Guardian** (em inglês, em todos os textos). Papéis: **guard
 |---|---|
 | Protocolo, gateway, executor, site | feito; 104 testes em Python e teste de navegador (Chromium com passkey virtual, inclusive passkey sincronizada recusada e fora do horário) |
 | App Android (repositório NotToday, branch `claude/wizardly-goldberg-sxu89c`) | feito; testes na JVM (Robolectric, vetores, integração com este gateway) |
-| Não validado em hardware real | Windows Hello no PC do trabalho (confirmar que a passkey aparece como "só neste aparelho"), Keystore ECDH e telas no aparelho, serviço em segundo plano, Docker/Funnel, rotas `/api/queries` e `/api/domains/...` do Pi-hole v6 (campos de status, cliente, lista, CNAME), IP dos aparelhos no log (Tailscale) e entrega de push |
+| Não validado em hardware real | Cadastro da passkey do trabalho pelo celular (QR/Bluetooth) no PC gerenciado, Keystore ECDH e telas no aparelho, serviço em segundo plano, Docker/Funnel, rotas `/api/queries` e `/api/domains/...` do Pi-hole v6 (campos de status, cliente, lista, CNAME), IP dos aparelhos no log (Tailscale) e entrega de push |
 
 O app instalado no aparelho só passa a conferir passkey sincronizável e horário depois de atualizado (o executor e o gateway já conferem).
 No aparelho o horário usa o relógio do Android: ligar a restrição "Bloquear mudar data/hora".
