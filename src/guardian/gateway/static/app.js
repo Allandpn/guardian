@@ -13,6 +13,19 @@ const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regr
 let selected = null;         // aparelho aberto no painel (computador)
 let pair = null;             // andamento do pareamento
 let inviteRole = 'domains';  // papel escolhido no convite
+let inviteName = '';         // nome digitado (sobrevive aos redesenhos da tela)
+let inviteSync = null;       // passkey sincronizável? null = padrão do papel (guardião-mor: só neste aparelho)
+let inviteWin = { on: false, days: [0, 1, 2, 3, 4], from: '12:00', to: '17:00' };  // janela de horário do convidado
+const DAY_NAMES = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'];
+const OFFSET_MIN = -180;     // horário de Brasília (o Brasil não tem horário de verão desde 2019)
+const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const fmtHM = (m) => `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, '0') : ''}`;
+function describeWindow(w) {
+  if (!w) return 'sem horário definido';
+  const days = [...w.days].sort(); const runs = []; let start = 0;
+  for (let i = 1; i <= days.length; i++) if (i === days.length || days[i] !== days[i - 1] + 1) { runs.push([days[start], days[i - 1]]); start = i; }
+  return `${runs.map(([a, b]) => (a === b ? DAY_NAMES[a] : `${DAY_NAMES[a]}–${DAY_NAMES[b]}`)).join(', ')}, ${fmtHM(w.from)} às ${fmtHM(w.to)}`;
+}
 let domDur = 0;              // duração do formulário manual de domínio (0 = sem prazo)
 
 const fail = (e) => toast(e && e.message ? e.message : String(e));
@@ -61,7 +74,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
+  remove_guardian: 'remover guardião', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -192,8 +205,21 @@ async function doLogin() {
   const pk = o.publicKey;
   pk.challenge = dec(pk.challenge);
   const a = await passkeyGet(pk);
-  await api('POST', '/v1/auth/verify', { challengeId: o.challengeId, ...a });
+  try {
+    await api('POST', '/v1/auth/verify', { challengeId: o.challengeId, ...a });
+  } catch (e) {
+    if (e.status === 403 && /janela de horário/.test(e.message)) { closedView(e.message); return; }
+    throw e;
+  }
   await boot();
+}
+
+/** Fora do horário do guardião: nada abre, nem com a passkey certa. */
+function closedView(msg) {
+  show(h('div', { class: 'login' }, h('div', { class: 'logo' }, icon('clock', 38)), h('h1', {}, 'Fora do horário'),
+    h('p', { class: 'muted' }, 'Este guardião só pode usar o Guardian em um horário definido na criação dele. Volte dentro do horário.'),
+    h('p', { class: 'note' }, (msg || '').replace(/^.*\((.*)\).*$/, '$1')),
+    h('button', { class: 'btn', type: 'button', onclick: () => { autoLogin = false; route(); } }, 'Tentar de novo')));
 }
 
 function inviteView(token) {
@@ -705,21 +731,22 @@ async function peopleView() {
       note: `Serão ${miss.length} toque(s) de passkey, um por item.`, noteKind: 'warn' }))) return;
     const seen = new Set(Object.keys((d.report && d.report.trust) || {}));
     for (const m of miss) {
-      if (!seen.has(m.gid)) { await sendCommand(d.id, 'add_guardian', { id: m.gid, name: m.g.name, cred: m.cred, spki: m.g.creds[m.cred], role: m.g.role || 'admin' }); seen.add(m.gid); }
+      if (!seen.has(m.gid)) { await sendCommand(d.id, 'add_guardian', { id: m.gid, name: m.g.name, cred: m.cred, spki: m.g.creds[m.cred], role: m.g.role || 'admin', allow_sync: m.g.allow_sync !== false, window: m.g.window || null }); seen.add(m.gid); }
       else await sendCommand(d.id, 'add_credential', { id: m.gid, cred: m.cred, spki: m.g.creds[m.cred] });
     }
     route();
   });
   const out = h('div', {});
-  const link = (kind, name, role) => act(async () => {
-    const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}), ...(role ? { role } : {}) });
+  const link = (kind, name, role, policy) => act(async () => {
+    const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}), ...(role ? { role } : {}), ...(policy || {}) });
     const text = `${me.origin}/#invite=${r.token}`;
     out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
       h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text), shareBtn(() => text))));
     if (out.scrollIntoView) out.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
-  const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião' });
+  const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião', value: inviteName, oninput: (e) => { inviteName = e.target.value; } });
   const myCreds = Object.keys((me.trust[me.guardian.id] || { creds: {} }).creds).length;
+  const syncOn = inviteSync === null ? inviteRole === 'domains' : inviteSync;  // guardião-mor: só neste aparelho, a menos que se escolha o contrário
   const cos = aw.filter((c) => c.can_cosign);
   show(top('Pessoas'), h('div', { class: 'wrap' },
     h('div', { class: 'sec' }, 'Guardiões'),
@@ -730,6 +757,16 @@ async function peopleView() {
       const n = Object.keys(g.creds).length;
       const dom = g.role === 'domains';
       const see = (me.see_of || {})[gid] || {};
+      const removeCred = (gid2, g2, cred, num) => act(async () => {
+        const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid2] && d.report.trust[gid2].includes(cred));
+        if (!(await sheet({ title: `Remover a passkey ${num} de ${g2.name}?`, rows: [['Guardião', g2.name], ['Passkey', String(num)], ['Aparelhos que confiam nela', String(on.length)]],
+          effect: 'vale na hora', effectKind: 'ok', note: `${on.length ? `Um toque de passkey por aparelho (${on.length}). ` : ''}Depois apague essa passkey também no gerenciador (conta Google, Windows Hello…) onde ela estiver.`,
+          confirm: on.length ? 'Assinar e remover' : 'Remover', danger: true }))) return;
+        for (const d of on) await sendCommand(d.id, 'remove_credential', { id: gid2, cred });
+        await api('POST', `/v1/guardians/${gid2}/credentials/remove`, { cred });
+        toast('Passkey removida.');
+        route();
+      });
       const removeDomain = act(async () => {
         const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
         if (!(await sheet({ title: `Remover ${g.name}?`, rows: [['Guardião', g.name], ['Papel', 'guardião'], ['Aparelhos que confiam', String(on.length)]], effect: 'vale na hora', effectKind: 'ok',
@@ -741,7 +778,9 @@ async function peopleView() {
       });
       return h('div', { class: 'li', style: 'flex-wrap:wrap' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
         h('div', { class: 'sp' }, h('strong', {}, g.name), ' ', gid === me.guardian.id ? chip('você') : null, ' ', chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok'),
-          h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
+          h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`),
+          h('div', { style: 'margin-top:4px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
+            g.window ? chip(describeWindow(g.window), 'warn') : null)),
         gid === me.guardian.id ? h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey') : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
           h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
             if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
@@ -751,7 +790,14 @@ async function peopleView() {
           }) }, 'Remover'),
         dom ? h('div', { style: 'flex-basis:100%;padding:4px 0 6px 46px' }, h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Pode ver, além de domínios:'),
           h('div', { class: 'durs', role: 'group', 'aria-label': `O que ${g.name} pode ver` }, SEE_LABELS.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(!!see[k]),
-            onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))) : null);
+            onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))) : null,
+        n > 0 ? h('div', { style: 'flex-basis:100%;padding:2px 0 6px 46px' }, Object.entries(g.creds).map(([cred], i) => {
+          const info = (me.cred_info || {})[cred] || {};
+          return h('div', { class: 'row', style: 'min-height:40px;gap:8px' },
+            h('div', { class: 'sp muted' }, `Passkey ${i + 1}${info.created ? ` · cadastrada ${ago(info.created, me.now)}` : ''}`),
+            chip(info.be ? 'sincronizada' : 'só neste aparelho', info.be ? 'warn' : 'ok'),
+            n > 1 ? h('button', { class: 'btn dangero', type: 'button', onclick: removeCred(gid, g, cred, i + 1) }, 'Remover') : null);
+        })) : null);
     })),
     h('div', { class: 'sec' }, 'Convidar guardião'),
     h('div', { class: 'card' }, nm,
@@ -759,7 +805,31 @@ async function peopleView() {
         [['domains', 'Guardião (só domínios)'], ['admin', 'Guardião-mor']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
         'Libera e bloqueia sites e responde aos pedidos. Não mexe em regras, apps, PIN nem pessoas. O que mais ele pode ver você escolhe depois.'),
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => { if (!nm.value.trim()) throw new Error('Digite o nome.'); await link('new_guardian', nm.value.trim(), inviteRole)(); }) }, 'Gerar link de convite')),
+      h('div', { class: 'sec', style: 'padding-left:0' }, 'Passkey'),
+      h('div', { class: 'durs', role: 'group', 'aria-label': 'Passkey sincronizável' },
+        [[false, 'Só neste aparelho'], [true, 'Pode sincronizar']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(syncOn === k), onclick: () => { inviteSync = k; route(); } }, label))),
+      h('p', { class: 'muted', style: 'margin:8px 0 0' }, syncOn ? 'A passkey pode ir para a conta Google ou Apple da pessoa e aparecer em outros aparelhos dela.' :
+        'Só vale passkey presa ao aparelho (Windows Hello, Touch ID, chave de segurança). Uma passkey da conta Google é recusada. Não dá para mudar depois.'),
+      h('div', { class: 'sec', style: 'padding-left:0' }, 'Horário'),
+      h('div', { class: 'durs', role: 'group', 'aria-label': 'Limitar a um horário' },
+        [[false, 'A qualquer hora'], [true, 'Só em um horário']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteWin.on === k), onclick: () => { inviteWin.on = k; route(); } }, label))),
+      inviteWin.on ? [h('div', { class: 'durs', role: 'group', 'aria-label': 'Dias da semana' },
+        DAY_NAMES.map((d, i) => h('button', { type: 'button', 'aria-pressed': String(inviteWin.days.includes(i)), onclick: () => {
+          inviteWin.days = inviteWin.days.includes(i) ? inviteWin.days.filter((x) => x !== i) : [...inviteWin.days, i]; route(); } }, d))),
+        h('div', { class: 'row', style: 'margin-top:10px;gap:8px;align-items:center' }, 'Das',
+          h('input', { class: 'inp', type: 'time', value: inviteWin.from, 'aria-label': 'Início', style: 'width:130px', onchange: (e) => { inviteWin.from = e.target.value; } }), 'às',
+          h('input', { class: 'inp', type: 'time', value: inviteWin.to, 'aria-label': 'Fim', style: 'width:130px', onchange: (e) => { inviteWin.to = e.target.value; } })),
+        h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'Horário de Brasília. Fora dele os comandos dessa pessoa não valem, mesmo com a passkey certa; quem confere é o aparelho e o executor, com o relógio deles. Não dá para mudar depois.')] : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+        if (!nm.value.trim()) throw new Error('Digite o nome.');
+        let window = null;
+        if (inviteWin.on) {
+          if (!inviteWin.days.length) throw new Error('Escolha pelo menos um dia.');
+          if (!inviteWin.from || !inviteWin.to || toMin(inviteWin.from) >= toMin(inviteWin.to)) throw new Error('O horário final precisa ser depois do inicial.');
+          window = { days: [...inviteWin.days].sort(), from: toMin(inviteWin.from), to: toMin(inviteWin.to), utc_offset_min: OFFSET_MIN };
+        }
+        await link('new_guardian', nm.value.trim(), inviteRole, { allow_sync: syncOn, window })();
+      }) }, 'Gerar link de convite')),
       ),
     out,
     h('div', { class: 'sec' }, 'Confiança nos aparelhos'),
@@ -1000,6 +1070,7 @@ async function route() {
     else await domainsView();
   } catch (e) {
     if (e.status === 401) { me = null; nav.hidden = true; return loginView(); }
+    if (e.status === 403 && /janela de horário/.test(e.message)) { me = null; nav.hidden = true; return closedView(e.message); }
     show(top('Erro'), h('div', { class: 'card badb' }, e.message));
   }
 }

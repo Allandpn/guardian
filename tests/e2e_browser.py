@@ -5,6 +5,7 @@
 
 Não faz parte do `unittest discover` (precisa de playwright e do Chromium).
 """
+import datetime
 import json
 import os
 import sys
@@ -391,12 +392,52 @@ def main():
         out["history_ui"] = True
         shot("13-historico", PHONE)
         back()
+        # 11) guardião-mor do trabalho: só neste aparelho + horário (a passkey sincronizada é recusada)
+        page.goto(f"{origin}/#/people")
+        page.get_by_placeholder("nome do guardião").fill("Trabalho")
+        page.get_by_role("button", name="Guardião-mor", exact=True).click()
+        page.get_by_role("button", name="Só neste aparelho", pressed=True).wait_for()  # padrão do guardião-mor
+        page.get_by_role("button", name="Só em um horário").click()
+        for d in ("sáb", "dom"):
+            page.get_by_role("button", name=d, exact=True).click()
+        page.get_by_label("Início", exact=True).fill("00:00")
+        page.get_by_label("Fim", exact=True).fill("23:59")
+        page.get_by_role("button", name="Gerar link de convite").click()
+        link2 = page.locator("textarea").first.input_value()
+        ctx3 = browser.new_context(viewport=PHONE)
+        page3 = ctx3.new_page()
+        cdp3 = ctx3.new_cdp_session(page3)
+        cdp3.send("WebAuthn.enable")
+        opts = {"protocol": "ctap2", "transport": "internal", "hasResidentKey": True, "hasUserVerification": True,
+                "isUserVerified": True, "automaticPresenceSimulation": True}
+        synced = cdp3.send("WebAuthn.addVirtualAuthenticator", {"options": {**opts, "defaultBackupEligibility": True, "defaultBackupState": True}})
+        page3.goto(link2)
+        page3.get_by_role("button", name="Cadastrar passkey").click()
+        page3.get_by_text("seria sincronizada").wait_for(timeout=10000)
+        out["synced_passkey_refused"] = True
+        cdp3.send("WebAuthn.removeVirtualAuthenticator", {"authenticatorId": synced["authenticatorId"]})
+        cdp3.send("WebAuthn.addVirtualAuthenticator", {"options": {**opts, "defaultBackupEligibility": False}})
+        page3.get_by_role("button", name="Cadastrar passkey").click()
+        page3.get_by_role("heading", name="Início").wait_for(timeout=10000)
+        out["device_bound_passkey_accepted"] = True
+        page.reload()
+        page.get_by_text("só neste aparelho").first.wait_for(timeout=10000)
+        page.get_by_text("seg–dom, 0h às 23h59").wait_for(timeout=10000)
+        shot("19-pessoas-politica", PHONE)
+        back()
+        env.store.x("UPDATE guardians SET window=? WHERE name='Trabalho'", (json.dumps({"days": [(datetime.datetime.now(datetime.timezone.utc).weekday() + 3) % 7], "from": 0, "to": 1440, "utc_offset_min": 0}),))
+        page3.reload()
+        page3.get_by_role("heading", name="Fora do horário").wait_for(timeout=10000)
+        out["out_of_window_screen"] = True
+        if shots:
+            page3.screenshot(path=os.path.join(shots, "20-fora-do-horario.png"), full_page=True)
+        ctx3.close()
         out["console_errors"] = [x for x in logs if "error" in x.lower() or "PAGEERROR" in x]
         browser.close()
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 
