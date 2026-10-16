@@ -81,7 +81,7 @@ O teste de navegador (`AUDIT=1 PYTHONPATH=src python tests/e2e_browser.py`) mede
 O PC do trabalho é gerenciado e não permite Windows Hello, então não há como ter passkey "só neste aparelho" ali sem uma chave FIDO2.
 Por enquanto o guardião-mor do trabalho usa passkey **sincronizável**, e a barreira é o **horário**. Passo a passo e a troca futura em [MIGRACAO.md](MIGRACAO.md).
 
-1. Em **Pessoas**, com o guardião antigo: nome "Trabalho", **Guardião-mor**, passkey **Pode sincronizar**, horário **Só em um horário**
+1. Em **Pessoas**, com o guardião antigo: nome "Gandalf", **Guardião-mor**, passkey **Pode sincronizar**, horário **Só em um horário**
    (terça, quarta e quinta, 12:00 às 16:00). Gerar link de convite.
 2. No computador do trabalho: abrir o link e **Cadastrar passkey**. Para não logar a conta Google pessoal no PC gerenciado, escolha
    **Usar um telefone ou tablet** (QR) e salve a passkey no celular.
