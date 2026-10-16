@@ -48,6 +48,9 @@ Nome do sistema: **Guardian** (em inglês, em todos os textos). Papéis: **guard
 25. "Remover passkey" existe (guardião-mor; com 2+ guardiões-mor precisa das duas assinaturas; nunca a última).
 26. Mudar o horário ou a regra de sincronização = criar outro guardião e remover o antigo. Detalhes e passo a passo em [MIGRACAO.md](MIGRACAO.md).
 
+### Liberação como regex (2026-10-16)
+29. O guardião vê e aprova o domínio simples; o executor grava no Pi-hole uma regex gerada por ele, `^([a-zA-Z0-9-]+\.)*dominio\.com$` (o domínio e os subdomínios, como as regras que o dono já usa), em `allow/regex` (e `deny/regex` ao bloquear). Ninguém digita regex; só essa forma exata é reconhecida, listada e removida, então regras escritas à mão ficam intactas. `ALLOW_MODE=exact` volta ao domínio exato. Liberar `x.itau.com.br` cobre `x.itau.com.br` e os subdomínios dele, não `www.itau.com.br`. O executor recusa liberar um domínio que cobriria o canário. **Não validado num Pi-hole v6 real:** rotas `/api/domains/allow/regex/...`.
+
 ### Interface
 27. Paleta "Mar e terra" (dark) no site e no app. O app segue o estilo das Configurações do Android: início com estado e categorias, uma subtela por categoria, rascunho único e barra fixa de "Salvar e aplicar".
 28. O site funciona em celular, tablet e computador (barra de baixo no celular, menu lateral a partir de 900 px, conteúdo centralizado).

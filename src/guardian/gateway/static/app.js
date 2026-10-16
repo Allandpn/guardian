@@ -582,7 +582,7 @@ async function domainsView(tab) {
     x.cname ? chip('via CNAME') : null];
   const batchSpec = (items) => ({ title: `Liberar ${items.length} domínio${items.length > 1 ? 's' : ''}?`,
     rows: items.map((i) => [i.domain, i.ttl_s ? durLabel(i.ttl_s) : 'sem prazo']), effect: 'vale na hora', effectKind: 'ok',
-    note: items.some((i) => !i.ttl_s) ? 'Sem prazo: o domínio fica liberado até alguém bloquear de novo. Vale para a casa toda.' : 'Vale para a casa toda.', noteKind: 'warn' });
+    note: items.some((i) => !i.ttl_s) ? 'Sem prazo: o domínio fica liberado até alguém bloquear de novo. Vale para a casa toda, com os subdomínios.' : 'Vale para a casa toda, com os subdomínios.', noteKind: 'warn' });
 
   let body;
   if (tab === 'pedidos') {

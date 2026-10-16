@@ -6,6 +6,7 @@ Configuração por variáveis de ambiente:
   PIHOLE_PASSWORD_FILE  arquivo com a senha de aplicativo do Pi-hole (modo 0600)
   PIHOLE_CA             CA para HTTPS do Pi-hole (opcional)
   CANARY                domínio-canário que nunca pode ser alterado
+  ALLOW_MODE            "regex" (padrão): liberar grava o domínio e seus subdomínios como regex; "exact": só o domínio exato
   CLIENTS               aparelhos protegidos: "IP=id,IP=id" (IP do aparelho na Tailscale, v4 e v6, e o id do aparelho no site)
 """
 import argparse
@@ -29,7 +30,8 @@ def cfg_from_env() -> ExecConfig:
             ip, dev = part.strip().split("=", 1)
             clients[ip.strip()] = dev.strip()
     return ExecConfig(e.get("EXECUTOR_STATE", "/var/lib/guardian-executor"), e.get("PIHOLE_URL", "http://127.0.0.1:8080"),
-                      pw, e.get("CANARY", ""), e.get("PIHOLE_CA"), clients)
+                      pw, e.get("CANARY", ""), e.get("PIHOLE_CA"), clients,
+                      "exact" if e.get("ALLOW_MODE", "regex").strip().lower() == "exact" else "regex")
 
 
 def main(argv=None) -> int:

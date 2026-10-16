@@ -9,6 +9,7 @@ class FakePihole:
     def __init__(self, password="senha-app"):
         self.password = password
         self.lists = {"allow": {}, "deny": {}}
+        self.regex = {"allow": {}, "deny": {}}   # regras regex (a chave é a própria expressão)
         self.sid = "sid-" + "x" * 20
         self.sessions_valid = True
         self.down = False
@@ -61,8 +62,8 @@ class FakePihole:
                 if u.path == "/api/lists" and self.command == "GET":
                     return self._reply(200, fake.lists_api)
                 parts = p.split("/")  # ['', 'api', 'domains', type, kind, (domain)]
-                if len(parts) >= 5 and parts[2] == "domains" and parts[3] in fake.lists and parts[4] == "exact":
-                    lst = fake.lists[parts[3]]
+                if len(parts) >= 5 and parts[2] == "domains" and parts[3] in fake.lists and parts[4] in ("exact", "regex"):
+                    lst = fake.lists[parts[3]] if parts[4] == "exact" else fake.regex[parts[3]]
                     if len(parts) == 5 and self.command == "GET":
                         return self._reply(200, {"domains": [{"domain": d, "comment": c, "enabled": True} for d, c in lst.items()]})
                     if len(parts) == 6:

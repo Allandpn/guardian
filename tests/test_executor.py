@@ -57,9 +57,10 @@ class PiholeClientTests(unittest.TestCase):
         with self.assertRaises(PiholeError):
             Pihole("http://127.0.0.1:1", "x", timeout=1).list_domains("allow")
 
-    def test_only_exact_lists(self):
+    def test_only_exact_and_regex_kinds(self):
         with self.assertRaises(PiholeError):
-            Pihole(self.fake.url, "x")._p("allow", "regex")
+            Pihole(self.fake.url, "x")._p("allow", "wildcard")
+        self.assertEqual(Pihole(self.fake.url, "x")._p("deny", "regex"), "/api/domains/deny/regex")
 
 
 class ExecutorEndToEnd(unittest.TestCase):

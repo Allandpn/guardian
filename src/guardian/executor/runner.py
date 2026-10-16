@@ -31,6 +31,7 @@ class ExecConfig:
     canary: str
     pihole_ca: str | None = None
     clients: dict | None = None       # {IP do aparelho na Tailscale: id do aparelho protegido}
+    allow_mode: str = "exact"         # "regex": grava domínio + subdomínios como regex no Pi-hole (o guardião só vê o domínio)
 
 
 def _fmt_ttl(s: int) -> str:
@@ -143,11 +144,34 @@ class Executor:
         self._lists_ts = 0.0
 
     # --- execução ---------------------------------------------------------------
-    def _guard(self, domain) -> str:
+    def _guard(self, domain, allow: bool = False) -> str:
         d = domains.normalize(domain)
-        if self.cfg.canary and d == domains.normalize(self.cfg.canary):
+        canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
+        if canary and d == canary:
             raise ValueError("o domínio-canário não pode ser alterado")
+        if allow and canary and self.cfg.allow_mode == "regex" and canary.endswith("." + d):
+            raise ValueError("a liberação cobriria o domínio-canário")  # a regex inclui os subdomínios
         return d
+
+    def _put(self, list_: str, d: str, who: str) -> None:
+        if self.cfg.allow_mode == "regex":
+            self.pihole.put_domain(list_, domains.to_regex(d), f"guardian:{who}", kind="regex")
+        else:
+            self.pihole.put_domain(list_, d, f"guardian:{who}")
+
+    def _del(self, list_: str, d: str) -> None:
+        """Tira o domínio da lista nas duas formas (exata e a regex gerada aqui); regras escritas à mão não são tocadas."""
+        self.pihole.delete_domain(list_, d)
+        self.pihole.delete_domain(list_, domains.to_regex(d), kind="regex")
+
+    def _entries(self, list_: str) -> list[dict]:
+        """Entradas da lista como domínios simples: as exatas e as regex geradas aqui."""
+        out = {e["domain"]: e for e in self.pihole.list_entries(list_)}
+        for e in self.pihole.list_entries(list_, kind="regex"):
+            d = domains.from_regex(e["domain"])
+            if d:
+                out.setdefault(d, {"domain": d, "comment": e["comment"]})
+        return list(out.values())
 
     @staticmethod
     def _ttl(args: dict) -> int | None:
@@ -168,10 +192,10 @@ class Executor:
             return "confiança atualizada"
         if t in ("pihole_allow", "pihole_deny"):
             list_, other = ("allow", "deny") if t == "pihole_allow" else ("deny", "allow")
-            d, ttl = self._guard(a.get("domain")), self._ttl(a)
-            self.pihole.put_domain(list_, d, f"guardian:{who}")
+            d, ttl = self._guard(a.get("domain"), allow=list_ == "allow"), self._ttl(a)
+            self._put(list_, d, who)
             if list_ == "deny":
-                self.pihole.delete_domain("allow", d)  # a lista de permissão vence a de bloqueio
+                self._del("allow", d)  # a lista de permissão vence a de bloqueio
                 self._drop_temp("allow", d)
             self._drop_temp(list_, d)
             if ttl:
@@ -186,8 +210,8 @@ class Executor:
                 try:
                     if not isinstance(it, dict):
                         raise ValueError("item inválido")
-                    d, ttl = self._guard(it.get("domain")), self._ttl(it)
-                    self.pihole.put_domain("allow", d, f"guardian:{who}")
+                    d, ttl = self._guard(it.get("domain"), allow=True), self._ttl(it)
+                    self._put("allow", d, who)
                     self._drop_temp("allow", d)
                     if ttl:
                         self.state.data["temp"].append({"list": "allow", "domain": d, "expires": int(self.now()) + ttl})
@@ -201,7 +225,7 @@ class Executor:
             if a.get("list") not in ("allow", "deny"):
                 raise ValueError("lista inválida")
             d = self._guard(a.get("domain"))
-            self.pihole.delete_domain(a["list"], d)
+            self._del(a["list"], d)
             self._drop_temp(a["list"], d)
             return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {d}"
         raise ValueError(f"comando desconhecido: {t}")
@@ -213,7 +237,7 @@ class Executor:
                 keep.append(t)
                 continue
             try:
-                self.pihole.delete_domain(t["list"], t["domain"])
+                self._del(t["list"], t["domain"])
                 self.executed.append({"type": "expirou", "ok": True, "msg": f"{t['list']} {t['domain']}"})
             except PiholeError as e:
                 keep.append(t)  # tenta de novo no próximo ciclo
@@ -242,7 +266,7 @@ class Executor:
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
              "executed": self.executed[-50:]}
         try:
-            allow, deny = self.pihole.list_entries("allow"), self.pihole.list_entries("deny")
+            allow, deny = self._entries("allow"), self._entries("deny")
             r["allow"], r["deny"] = sorted(e["domain"] for e in allow)[:LIST_CAP], sorted(e["domain"] for e in deny)[:LIST_CAP]
             r["allow_by"] = {e["domain"]: e["comment"][9:] for e in allow if e["comment"].startswith("guardian:")}
             r["deny_by"] = {e["domain"]: e["comment"][9:] for e in deny if e["comment"].startswith("guardian:")}

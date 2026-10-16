@@ -70,7 +70,7 @@ class Pihole:
     # --- domínios -----------------------------------------------------------------
     @staticmethod
     def _p(list_: str, kind: str = "exact") -> str:
-        if list_ not in ("allow", "deny") or kind != "exact":
+        if list_ not in ("allow", "deny") or kind not in ("exact", "regex"):
             raise PiholeError("lista inválida")
         return f"/api/domains/{list_}/{kind}"
 
@@ -81,9 +81,9 @@ class Pihole:
         items = body.get("domains", []) if isinstance(body, dict) else body
         return sorted(str(i.get("domain")) for i in items if isinstance(i, dict) and i.get("domain"))
 
-    def list_entries(self, list_: str) -> list[dict]:
-        """Como list_domains, mas com o comentário (quem criou a entrada)."""
-        st, body = self._call("GET", self._p(list_))
+    def list_entries(self, list_: str, kind: str = "exact") -> list[dict]:
+        """Como list_domains, mas com o comentário (quem criou a entrada). Em "regex", `domain` é a própria expressão."""
+        st, body = self._call("GET", self._p(list_, kind))
         if st != 200:
             raise PiholeError(f"listar falhou ({st})")
         items = body.get("domains", []) if isinstance(body, dict) else body
@@ -112,13 +112,13 @@ class Pihole:
         return {int(i["id"]): str(i.get("address", ""))[:120] for i in body.get("lists", [])
                 if isinstance(i, dict) and isinstance(i.get("id"), int)}
 
-    def put_domain(self, list_: str, domain: str, comment: str = "") -> None:
-        st, body = self._call("PUT", f"{self._p(list_)}/{urllib.parse.quote(domain, safe='')}",
+    def put_domain(self, list_: str, domain: str, comment: str = "", kind: str = "exact") -> None:
+        st, body = self._call("PUT", f"{self._p(list_, kind)}/{urllib.parse.quote(domain, safe='')}",
                               {"comment": comment[:200], "groups": [0], "enabled": True})
         if st not in (200, 201):
             raise PiholeError(f"gravar falhou ({st})")
 
-    def delete_domain(self, list_: str, domain: str) -> None:
-        st, _ = self._call("DELETE", f"{self._p(list_)}/{urllib.parse.quote(domain, safe='')}")
+    def delete_domain(self, list_: str, domain: str, kind: str = "exact") -> None:
+        st, _ = self._call("DELETE", f"{self._p(list_, kind)}/{urllib.parse.quote(domain, safe='')}")
         if st not in (200, 204, 404):  # 404: já não existia
             raise PiholeError(f"remover falhou ({st})")
