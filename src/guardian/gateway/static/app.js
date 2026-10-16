@@ -588,7 +588,38 @@ async function domainsView(tab) {
   if (tab === 'pedidos') {
     const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
     const info = new Map(blocked.map((b) => [`${b.dev}|${b.domain}`, b]));
-    body = [unb.length ? h('div', { class: 'grid2' }, unb.map((q) => {
+    // "Liberar todos": um só comando (pihole_batch, até 50 domínios) e um só passkey para todos os pedidos abertos.
+    const openReqs = unb.map((q) => ({ q, rows: q.items.filter((i) => i.state === 'open') })).filter((x) => x.rows.length);
+    const pick = (q, d) => reqChoice.get(`${q.id}|${d}`) || 'always';
+    const merged = new Map();  // domínio -> ttl (0 = sem prazo); o mais curto vence se o mesmo domínio estiver em pedidos diferentes
+    for (const { q, rows } of openReqs) for (const i of rows) {
+      const v = pick(q, i.domain);
+      if (v === 'deny') continue;
+      const ttl = v === 'always' ? 0 : Number(v), cur = merged.get(i.domain);
+      merged.set(i.domain, cur === undefined ? ttl : cur === 0 ? ttl : ttl === 0 ? cur : Math.min(cur, ttl));
+    }
+    const allItems = [...merged].slice(0, 50).map(([domain, ttl]) => ({ domain, ...(ttl ? { ttl_s: ttl } : {}) }));
+    const total = new Set(openReqs.flatMap((x) => x.rows.map((i) => i.domain))).size;
+    const confirmAll = act(async () => {
+      let cmd = null;
+      if (allItems.length) {
+        const sent = await confirmSend(ex.id, 'pihole_batch', { items: allItems }, batchSpec(allItems));
+        if (!sent) return;
+        cmd = sent.id;
+      }
+      const sentSet = new Set(allItems.map((x) => x.domain));
+      for (const { q, rows } of openReqs) {
+        const deny = rows.filter((i) => pick(q, i.domain) === 'deny').map((i) => i.domain);
+        if (!deny.length && !(cmd && rows.some((i) => sentSet.has(i.domain)))) continue;  // nada deste pedido entrou no lote
+        await api('POST', `/v1/requests/${q.id}/resolve`, { ...(cmd ? { cmd } : {}), deny });
+        rows.forEach((i) => reqChoice.delete(`${q.id}|${i.domain}`));
+      }
+      route();
+    });
+    body = [openReqs.length > 1 ? h('div', { class: 'card' },
+      h('button', { class: 'btn pri block', type: 'button', onclick: confirmAll }, allItems.length ? `Liberar todos (${total}) com um passkey` : 'Negar todos'),
+      h('div', { class: 'muted', style: 'margin-top:8px' }, 'Vale a escolha de cada domínio abaixo (Sempre, se você não mudar). A folha mostra tudo antes de assinar.' + (total > 50 ? ' Só os 50 primeiros entram; os outros continuam pedindo.' : ''))) : null,
+      unb.length ? h('div', { class: 'grid2' }, unb.map((q) => {
       const rows = q.items.filter((i) => i.state === 'open');
       const key = (d) => `${q.id}|${d}`;
       const val = (d) => reqChoice.get(key(d)) || 'always';

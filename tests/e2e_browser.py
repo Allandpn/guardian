@@ -381,6 +381,28 @@ def main():
         page2.get_by_role("dialog").wait_for(state="detached", timeout=10000)
         run_executor(lambda: "escola.exemplo.com" in fake.lists["allow"])
         out["domain_guardian_allowed"] = "escola.exemplo.com" in fake.lists["allow"]
+        # "Liberar todos": vários pedidos abertos, um comando e um passkey só
+        for n, dom in enumerate(("lote1.exemplo.com", "lote2.exemplo.com", "lote3.exemplo.com")):
+            fake.queries.append({"time": _t.time() - 4 + n * 0.1, "domain": dom, "status": "REGEX", "client": {"ip": "100.64.0.7"}})
+        ex.collect_blocks()
+        gw.call("POST", f"/v1/devices/{dev}/requests", {"kind": "unblock", "domains": ["lote1.exemplo.com", "lote2.exemplo.com"]})
+        gw.call("POST", f"/v1/devices/{dev}/requests", {"kind": "unblock", "domains": ["lote3.exemplo.com"]})
+        page2.goto(f"{origin}/#/domains/pedidos")
+        page2.reload()
+        page2.get_by_role("button", name="Liberar todos (3) com um passkey").wait_for(timeout=10000)
+        page2.get_by_role("group", name="Escolha para lote2.exemplo.com").get_by_role("button", name="1 h").click()
+        if shots:
+            page2.set_viewport_size(PHONE)
+            page2.wait_for_timeout(300)
+            page2.screenshot(path=os.path.join(shots, "22-liberar-todos.png"), full_page=True)
+        page2.get_by_role("button", name="Liberar todos (3) com um passkey").click()
+        page2.get_by_role("dialog").get_by_role("button", name="Assinar", exact=False).click(timeout=8000)
+        page2.get_by_role("dialog").wait_for(state="detached", timeout=10000)
+        run_executor(lambda: {"lote1.exemplo.com", "lote2.exemplo.com", "lote3.exemplo.com"} <= set(fake.lists["allow"]))
+        page2.get_by_text("Nenhum pedido de liberação").wait_for(timeout=10000)
+        out["release_all_one_passkey"] = ({"lote1.exemplo.com", "lote2.exemplo.com", "lote3.exemplo.com"} <= set(fake.lists["allow"])
+                                          and any(t["domain"] == "lote2.exemplo.com" for t in ex.state.data["temp"])
+                                          and not any(t["domain"] == "lote1.exemplo.com" for t in ex.state.data["temp"]))
         page2.goto(f"{origin}/#/device/{dev}")
         page2.get_by_text("não liberou a visualização").wait_for(timeout=10000)
         page.goto(f"{origin}/#/people")
@@ -445,7 +467,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "domain_guardian_minimal", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "domain_guardian_minimal", "release_all_one_passkey", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 
