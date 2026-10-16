@@ -50,6 +50,28 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
        "manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
+def describe_window(w: dict | None) -> str:
+    if not w:
+        return "sem restrição"
+    names = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+    days = [d for d in range(7) if d in w["days"]]
+    runs, start = [], 0
+    for i in range(1, len(days) + 1):
+        if i == len(days) or days[i] != days[i - 1] + 1:
+            runs.append((days[start], days[i - 1]))
+            start = i
+    text = ", ".join(names[a] if a == b else f"{names[a]}–{names[b]}" for a, b in runs)
+    f = lambda m: f"{m // 60}h" + (f"{m % 60:02d}" if m % 60 else "")  # noqa: E731
+    return f"{text}, {f(w['from'])} às {f(w['to'])}"
+
+
+def window_left_s(w: dict, now: float) -> float:
+    """Segundos até o fim da janela de hoje (0 se estiver fora)."""
+    import datetime
+    t = datetime.datetime.fromtimestamp(now + w["utc_offset_min"] * 60, datetime.timezone.utc)
+    return max(0.0, (w["to"] - (t.hour * 60 + t.minute)) * 60 - t.second)
+
+
 class HttpError(Exception):
     def __init__(self, status: int, msg: str):
         super().__init__(msg)
@@ -141,6 +163,7 @@ class Gateway:
             ("GET", r"/v1/audit", self.audit),
             ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/see", self.set_see),
             ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/remove", self.remove_guardian),
+            ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/credentials/remove", self.remove_credential),
             ("GET", r"/v1/requests", self.requests),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/dismiss", self.dismiss),
         ]
@@ -255,15 +278,23 @@ class Gateway:
     def cookie_name(self) -> str:
         return "__Host-gsession" if self.cfg.secure_cookies else "gsession"
 
+    @staticmethod
+    def _window(g) -> dict | None:
+        return json.loads(g["window"]) if g["window"] else None
+
     def start_session(self, gid: str) -> dict:
         now = time.time()
+        ttl = self.cfg.session_ttl_s
+        w = self._window(self.store.guardian(gid))
+        if w:  # a sessão de quem tem janela acaba quando a janela acaba
+            ttl = min(ttl, window_left_s(w, now))
         with self.lock:
             self.sessions = {k: v for k, v in self.sessions.items() if v[1] > now}
             if len(self.sessions) >= 200:
                 raise HttpError(503, "ocupado")
             token = secrets.token_urlsafe(32)
-            self.sessions[_hash(token)] = (gid, now + self.cfg.session_ttl_s)
-        attrs = f"{self.cookie_name()}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={self.cfg.session_ttl_s}"
+            self.sessions[_hash(token)] = (gid, now + ttl)
+        attrs = f"{self.cookie_name()}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={int(ttl)}"
         if self.cfg.secure_cookies:
             attrs += "; Secure"
         return {"Set-Cookie": attrs}
@@ -277,6 +308,12 @@ class Gateway:
             s = self.sessions.get(_hash(token)) if token else None
         if not s or s[1] < time.time():
             raise HttpError(401, "faça login")
+        g = self.store.guardian(s[0])
+        if not g:
+            raise HttpError(401, "faça login")
+        w = self._window(g)
+        if not cmds.in_window(w, time.time()):
+            raise HttpError(403, f"fora da janela de horário deste guardião ({describe_window(w)})")
         return s[0]
 
     def who(self, req: Req):
@@ -299,7 +336,8 @@ class Gateway:
 
     def trust(self) -> cmds.Trust:
         return cmds.Trust(self.cfg.rp_id, self.cfg.origin,
-                          {g: cmds.Guardian(v["name"], v["creds"], v["role"]) for g, v in self.store.trust_dict().items()})
+                          {g: cmds.Guardian(v["name"], v["creds"], v["role"], v["allow_sync"], v["window"])
+                           for g, v in self.store.trust_dict().items()})
 
     # ------------------------------------------------------------------ autenticação do aparelho
     def _device_headers(self, req: Req, spki: bytes, dev: str) -> None:
@@ -344,15 +382,19 @@ class Gateway:
             raise HttpError(400, "convite inválido ou expirado")
         if inv["kind"] == "new_guardian":
             gid, name, exclude = "g_" + secrets.token_hex(4), inv["name"] or "Guardião", []
+            allow_sync, window = bool(inv["allow_sync"]), json.loads(inv["window"]) if inv["window"] else None
         else:
             g = self.store.one("SELECT * FROM guardians WHERE id=?", (inv["guardian"],))
             if not g:
                 raise HttpError(400, "convite inválido")
             gid, name = g["id"], g["name"]
             exclude = [c["cred"] for c in self.store.q("SELECT cred FROM credentials WHERE guardian=?", (gid,))]
+            allow_sync, window = bool(g["allow_sync"]), json.loads(g["window"]) if g["window"] else None  # passkey nova herda a regra do guardião
         role = "admin" if self.store.guardian_count() == 0 else inv["role"]
-        cid, ch = self.new_challenge("register", {"gid": gid, "name": name, "kind": inv["kind"], "invite": _hash(token), "role": role})
-        return 200, {"challengeId": cid, "publicKey": {
+        cid, ch = self.new_challenge("register", {"gid": gid, "name": name, "kind": inv["kind"], "invite": _hash(token), "role": role,
+                                                  "allow_sync": allow_sync, "window": window})
+        return 200, {"allow_sync": allow_sync, "challengeId": cid, "publicKey": {
+            **({} if allow_sync else {"hints": ["client-device"]}),
             "challenge": b64.enc(ch), "rp": {"id": self.cfg.rp_id, "name": "NotToday Guardian"},
             "user": {"id": b64.enc(gid.encode()), "name": name, "displayName": name},
             "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
@@ -365,20 +407,24 @@ class Gateway:
         d = req.json()
         ch, ctx = self.take_challenge(_str(d, "challengeId", 64), "register")
         try:
-            cred, spki = webauthn.parse_registration(
+            cred, spki, be = webauthn.parse_registration(
                 b64.dec(_str(d, "attestationObject", 4096)), b64.dec(_str(d, "clientDataJSON", 2048)),
                 ch, self.cfg.rp_id, self.cfg.origin)
         except (webauthn.WebAuthnError, ValueError) as e:
             raise HttpError(400, f"registro recusado: {e}")
+        if be and not ctx.get("allow_sync", True):
+            raise HttpError(400, "essa passkey seria sincronizada (por exemplo na conta Google ou Apple); este guardião só aceita passkey "
+                                 "presa ao aparelho: escolha o Windows Hello, o Touch ID ou uma chave de segurança")
         if not self.store.consume_invite(ctx["invite"]):
             raise HttpError(400, "convite já usado ou expirado")
         cred_b64 = b64.enc(cred)
         if self.store.credential(cred_b64):
             raise HttpError(409, "credencial já cadastrada")
         if ctx["kind"] == "new_guardian":
-            self.store.add_guardian(ctx["gid"], ctx["name"], cred_b64, b64.enc(spki), ctx.get("role", "domains"))
+            self.store.add_guardian(ctx["gid"], ctx["name"], cred_b64, b64.enc(spki), ctx.get("role", "domains"), be,
+                                    ctx.get("allow_sync", True), ctx.get("window"))
         else:
-            self.store.add_credential(ctx["gid"], cred_b64, b64.enc(spki))
+            self.store.add_credential(ctx["gid"], cred_b64, b64.enc(spki), be)
         self.store.audit(None, "guardian", f"{ctx['kind']}: {ctx['gid']}")
         return 200, {"guardian": {"id": ctx["gid"], "name": ctx["name"]}, "cred": cred_b64, "spki": b64.enc(spki)}, \
             self.start_session(ctx["gid"])
@@ -396,13 +442,17 @@ class Gateway:
         row = self.store.credential(_str(d, "id", 1400))
         if not row:
             raise HttpError(401, "credencial desconhecida")
+        g = self.store.guardian(row["guardian"])
         try:
             webauthn.verify_assertion(
                 b64.dec(row["spki"]), b64.dec(_str(d, "authenticatorData", 1024)), b64.dec(_str(d, "clientDataJSON", 2048)),
-                b64.dec(_str(d, "signature", 512)), ch, self.cfg.rp_id, self.cfg.origin)
+                b64.dec(_str(d, "signature", 512)), ch, self.cfg.rp_id, self.cfg.origin, allow_sync=bool(g["allow_sync"]))
         except (webauthn.WebAuthnError, ValueError):
             raise HttpError(401, "login recusado")
-        g = self.store.one("SELECT * FROM guardians WHERE id=?", (row["guardian"],))
+        w = self._window(g)
+        if not cmds.in_window(w, time.time()):
+            self.store.audit(None, "login", f"{g['id']} recusado: fora da janela de horário")
+            raise HttpError(403, f"fora da janela de horário deste guardião ({describe_window(w)})")
         self.store.audit(None, "login", g["id"])
         return 200, {"guardian": {"id": g["id"], "name": g["name"]}}, self.start_session(g["id"])
 
@@ -418,7 +468,10 @@ class Gateway:
         gid, role, see = self.who(req)
         g = self.store.guardian(gid)
         others = {r["id"]: json.loads(r["see"] or "{}") for r in self.store.q("SELECT id, see FROM guardians")} if role == "admin" else {}
-        return 200, {"guardian": {"id": gid, "name": g["name"], "role": role, "see": see}, "see_of": others, "trust": self.store.trust_dict(),
+        creds = {r["cred"]: {"created": r["created"], "be": bool(r["be"])} for guardian in self.store.trust_dict() for r in self.store.credentials_of(guardian)
+                 if role == "admin" or guardian == gid}
+        return 200, {"guardian": {"id": gid, "name": g["name"], "role": role, "see": see}, "see_of": others, "cred_info": creds, "now": int(time.time()),
+                     "trust": self.store.trust_dict(),
                      "rp_id": self.cfg.rp_id, "origin": self.cfg.origin}, {}
 
     def make_invite(self, req):
@@ -432,9 +485,16 @@ class Gateway:
         new_role = d.get("role", "domains")
         if new_role not in cmds.ROLES:
             raise HttpError(400, "papel inválido")
+        allow_sync = d.get("allow_sync", True)
+        if not isinstance(allow_sync, bool):
+            raise HttpError(400, "valor inválido para passkey sincronizável")
+        try:
+            window = cmds.check_window(d.get("window"))
+        except cmds.CommandError as e:
+            raise HttpError(400, str(e))
         token = create_invite(self.store, kind, gid if kind == "add_passkey" else None,
                               _str(d, "name", 64) if kind == "new_guardian" else None, self.cfg.invite_ttl_s,
-                              new_role if kind == "new_guardian" else role)
+                              new_role if kind == "new_guardian" else role, allow_sync, window)
         return 200, {"token": token, "expires_in": self.cfg.invite_ttl_s}, {}
 
     def make_pairing(self, req):
@@ -487,13 +547,13 @@ class Gateway:
             signers = cmds.verify_sigs(trust, payload, env.get("sigs"))
         except (cmds.CommandError, ValueError) as e:
             raise HttpError(400, str(e))
-        g = trust.guardians.get(gid)
-        if g and g.role != "admin" and cmd["type"] not in cmds.DOMAIN_TYPES and not (
-                cmd["type"] == cmds.T_ADD_CREDENTIAL and cmd["args"].get("id") == gid):
-            raise HttpError(403, "o guardião não pode mandar este comando")
         allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES
         if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or cmd["type"] not in allowed:
             raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
+        try:
+            cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
+        except cmds.CommandError as e:
+            raise HttpError(403, str(e))
         if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
             raise HttpError(429, "fila cheia")
         ready = cmd["type"] in cmds.DOMAIN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd["type"])
@@ -540,6 +600,10 @@ class Gateway:
         except cmds.CommandError as e:
             raise HttpError(400, str(e))
         cmd = cmds.parse_payload(payload)
+        try:
+            cmds.check_author(trust, cmd)
+        except cmds.CommandError as e:
+            raise HttpError(400, str(e))
         if len(signers & trust.admins()) < cmds.required_signers(trust, cmd["type"]):
             raise HttpError(400, "ainda faltam assinaturas")
         self.store.make_ready(row["id"], {"payload": env["payload"], "sigs": sigs})
@@ -567,6 +631,16 @@ class Gateway:
         self.store.set_see(gid, see)
         self.store.audit(None, "guardian", f"visibilidade de {gid}: " + ", ".join(k for k, v in see.items() if v))
         return 200, {"see": see}, {}
+
+    def remove_credential(self, req, gid):
+        me = self.admin(req)
+        cred = _str(req.json(), "cred", 1400)
+        if not self.store.delete_credential(gid, cred):
+            raise HttpError(400, "passkey inexistente, ou é a última do guardião (remova o guardião)")
+        with self.lock:
+            self.sessions = {k: v for k, v in self.sessions.items() if v[0] != gid or me == gid}
+        self.store.audit(None, "guardian", f"{me} removeu uma passkey de {gid}")
+        return 200, {"ok": True}, {}
 
     def remove_guardian(self, req, gid):
         me = self.admin(req)
@@ -793,9 +867,10 @@ class Gateway:
         return 200, {"ok": True}, {}
 
 
-def create_invite(store: Store, kind: str, guardian: str | None, name: str | None, ttl: int, role: str = "admin") -> str:
+def create_invite(store: Store, kind: str, guardian: str | None, name: str | None, ttl: int, role: str = "admin",
+                  allow_sync: bool = True, window: dict | None = None) -> str:
     token = secrets.token_urlsafe(24)
-    store.put_invite(_hash(token), kind, guardian, name, int(time.time()) + ttl, role)
+    store.put_invite(_hash(token), kind, guardian, name, int(time.time()) + ttl, role, allow_sync, window)
     return token
 
 

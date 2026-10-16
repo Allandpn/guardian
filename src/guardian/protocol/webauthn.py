@@ -14,6 +14,7 @@ from . import b64, cbor
 
 FLAG_UP = 0x01
 FLAG_UV = 0x04
+FLAG_BE = 0x08   # backup eligible: a passkey pode ser copiada para a nuvem (conta Google, Apple…)
 FLAG_AT = 0x40
 COSE_ES256 = -7
 
@@ -64,8 +65,8 @@ def cose_to_spki(cose: dict) -> bytes:
 
 
 def parse_registration(attestation_object: bytes, client_data_json: bytes, challenge: bytes, rp_id: str,
-                       origin: str) -> tuple[bytes, bytes]:
-    """Valida um registro. Devolve (credential_id, chave pública SPKI/DER). A attestation é ignorada."""
+                       origin: str) -> tuple[bytes, bytes, bool]:
+    """Valida um registro. Devolve (credential_id, chave pública SPKI/DER, sincronizável). A attestation é ignorada."""
     _client_data(client_data_json, "webauthn.create", challenge, origin)
     try:
         att, _ = cbor.decode(attestation_object)
@@ -87,17 +88,23 @@ def parse_registration(attestation_object: bytes, client_data_json: bytes, chall
         raise WebAuthnError("chave COSE inválida") from e
     if not isinstance(cose, dict):
         raise WebAuthnError("chave COSE inválida")
-    return cred_id, cose_to_spki(cose)
+    return cred_id, cose_to_spki(cose), bool(flags & FLAG_BE)
 
 
 def verify_assertion(spki: bytes, authenticator_data: bytes, client_data_json: bytes, signature: bytes,
-                     challenge: bytes, rp_id: str, origin: str) -> None:
-    """Levanta WebAuthnError se a asserção não valer para este challenge."""
+                     challenge: bytes, rp_id: str, origin: str, allow_sync: bool = True) -> bool:
+    """Levanta WebAuthnError se a asserção não valer para este challenge. Devolve se a passkey é sincronizável.
+
+    Com `allow_sync=False` (guardião só neste aparelho) uma passkey com a flag BE é recusada. A flag está dentro do que
+    é assinado, então não dá para esconder."""
     _client_data(client_data_json, "webauthn.get", challenge, origin)
-    _check_auth_data(authenticator_data, rp_id)
+    flags = _check_auth_data(authenticator_data, rp_id)
+    if not allow_sync and flags & FLAG_BE:
+        raise WebAuthnError("passkey sincronizável não vale para este guardião")
     signed = authenticator_data + hashlib.sha256(client_data_json).digest()
     try:
         key = serialization.load_der_public_key(spki)
         key.verify(signature, signed, ec.ECDSA(hashes.SHA256()))
     except (InvalidSignature, ValueError, TypeError) as e:
         raise WebAuthnError("assinatura inválida") from e
+    return bool(flags & FLAG_BE)

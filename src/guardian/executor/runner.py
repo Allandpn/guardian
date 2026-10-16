@@ -223,7 +223,7 @@ class Executor:
 
     def handle(self, env: dict) -> None:
         try:
-            v = self.consumer.accept(env)
+            v = self.consumer.accept(env, now=self.now())  # janela de horário: relógio do executor, não o do navegador
         except cmds.CommandError as e:
             self.executed.append({"type": "?", "ok": False, "msg": f"recusado: {e}"})
             return

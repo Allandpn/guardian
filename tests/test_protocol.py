@@ -20,7 +20,7 @@ class WebAuthnTests(unittest.TestCase):
     def test_registration_roundtrip(self):
         a, ch = FakeAuthenticator(RP, ORIGIN), os.urandom(32)
         r = a.register(ch)
-        cred, spki = webauthn.parse_registration(b64.dec(r["attestationObject"]), b64.dec(r["clientDataJSON"]), ch, RP, ORIGIN)
+        cred, spki, be = webauthn.parse_registration(b64.dec(r["attestationObject"]), b64.dec(r["clientDataJSON"]), ch, RP, ORIGIN)
         self.assertEqual(cred, a.cred_id)
         self.assertEqual(spki, a.spki)
 
@@ -117,7 +117,7 @@ class CommandTests(unittest.TestCase):
         c = Consumer("dev1", self.trust)
         third = FakeAuthenticator(RP, ORIGIN)
         c.apply_trust({"type": "add_guardian", "args": {"id": "cris", "name": "Cris", "cred": third.cred_id_b64,
-                                                        "spki": b64.enc(third.spki), "role": "admin"}})
+                                                        "spki": b64.enc(third.spki), "role": "admin", "allow_sync": True}})
         self.assertIn("cris", c.trust.guardians)
         c.apply_trust({"type": "remove_guardian", "args": {"id": "cris"}})
         self.assertNotIn("cris", c.trust.guardians)

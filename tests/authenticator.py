@@ -33,8 +33,9 @@ def _cbor_text(s: str) -> bytes:
 
 
 class FakeAuthenticator:
-    def __init__(self, rp_id: str, origin: str):
+    def __init__(self, rp_id: str, origin: str, backup_eligible: bool = False):
         self.rp_id, self.origin = rp_id, origin
+        self.be = backup_eligible  # True imita uma passkey sincronizada (conta Google/Apple)
         self.key = ec.generate_private_key(ec.SECP256R1())
         self.cred_id = os.urandom(32)
 
@@ -51,7 +52,7 @@ class FakeAuthenticator:
         cose = (_cbor_head(5, 5) + _cbor_int(1) + _cbor_int(2) + _cbor_int(3) + _cbor_int(-7) + _cbor_int(-1)
                 + _cbor_int(1) + _cbor_int(-2) + _cbor_bytes(nums.x.to_bytes(32, "big"))
                 + _cbor_int(-3) + _cbor_bytes(nums.y.to_bytes(32, "big")))
-        flags = 0x01 | 0x40 | (0x04 if uv else 0)
+        flags = 0x01 | 0x40 | (0x04 if uv else 0) | (0x08 if self.be else 0)
         auth = (hashlib.sha256(self.rp_id.encode()).digest() + bytes([flags]) + (0).to_bytes(4, "big")
                 + bytes(16) + len(self.cred_id).to_bytes(2, "big") + self.cred_id + cose)
         att = (_cbor_head(5, 3) + _cbor_text("fmt") + _cbor_text("none") + _cbor_text("attStmt") + _cbor_head(5, 0)
@@ -61,7 +62,7 @@ class FakeAuthenticator:
         return {"id": self.cred_id_b64, "attestationObject": b64.enc(att), "clientDataJSON": b64.enc(cd)}
 
     def assert_(self, challenge: bytes, *, uv: bool = True, origin: str | None = None, rp_id: str | None = None) -> dict:
-        flags = 0x01 | (0x04 if uv else 0)
+        flags = 0x01 | (0x04 if uv else 0) | (0x08 if self.be else 0)
         auth = hashlib.sha256((rp_id or self.rp_id).encode()).digest() + bytes([flags]) + (0).to_bytes(4, "big")
         cd = json.dumps({"type": "webauthn.get", "challenge": b64.enc(challenge),
                          "origin": origin or self.origin}).encode()

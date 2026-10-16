@@ -182,13 +182,33 @@ class ExecutorEndToEnd(unittest.TestCase):
         c2, a2, g2 = self.env.register_guardian("Bia")
         me = c2.call("GET", "/v1/me")[1]["trust"][g2]
         cred, spki = next(iter(me["creds"].items()))
-        self.send("add_guardian", {"id": g2, "name": "Bia", "cred": cred, "spki": spki, "role": "domains"})
+        self.send("add_guardian", {"id": g2, "name": "Bia", "cred": cred, "spki": spki, "role": "domains", "allow_sync": True})
         self.ex.step(wait_s=0)
         self.assertIn(g2, self.ex.consumer.trust.guardians)
         (st, r, _), _ = self.env.sign_post(c2, a2, g2, self.dev, "pihole_allow", {"domain": "bia.example"})
         self.assertEqual(st, 200)
         self.ex.step(wait_s=0)
         self.assertIn("bia.example", self.fake.lists["allow"])
+
+    def test_11_window_uses_the_executors_clock(self):
+        import datetime
+        wk = {"days": [0, 1, 2, 3, 4], "from": 720, "to": 1020, "utc_offset_min": -180}
+        c2, a2, g2 = self.env.register_guardian("Trabalho")
+        me = c2.call("GET", "/v1/me")[1]["trust"][g2]
+        cred, spki = next(iter(me["creds"].items()))
+        self.send("add_guardian", {"id": g2, "name": "Trabalho", "cred": cred, "spki": spki, "role": "domains", "allow_sync": True, "window": wk})
+        self.ex.step(wait_s=0)
+        self.assertEqual(self.ex.consumer.trust.guardians[g2].window, wk)
+        tz = datetime.timezone(datetime.timedelta(hours=-3))
+        n = max(self.ex.consumer.last_ctr.values()) + 1
+        for hour, ok in ((14, True), (22, False)):
+            self.now[0] = datetime.datetime(2026, 10, 14, hour, 0, tzinfo=tz).timestamp()   # quarta-feira
+            p = command(self.dev, g2, n + hour, "pihole_allow", {"domain": f"h{hour}.example"})
+            self.ex.handle(envelope(p, a2.sign_command(g2, p)))
+            self.assertEqual(self.ex.executed[-1]["ok"], ok, self.ex.executed[-1])
+            self.assertEqual(f"h{hour}.example" in self.fake.lists["allow"], ok)
+        self.assertIn("janela", self.ex.executed[-1]["msg"])
+        self.now[0] = 1_000_000.0
 
     def test_pairing_string_validation(self):
         for bad in ("", "###", b64.enc(b"{}"), b64.enc(b'{"v":2}')):
