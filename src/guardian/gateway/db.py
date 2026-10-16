@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS blocked(dev TEXT NOT NULL, domain TEXT NOT NULL, src 
 CREATE INDEX IF NOT EXISTS blocked_last ON blocked(dev, last);
 CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
+CREATE TABLE IF NOT EXISTS app_asks(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS request_domains(rid INTEGER NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open',
   ttl_s INTEGER, by TEXT, ts INTEGER NOT NULL, PRIMARY KEY(rid, domain));
 """
@@ -161,7 +162,7 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests", "blocked", "app_refusals", "app_approvals"):
+            for t in ("commands", "ctrs", "requests", "blocked", "app_refusals", "app_approvals", "app_asks"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
             self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -219,6 +220,7 @@ class Store:
         self.x("DELETE FROM requests WHERE status<>'open' AND ts<?", (cutoff,))
         self.x("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
         self.x("DELETE FROM app_refusals WHERE ts<?", (int(time.time()) - 90 * 24 * 3600,))
+        self.x("DELETE FROM app_asks WHERE ts<?", (int(time.time()) - 30 * 24 * 3600,))
         self.x("DELETE FROM app_approvals WHERE ts<?", (int(time.time()) - 365 * 24 * 3600,))
         self.x("DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)", (AUDIT_MAX,))
 
@@ -257,6 +259,21 @@ class Store:
         self.x("INSERT INTO app_approvals(dev,pkg,guardian,ts) VALUES(?,?,?,?) ON CONFLICT(dev,pkg) DO UPDATE SET guardian=excluded.guardian, ts=excluded.ts",
                (dev, pkg, gid, int(time.time())))
         self.x("DELETE FROM app_refusals WHERE dev=? AND pkg=?", (dev, pkg))
+        self.x("DELETE FROM app_asks WHERE dev=? AND pkg=?", (dev, pkg))
+
+    def ask_app(self, dev: str, pkg: str) -> None:
+        """A pessoa pediu de novo a liberação de um app suspenso: ele volta às solicitações dos guardiões."""
+        self.x("INSERT INTO app_asks(dev,pkg,ts) VALUES(?,?,?) ON CONFLICT(dev,pkg) DO UPDATE SET ts=excluded.ts", (dev, pkg, int(time.time())))
+        self.x("DELETE FROM app_refusals WHERE dev=? AND pkg=?", (dev, pkg))
+
+    def asked_apps(self) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for r in self.q("SELECT dev, pkg FROM app_asks WHERE ts>?", (int(time.time()) - 14 * 24 * 3600,)):
+            out.setdefault(r["dev"], set()).add(r["pkg"])
+        return out
+
+    def refused_of(self, dev: str) -> list[str]:
+        return [r["pkg"] for r in self.q("SELECT pkg FROM app_refusals WHERE dev=? ORDER BY ts DESC", (dev,))]
 
     def drop_approval(self, dev: str, pkg: str) -> None:
         self.x("DELETE FROM app_approvals WHERE dev=? AND pkg=?", (dev, pkg))

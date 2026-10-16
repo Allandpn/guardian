@@ -60,6 +60,12 @@ Nome do sistema: **Guardian** (em inglês, em todos os textos). Papéis: **guard
 34. O guardião comum vê o que **ele** decidiu: domínios liberados (do relatório do executor, `allow_by`), domínios recusados (`GET /v1/my/decisions`, últimos 7 dias, enquanto o pedido existe) e apps aprovados (tabela `app_approvals`, guardada ao enfileirar `approve_app`). Pode bloquear de novo, liberar e revogar (`revoke_app` passou a ser permitido ao guardião; a tela só oferece o que ele aprovou).
 35. O relatório do executor põe as entradas do Guardian **antes** das entradas diretas do Pi-hole ao aplicar o corte de 500 (antes o corte alfabético escondia as liberações quando o Pi-hole tem centenas de entradas do dono) e informa `allow_total`/`deny_total`. "Bloqueados pelo guardião" lista só os bloqueios do Guardian.
 
+### Navegação e telas (2026-10-16, noite)
+36. **Padrão de UX: separar Domínios e Apps** em toda tela de decisão, cada um com as mesmas abas. Guardião-mor: Início | Domínios | Apps | Guardiões | Dispositivos. Guardião comum: Domínios | Apps | Conta.
+37. **Início é só leitura** (aparelhos, Pi-hole e guardiões; no computador, painel de detalhe com o nome do selecionado e valores em MAIÚSCULAS). Botões e configurações ficam em Dispositivos (Parear, Regras e configurações) e Guardiões (convite em passos, passkeys e permissões, confiança, co-assinaturas).
+38. **Domínios**: Solicitações (lista com filtro por aparelho, duração global Sempre/1 h/1 dia, Liberar/Recusar por linha, Liberar/Recusar todos) | Bloqueios | Liberados (guardião-mor, com quem liberou) ; guardião comum: Solicitações | Liberados | Recusados (o que ele mesmo decidiu). **Apps**: Solicitações | Aprovados | Recusados, com filtro por aparelho e quem aprovou/recusou.
+39. **App Android, tela "Liberações"**: abas Domínios e Apps. Em Apps a pessoa vê os apps suspensos (e quais o guardião recusou) e pede a liberação; isso reabre o app nas solicitações do guardião (`POST /v1/devices/{dev}/apps/request`, `GET .../apps/refused`). O botão de entrada ("Pedir liberação de sites e apps") é primário.
+
 ### Interface
 27. Paleta "Mar e terra" (dark) no site e no app. O app segue o estilo das Configurações do Android: início com estado e categorias, uma subtela por categoria, rascunho único e barra fixa de "Salvar e aplicar".
 28. O site funciona em celular, tablet e computador (barra de baixo no celular, menu lateral a partir de 900 px, conteúdo centralizado).

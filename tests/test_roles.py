@@ -114,6 +114,24 @@ class Roles(unittest.TestCase):
         self.assertIn(("nego.exemplo.com", self.dev), [(d["domain"], d["dev"]) for d in mine()["denied"]])
         self.assertEqual(self.c.call("GET", "/v1/my/decisions")[1]["denied"], [])
 
+    def test_03d_device_asks_again_for_a_refused_app(self):
+        dev = self.env.client()
+        # o relatório do setUp tem o app "p" pendente; o guardião o recusa
+        self.assertEqual(self.dc.call("POST", f"/v1/devices/{self.dev}/apps/refuse", {"pkg": "p"})[0], 200)
+        st, r, _ = dev.signed(self.devkey, "GET", f"/v1/devices/{self.dev}/apps/refused")
+        self.assertEqual((st, r["refused"]), (200, ["p"]))
+        # só pede apps que estão suspensos neste aparelho
+        self.assertEqual(dev.signed(self.devkey, "POST", f"/v1/devices/{self.dev}/apps/request", {"apps": [{"pkg": "nao.esta.aqui"}]})[0], 400)
+        self.assertEqual(dev.signed(self.devkey, "POST", f"/v1/devices/{self.dev}/apps/request", {"apps": []})[0], 400)
+        self.assertEqual(dev.signed(self.devkey, "POST", f"/v1/devices/{self.dev}/apps/request", {"apps": [{"pkg": "p"}]})[0], 200)
+        self.assertEqual(dev.signed(self.devkey, "GET", f"/v1/devices/{self.dev}/apps/refused")[1]["refused"], [])  # voltou às solicitações
+        d = next(x for x in self.dc.call("GET", "/v1/devices")[1]["devices"] if x["id"] == self.dev)
+        self.assertEqual(d["refused"], [])
+        self.assertTrue(d["report"]["pendingApps"][0].get("asked"))
+        self.assertTrue(any(i["kind"] == "app" and "Pediu a liberação" in i["text"] for i in self.c.call("GET", "/v1/requests")[1]["items"]))
+        # o executor não é aparelho protegido
+        self.assertEqual(self.env.client().signed(self.exkey, "GET", f"/v1/devices/{self.ex}/apps/refused")[0], 403)
+
     def test_04_history_filtered_unless_allowed(self):
         self.c.call("POST", f"/v1/guardians/{self.dgid}/see", {"history": False})
         rows = self.dc.call("GET", "/v1/audit")[1]["items"]

@@ -156,6 +156,8 @@ class Gateway:
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/clients", self.executor_clients),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/refuse", self.refuse_app),
             ("GET", r"/v1/my/decisions", self.my_decisions),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/refused", self.device_refused_apps),
+            ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/request", self.device_ask_apps),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.post_blocked),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
             ("GET", r"/v1/blocked", self.blocked),
@@ -518,11 +520,14 @@ class Gateway:
         out = []
         refused = self.store.refused_apps()
         approved_by, refused_by = self.store.app_marks()
+        asked = self.store.asked_apps()
         for r in self.store.devices():
             report = json.loads(r["report"]) if r["report"] else None
             d = {"id": r["id"], "kind": r["kind"], "name": r["name"], "spki": r["spki"], "created": r["created"],
                  "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"], "report": report,
                  "refused": refused.get(r["id"], []), "approved_by": approved_by.get(r["id"], {}), "refused_by": refused_by.get(r["id"], {})}
+            if report and report.get("pendingApps") and asked.get(r["id"]):
+                report["pendingApps"] = [{**a, "asked": True} if a.get("pkg") in asked[r["id"]] else a for a in report["pendingApps"] if isinstance(a, dict)]
             if role != "admin" and r["kind"] != "executor":
                 # apps pendentes todo guardião vê (ele também aprova e recusa); o resto depende do que o guardião-mor liberou
                 keep = (STATUS_KEYS if see["devices"] else set()) | (RULE_KEYS if see["rules"] else set()) | (APP_KEYS if see["apps"] else {"pendingApps"})
@@ -807,6 +812,37 @@ class Gateway:
                     self.store.audit(dev, "executed", f"{str(e.get('type', '?'))[:40]} "
                                      f"{'ok' if e.get('ok') else 'FALHOU'}: {str(e.get('msg', ''))[:200]}")
         self.store.save_report(dev, report)
+        return 200, {"ok": True}, {}
+
+    def device_refused_apps(self, req, dev):
+        """O aparelho pergunta quais dos apps suspensos foram recusados (para mostrar o estado e permitir pedir de novo)."""
+        row = self.device(req, dev)
+        if row["kind"] != "device":
+            raise HttpError(403, "aparelho inválido")
+        return 200, {"refused": self.store.refused_of(dev)}, {}
+
+    def device_ask_apps(self, req, dev):
+        """A pessoa pede a liberação de apps suspensos (inclusive os que o guardião recusou, talvez por engano)."""
+        row = self.device(req, dev)
+        if row["kind"] != "device":
+            raise HttpError(403, "aparelho inválido")
+        d = req.json()
+        raw = d.get("apps")
+        if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
+            raise HttpError(400, "lista de apps inválida")
+        pending = {a.get("pkg"): a.get("label") for a in (json.loads(row["report"]) if row["report"] else {}).get("pendingApps", []) if isinstance(a, dict)}
+        names = []
+        for a in raw:
+            pkg = a.get("pkg") if isinstance(a, dict) else None
+            if not isinstance(pkg, str) or not re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg) or pkg not in pending:
+                raise HttpError(400, "só dá para pedir apps que estão suspensos neste aparelho")
+            names.append(str(pending.get(pkg) or pkg)[:60])
+        for a in raw:
+            self.store.ask_app(dev, a["pkg"])
+        text = f"Pediu a liberação de: {', '.join(names)}"[:500]
+        if not self.store.add_request(dev, "app", text):
+            raise HttpError(429, "pedidos demais em aberto")
+        self.store.audit(dev, "request", text[:250])
         return 200, {"ok": True}, {}
 
     def my_decisions(self, req):
