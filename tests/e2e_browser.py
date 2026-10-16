@@ -366,9 +366,17 @@ def main():
         back()
         fake.queries.append({"time": _t.time() - 5, "domain": "escola.exemplo.com", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
         ex.collect_blocks()
-        page2.goto(f"{origin}/#/domains/bloqueios")
-        row = page2.locator(".li", has_text="escola.exemplo.com")
-        row.get_by_role("button", name="Liberar").click()
+        gw.call("POST", f"/v1/devices/{dev}/requests", {"kind": "unblock", "domains": ["escola.exemplo.com"]})
+        page2.goto(f"{origin}/#/domains/bloqueios")  # guardião de domínios: mínimo, só os pedidos (sem abas e sem Histórico)
+        page2.get_by_text("escola.exemplo.com").first.wait_for(timeout=10000)
+        out["domain_guardian_minimal"] = (page2.get_by_role("link", name="Bloqueios").count() == 0 and page2.get_by_role("link", name="Liberados").count() == 0
+                                          and "Histórico" not in page2.locator("#nav").inner_text())
+        if shots:
+            page2.set_viewport_size(PHONE)
+            page2.wait_for_timeout(300)
+            page2.screenshot(path=os.path.join(shots, "21-guardiao-pedidos.png"), full_page=True)
+        page2.get_by_role("group", name="Escolha para escola.exemplo.com").get_by_role("button", name="Sempre").click()
+        page2.get_by_role("button", name="Confirmar com passkey").click()
         page2.get_by_role("dialog").get_by_role("button", name="Assinar", exact=False).click(timeout=8000)
         page2.get_by_role("dialog").wait_for(state="detached", timeout=10000)
         run_executor(lambda: "escola.exemplo.com" in fake.lists["allow"])
@@ -437,7 +445,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "domain_guardian_nav", "domain_guardian_minimal", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 

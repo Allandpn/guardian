@@ -162,7 +162,7 @@ function renderNav(active) {
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', counts.apps), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/people', 'Pessoas', 'people', 'people', counts.cosign), item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
-      item('#/history', 'Histórico', 'clock', 'history', 0), item('#/people', 'Conta', 'people', 'people', 0)];
+      canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
   nav.replaceChildren(h('div', { class: 'brand' }, 'NotToday Guardian'), ...items.filter(Boolean),
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
 }
@@ -567,14 +567,16 @@ async function domainsView(tab) {
   const r = ex.report || {};
   const unb = reqs.filter((q) => q.kind === 'unblock');
   const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
-  if (!tab) tab = reqs.length ? 'pedidos' : 'bloqueios';
+  const minimal = !isAdmin();  // guardião de domínios: só os pedidos de liberação, sem as outras abas
+  if (minimal) tab = 'pedidos';
+  else if (!tab) tab = reqs.length ? 'pedidos' : 'bloqueios';
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const protectedDevs = devices.filter((x) => x.kind === 'device');
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
   const allowed = new Set(r.allow || []);
   const canary = (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
-  const tabs = [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'],
+  const tabs = minimal ? [] : [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'],
     ['#/domains/liberados', 'Liberados', 'liberados']];
   const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
     x.cname ? chip('via CNAME') : null];
@@ -674,7 +676,7 @@ async function domainsView(tab) {
         h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null];
   }
   show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
-    h('div', { class: 'wrap wide' }, segTabs(tabs, tab), body));
+    h('div', { class: 'wrap wide' }, minimal ? null : segTabs(tabs, tab), body));
   timer = setTimeout(autoRefresh, 20000);
 }
 
@@ -1065,7 +1067,7 @@ async function route() {
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);
     else if (hash === '#/people') await (isAdmin() ? peopleView() : contaView());
-    else if (his) await historyView(his[1]);
+    else if (his) await (isAdmin() || canSee('history') ? historyView(his[1]) : domainsView());
     else if (hash === '#/pair' && isAdmin()) await pairView();
     else if (isAdmin() || canSee('devices')) await inicioView();
     else await domainsView();
