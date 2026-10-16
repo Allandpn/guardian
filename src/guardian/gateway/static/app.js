@@ -154,7 +154,7 @@ function statusOf(d, now) {
   if (!d.report) return { word: 'Novo', kind: '', detail: 'aguardando o primeiro relatório' };
   if (d.kind === 'executor') {
     if (r.pihole_ok === false) return { word: 'Atenção', kind: 'warn', detail: 'Pi-hole inacessível' };
-    return { word: 'Ok', kind: 'ok', detail: `${(r.allow || []).length} liberados · ${(r.temp || []).length} temporários · ${(r.deny || []).length} bloqueados` };
+    return { word: 'Ok', kind: 'ok', detail: `${Object.keys(r.allow_by || {}).length} liberados pelo Guardian · ${(r.temp || []).length} temporários · ${Object.keys(r.deny_by || {}).length} bloqueados pelo Guardian` };
   }
   const apps = (r.pendingApps || []).length;
   const pend = (r.pending || []).length;
@@ -176,8 +176,9 @@ function renderNav(active) {
   if (!me) return;
   const item = (href, label, ic, key, badge) => h('a', { class: 'navitem' + (active === key ? ' on' : ''), href, 'aria-current': active === key ? 'page' : null },
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
-  const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', counts.apps), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
-    item('#/people', 'Pessoas', 'people', 'people', counts.cosign), item('#/history', 'Histórico', 'clock', 'history', 0)] :
+  const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
+    item('#/apps', 'Apps', 'grid', 'apps', counts.apps), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
+    item('#/devices', 'Dispositivos', 'device', 'devices', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
@@ -258,48 +259,141 @@ function inviteView(token) {
 }
 
 // ---------- início ----------
-function deviceCard(d, now, { sel } = {}) {
+function deviceCard(d, now, { sel, href, onclick } = {}) {
   const st = statusOf(d, now);
-  return h('a', { class: 'card' + (sel ? ' sel' : '') + (st.kind === 'bad' ? ' badb' : st.kind === 'warn' ? ' warnb' : ''), href: `#/device/${d.id}` },
+  return h('a', { class: 'card' + (sel ? ' sel' : '') + (st.kind === 'bad' ? ' badb' : st.kind === 'warn' ? ' warnb' : ''), href: href || `#/device/${d.id}`, onclick },
     h('div', { class: 'row' }, h('span', { class: 'dot ' + st.kind }), h('strong', {}, d.name),
-      d.kind === 'executor' ? chip('executor') : null, h('span', { class: 'sp' }), chip(st.word, st.kind)),
+      d.kind === 'executor' ? chip('Pi-hole') : null, h('span', { class: 'sp' }), chip(st.word, st.kind)),
     h('div', { class: 'muted', style: 'margin-top:6px' }, st.detail));
 }
 
+function guardianCard(id, g, { sel, href, onclick } = {}) {
+  const n = Object.keys(g.creds || {}).length;
+  const dom = g.role === 'domains';
+  return h('a', { class: 'card' + (sel ? ' sel' : ''), href: href || '#/guardians', onclick },
+    h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()), h('strong', {}, g.name), id === me.guardian.id ? chip('você') : null,
+      h('span', { class: 'sp' }), chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok')),
+    h('div', { class: 'muted', style: 'margin-top:6px' }, `${n} passkey${n === 1 ? '' : 's'} · ${g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'}${g.window ? ` · ${describeWindow(g.window)}` : ''}`));
+}
+
+const canaryOf = (devices) => (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
+
+/** Leitura de um aparelho (sem nenhum botão): estado, pendências e o que o aparelho informou. */
+function deviceInfoNodes(d, now) {
+  const r = d.report || {};
+  const snap = r.snapshot || {};
+  const w = r.windows || {};
+  const pend = r.pending || [];
+  const apps = r.pendingApps || [];
+  const nodes = [deviceBanner(d, now)];
+  if (pend.length || apps.length) {
+    nodes.push(h('div', { class: 'sec' }, 'Pendências'), h('div', { class: 'card' }, kvRows([
+      ...pend.map((p) => [`Pedido: ${KIND[p.kind] || p.kind}`, p.state === 'ready' ? 'pronto' : `em espera · ${dur(p.remainingMs || 0)}`]),
+      ...(apps.length ? [['Apps aguardando aprovação', String(apps.length)]] : []),
+    ], true)));
+  }
+  nodes.push(h('div', { class: 'sec' }, 'Estado'), h('div', { class: 'card' }, kvRows([
+    ['Device Owner', r.owner ? 'sim' : 'não'], ['Ativado pelo guardião', r.activated ? 'sim' : 'não'], ['PIN local', r.pinSet ? 'definido' : 'não definido'],
+    ['Atraso para afrouxar', delayText(snap)], ['Janela de manutenção', w.maintenanceMs ? 'ativa' : 'fechada'],
+    ['Janela de desenvolvimento', w.devMs ? 'aberta' : `fechada · ${w.devUsed ?? '?'} usadas em 24 h`], ['Tailscale', r.tailscale ? 'sim' : 'não'], ['Versão do app', r.version || '?'],
+  ], true)));
+  return nodes;
+}
+
+function executorInfoNodes(d, now, devices) {
+  const r = d.report || {};
+  const mineAllow = Object.keys(r.allow_by || {}).length;
+  const mineDeny = Object.keys(r.deny_by || {}).length;
+  const direct = Math.max(0, (r.allow_total ?? (r.allow || []).length) - mineAllow) + Math.max(0, (r.deny_total ?? (r.deny || []).length) - mineDeny);
+  return [deviceBanner(d, now), h('div', { class: 'sec' }, 'Pi-hole'), h('div', { class: 'card' }, kvRows([
+    ['Pi-hole', r.pihole_ok === false ? 'inacessível' : 'ok'], ['Liberados pelo Guardian', String(mineAllow)], ['Bloqueados pelo Guardian', String(mineDeny)],
+    ['Temporários', String((r.temp || []).length)], ['Entradas criadas direto no Pi-hole', String(direct)], ['Domínio-canário', canaryOf(devices || []) || 'não definido'],
+  ], true))];
+}
+
+function guardianInfoNodes(id, g) {
+  const creds = Object.keys(g.creds || {});
+  const see = (me.see_of || {})[id] || {};
+  const dom = g.role === 'domains';
+  const seen = SEE_LABELS.filter(([k]) => see[k]).map(([, label]) => label);
+  return [h('div', { class: 'sec' }, 'Perfil'), h('div', { class: 'card' }, kvRows([
+    ['Papel', dom ? 'guardião' : 'guardião-mor'], ['Passkeys', String(creds.length)], ['Sincronização', g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'],
+    ['Horário', describeWindow(g.window)], ...(dom ? [['Pode ver além de domínios', seen.length ? seen.join(', ') : 'nada']] : []),
+  ], true)),
+  h('div', { class: 'sec' }, 'Passkeys'), h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, creds.map((cred, i) => {
+    const info = (me.cred_info || {})[cred] || {};
+    return h('div', { class: 'li' }, h('div', { class: 'sp muted' }, `Passkey ${i + 1}${info.created ? ` · cadastrada ${ago(info.created, me.now)}` : ''}`),
+      chip(info.be ? 'sincronizada' : 'só neste aparelho', info.be ? 'warn' : 'ok'));
+  }))];
+}
+
+const paneHead = (name, kindLabel) => h('div', { class: 'panehead' }, h('h2', {}, name), chip(kindLabel));
+
+/** Início: só leitura. Aparelhos, Pi-hole e guardiões; tudo que se configura fica em Dispositivos, Guardiões, Domínios e Apps. */
 async function inicioView() {
+  me = await api('GET', '/v1/me');
   const { devices, now, reqs, aw } = await loadAll();
   renderNav('home');
   const todos = [];
   const cos = aw.filter((c) => c.can_cosign);
-  if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/people' });
-  if (reqs.length) todos.push({ n: reqs.length, title: 'Pedidos dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains/pedidos' });
+  if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/guardians' });
+  if (reqs.length) todos.push({ n: reqs.length, title: 'Solicitações dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains/solicitacoes' });
   for (const d of isAdmin() ? devices : []) {
     const r = d.report || {};
     const apps = r.pendingApps || [];
-    if (apps.length) todos.push({ n: apps.length, title: 'Apps aguardando aprovação', sub: `${d.name}${apps.some((a) => (a.risks || []).length) ? ' · com risco' : ''}`, href: `#/device/${d.id}/apps` });
+    if (apps.length) todos.push({ n: apps.length, title: 'Apps aguardando aprovação', sub: `${d.name}${apps.some((a) => (a.risks || []).length) ? ' · com risco' : ''}`, href: '#/apps/solicitacoes' });
     const ready = (r.pending || []).filter((p) => p.state === 'ready');
     if (ready.length) todos.push({ n: ready.length, title: 'Pedido pronto para confirmar', sub: `${d.name} · ${ready.map((p) => KIND[p.kind] || p.kind).join(', ')}`, href: `#/device/${d.id}` });
   }
+  const execs = devices.filter((d) => d.kind === 'executor');
   const phones = devices.filter((d) => d.kind === 'device');
-  if (!selected || !devices.some((d) => d.id === selected)) selected = (phones[0] || devices[0] || {}).id || null;
-  const sel = devices.find((d) => d.id === selected);
+  const gs = isAdmin() ? Object.entries(me.trust) : [];
+  const ids = [...execs, ...phones].map((d) => d.id).concat(gs.map(([id]) => id));
+  if (!selected || !ids.includes(selected)) selected = (phones[0] || execs[0] || {}).id || (gs[0] || [])[0] || null;
+  const pick = (id) => (wide() ? { sel: id === selected, href: '#/', onclick: (e) => { e.preventDefault(); selected = id; route(); } } : {});
 
   const list = h('div', { class: 'list' },
     h('div', { class: 'sec' }, 'Precisa de você'),
     todos.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, todos.map((t) => h('a', { class: 'todo', href: t.href },
       h('span', { class: 'cnt' }, String(t.n)), h('div', { class: 'sp' }, h('strong', {}, t.title), h('div', { class: 'muted' }, t.sub)), icon('chevron', 18)))) :
       h('div', { class: 'card' }, h('div', { class: 'row' }, h('span', { style: 'color:var(--green)' }, icon('check')), h('strong', {}, 'Tudo em dia'))),
+    execs.length ? [h('div', { class: 'sec' }, 'Pi-hole'), execs.map((d) => deviceCard(d, now, pick(d.id)))] : null,
     h('div', { class: 'sec' }, 'Aparelhos'),
-    devices.length ? devices.map((d) => wide() ? h('a', { class: 'card' + (d.id === selected ? ' sel' : ''), href: '#/', onclick: (e) => { e.preventDefault(); selected = d.id; route(); } },
-      statusRow(d, now)) : deviceCard(d, now)) :
-      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum aparelho pareado ainda. Toque em “Parear”.')));
+    phones.length ? phones.map((d) => deviceCard(d, now, pick(d.id))) :
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum aparelho pareado ainda. Use Dispositivos → Parear.')),
+    gs.length ? [h('div', { class: 'sec' }, 'Guardiões'), gs.map(([id, g]) => guardianCard(id, g, wide() ? pick(id) : {}))] : null,
+    isAdmin() || canSee('history') ? h('div', { class: 'pad', style: 'margin-top:14px' }, h('a', { class: 'btn block', href: '#/history', style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Ver histórico')) : null);
 
-  const pane = wide() && sel && sel.kind === 'device' ? h('div', { class: 'pane' }, h('div', { class: 'sec' }, 'Detalhe'), deviceBanner(sel, now),
-    h('div', { class: 'row', style: 'margin:12px 14px 0' }, h('a', { class: 'btn grow', href: `#/device/${sel.id}`, style: 'text-align:center;display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Abrir aparelho completo')),
-    resumoNodes(sel, now)) : null;
+  let pane = null;
+  if (wide() && selected) {
+    const d = devices.find((x) => x.id === selected);
+    const ge = gs.find(([id]) => id === selected);
+    if (d) pane = h('div', { class: 'pane' }, paneHead(d.name, d.kind === 'executor' ? 'Pi-hole' : 'Aparelho'), d.kind === 'executor' ? executorInfoNodes(d, now, devices) : deviceInfoNodes(d, now));
+    else if (ge) pane = h('div', { class: 'pane' }, paneHead(ge[1].name, ge[1].role === 'domains' ? 'Guardião' : 'Guardião-mor'), guardianInfoNodes(ge[0], ge[1]));
+  }
+  show(top('Início'), h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)));
+  timer = setTimeout(autoRefresh, 20000);
+}
 
-  show(top('Início'), h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)),
-    isAdmin() ? h('a', { class: 'fab', href: '#/pair' }, icon('plus', 20), 'Parear') : null);
+/** Dispositivos: o Pi-hole e os aparelhos, com os botões e configurações de cada um. */
+let selectedDev = null;
+async function devicesView() {
+  const { devices, now } = await loadAll();
+  renderNav('devices');
+  const execs = devices.filter((d) => d.kind === 'executor');
+  const phones = devices.filter((d) => d.kind === 'device');
+  if (!selectedDev || !devices.some((d) => d.id === selectedDev)) selectedDev = (phones[0] || execs[0] || {}).id || null;
+  const pick = (id) => (wide() ? { sel: id === selectedDev, href: '#/devices', onclick: (e) => { e.preventDefault(); selectedDev = id; route(); } } : {});
+  const list = h('div', { class: 'list' },
+    execs.length ? [h('div', { class: 'sec' }, 'Pi-hole'), execs.map((d) => deviceCard(d, now, pick(d.id)))] : null,
+    h('div', { class: 'sec' }, 'Aparelhos'),
+    phones.length ? phones.map((d) => deviceCard(d, now, pick(d.id))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum aparelho pareado ainda. Toque em Parear.')));
+  const sel = devices.find((d) => d.id === selectedDev);
+  const pane = wide() && sel ? h('div', { class: 'pane' }, paneHead(sel.name, sel.kind === 'executor' ? 'Pi-hole' : 'Aparelho'),
+    sel.kind === 'executor' ? executorNodes(sel, now) : [resumoNodes(sel, now),
+      h('div', { class: 'pad', style: 'margin-top:12px' }, h('a', { class: 'btn pri block', href: `#/device/${sel.id}/regras`, style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Regras e configurações'))]) : null;
+  show(top('Dispositivos', { actions: h('a', { class: 'btn pri', href: '#/pair', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Parear') }),
+    h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)));
   timer = setTimeout(autoRefresh, 20000);
 }
 
@@ -325,19 +419,19 @@ function segTabs(items, active) {
 
 async function deviceView(id, tab) {
   const { devices, now } = await loadAll();
-  renderNav('home');
+  renderNav(isAdmin() ? 'devices' : 'home');
   const d = devices.find((x) => x.id === id);
-  if (!d) { show(top('Aparelho', { back: '#/' }), h('p', { class: 'empty' }, 'Aparelho não encontrado.')); return; }
+  if (!d) { show(top('Aparelho', { back: isAdmin() ? '#/devices' : '#/' }), h('p', { class: 'empty' }, 'Aparelho não encontrado.')); return; }
   if (!isAdmin()) return deviceReadOnly(d, now);
+  if (tab === 'apps') { appDev = d.kind === 'device' ? id : ''; location.hash = '#/apps/solicitacoes'; return; }  // endereço antigo
   const base = `#/device/${id}`;
   const tabs = d.kind === 'executor' ? [[base, 'Resumo', 'resumo'], [`${base}/avancado`, 'Avançado', 'avancado']] :
-    [[base, 'Resumo', 'resumo'], [`${base}/regras`, 'Regras', 'regras'], [`${base}/apps`, 'Apps', 'apps'], [`${base}/avancado`, 'Avançado', 'avancado']];
+    [[base, 'Resumo', 'resumo'], [`${base}/regras`, 'Regras', 'regras'], [`${base}/avancado`, 'Avançado', 'avancado']];
   let body;
   if (tab === 'regras' && d.kind === 'device') body = regrasNodes(d);
-  else if (tab === 'apps' && d.kind === 'device') body = appsNodes(d);
   else if (tab === 'avancado') body = avancadoNodes(d, now);
   else { tab = 'resumo'; body = d.kind === 'executor' ? executorNodes(d, now) : resumoNodes(d, now); }
-  show(top(d.name, { back: '#/' }), h('div', { class: 'wrap' }, deviceBanner(d, now), segTabs(tabs, tab), body));
+  show(top(d.name, { back: '#/devices' }), h('div', { class: 'wrap' }, deviceBanner(d, now), segTabs(tabs, tab), body));
   if (tab !== 'regras') timer = setTimeout(autoRefresh, 20000);
 }
 
@@ -375,11 +469,12 @@ function executorNodes(d, now) {
   return [h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'Executor do Pi-hole. Os domínios liberados e bloqueados ficam em Domínios.'),
     h('a', { class: 'btn pri', href: '#/domains', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Abrir domínios')),
   h('div', { class: 'card' }, kvRows([['Pi-hole', r.pihole_ok === false ? 'inacessível' : 'ok'], ['Liberados', String((r.allow || []).length)], ['Bloqueados', String((r.deny || []).length)],
-    ['Temporários', String((r.temp || []).length)]]))];
+    ['Temporários', String((r.temp || []).length)]], true))];
 }
 
-function kvRows(rows) {
-  return h('div', { class: 'kvbox', style: 'margin:0' }, rows.map(([k, v]) => h('div', { class: 'kv' }, h('span', {}, k), h('span', {}, v))));
+/** Linhas rótulo/valor. Com `upper`, o valor vai em MAIÚSCULAS e em destaque (estado e configuração). */
+function kvRows(rows, upper = false) {
+  return h('div', { class: 'kvbox', style: 'margin:0' }, rows.map(([k, v]) => h('div', { class: 'kv' + (upper ? ' up' : '') }, h('span', {}, k), h('span', {}, v))));
 }
 
 function resumoNodes(d, now) {
@@ -407,15 +502,15 @@ function resumoNodes(d, now) {
       h('div', { class: 'row' }, h('strong', {}, `${apps.length} app(s) aguardando aprovação`), h('span', { class: 'sp' }),
         apps.some((a) => (a.risks || []).length) ? chip('com risco', 'warn') : null),
       h('div', { class: 'muted', style: 'margin-top:4px' }, apps.slice(0, 3).map((a) => a.label || a.pkg).join(' · ')),
-      h('a', { class: 'btn pri block', href: `#/device/${d.id}/apps`, style: 'margin-top:10px;display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Revisar apps')));
+      h('a', { class: 'btn pri block', href: '#/apps/solicitacoes', style: 'margin-top:10px;display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Revisar apps')));
   }
   nodes.push(h('div', { class: 'sec' }, 'Estado'));
   const w = r.windows || {};
   nodes.push(h('div', { class: 'card' }, kvRows([
     ['Device Owner', r.owner ? 'sim' : 'não'], ['Ativado pelo guardião', r.activated ? 'sim' : 'não'], ['PIN local', r.pinSet ? 'definido' : 'não definido'],
-    ['Atraso para afrouxar', delayText(snap)], ['Janela de manutenção', w.maintenanceMs ? 'ATIVA' : 'fechada'],
-    ['Janela de desenvolvimento', w.devMs ? 'ABERTA' : `fechada · ${w.devUsed ?? '?'} usadas em 24 h`], ['Tailscale', r.tailscale ? 'sim' : 'não'], ['Versão do app', r.version || '?'],
-  ])));
+    ['Atraso para afrouxar', delayText(snap)], ['Janela de manutenção', w.maintenanceMs ? 'ativa' : 'fechada'],
+    ['Janela de desenvolvimento', w.devMs ? 'aberta' : `fechada · ${w.devUsed ?? '?'} usadas em 24 h`], ['Tailscale', r.tailscale ? 'sim' : 'não'], ['Versão do app', r.version || '?'],
+  ], true)));
   nodes.push(h('div', { class: 'sec' }, 'Atalhos'));
   nodes.push(h('div', { class: 'pad', style: 'display:flex;flex-direction:column;gap:8px' },
     h('button', { class: 'btn', type: 'button', style: 'text-align:left', onclick: act(() => pinDialog(d)) }, 'Definir PIN local ou de desenvolvedor…'),
@@ -524,77 +619,85 @@ function regrasNodes(d) {
 }
 
 // ---------- apps ----------
+// ---------- apps ----------
+let appDev = '';             // filtro das telas de Apps: aparelho ('' = todos)
 const appRisky = (x) => /vpn|shizuku|shell|hail|test dpc/i.test(x);
 
-/** Apps pendentes de um aparelho (Aprovar com passkey ou Recusar) e os já recusados (Reconsiderar). Serve ao guardião-mor e ao guardião. */
-function pendingAppNodes(d) {
-  const r = d.report || {};
-  const pend = r.pendingApps || [];
-  const nodes = [h('div', { class: 'sec' }, `Aguardando aprovação · ${pend.length}`)];
-  if (!pend.length) nodes.push(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando.')));
-  const refuse = (a, undo) => act(async () => {
+/** Grupo de botões de escolha única (mesmo desenho dos filtros de Bloqueios). */
+function pillGroup(label, options, current, onPick) {
+  return h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': label },
+    options.map(([k, text]) => h('button', { type: 'button', 'aria-pressed': String(current === k), onclick: () => onPick(k) }, text)));
+}
+
+/** Apps: Solicitações | Aprovados | Recusados, com filtro por aparelho. Serve ao guardião-mor e ao guardião. */
+async function appsView(tab) {
+  const { devices } = await loadAll();
+  renderNav('apps');
+  const phones = devices.filter((x) => x.kind === 'device');
+  if (appDev && !phones.some((x) => x.id === appDev)) appDev = '';
+  const shown = appDev ? phones.filter((x) => x.id === appDev) : phones;
+  tab = ['solicitacoes', 'aprovados', 'recusados'].includes(tab) ? tab : 'solicitacoes';
+  const pendingOf = (d) => ((d.report || {}).pendingApps || []);
+  const nPend = shown.reduce((n, d) => n + pendingOf(d).length, 0);
+  const nRef = shown.reduce((n, d) => n + (d.refusedApps || []).length, 0);
+  const tabs = [['#/apps/solicitacoes', `Solicitações · ${nPend}`, 'solicitacoes'], ['#/apps/aprovados', 'Aprovados', 'aprovados'], ['#/apps/recusados', `Recusados · ${nRef}`, 'recusados']];
+  const filters = phones.length > 1 ? [h('div', { class: 'sec' }, 'Aparelho'),
+    pillGroup('Filtrar por aparelho', [['', 'Todos'], ...phones.map((x) => [x.id, x.name])], appDev, (k) => { appDev = k; route(); })] : null;
+  const refuse = (d, a, undo) => act(async () => {
     if (!undo && !(await sheet({ title: `Recusar “${a.label || a.pkg}” em ${d.name}?`, rows: [['Aparelho', d.name], ['Pacote', a.pkg]],
-      note: 'O app continua suspenso no aparelho e sai desta lista. Dá para reconsiderar depois.', confirm: 'Recusar', danger: true }))) return;
+      note: 'O app continua suspenso no aparelho e sai das solicitações. Dá para reconsiderar depois, em Recusados.', confirm: 'Recusar', danger: true }))) return;
     await api('POST', `/v1/devices/${d.id}/apps/refuse`, { pkg: a.pkg, ...(undo ? { undo: true } : {}) });
     route();
   });
-  for (const a of pend) {
-    const risks = a.risks || [];
-    nodes.push(h('div', { class: 'card' + (risks.some(appRisky) ? ' badb' : '') },
-      h('div', { class: 'row' }, h('div', { class: 'sp' }, h('strong', {}, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
-        h('button', { class: 'btn', type: 'button', onclick: refuse(a, false) }, 'Recusar'),
-        h('button', { class: 'btn pri', type: 'button', onclick: act(() => confirmSend(d.id, 'approve_app', { pkg: a.pkg }, {
-          title: `Aprovar “${a.label || a.pkg}” em ${d.name}?`, rows: [['Ação', 'Aprovar app'], ['Aparelho', d.name], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok',
-          note: risks.length ? `Risco: ${risks.join(', ')}.` : null, noteKind: 'bad' }).then(() => route())) }, 'Aprovar')),
-      risks.length ? h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, risks.map((x) => chip(`risco: ${x}`, appRisky(x) ? 'bad' : 'warn'))) : null));
-  }
-  const ref = d.refusedApps || [];
-  if (ref.length) {
-    nodes.push(h('div', { class: 'sec' }, `Recusados · ${ref.length}`),
-      h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, ref.map((a) => h('div', { class: 'li' },
-        h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
-        h('button', { class: 'btn', type: 'button', onclick: refuse(a, true) }, 'Reconsiderar')))));
-  }
-  return nodes;
-}
+  const approve = (d, a) => act(() => confirmSend(d.id, 'approve_app', { pkg: a.pkg }, {
+    title: `Aprovar “${a.label || a.pkg}” em ${d.name}?`, rows: [['Ação', 'Aprovar app'], ['Aparelho', d.name], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok',
+    note: (a.risks || []).length ? `Risco: ${a.risks.join(', ')}.` : null, noteKind: 'bad' }).then(() => route()));
+  const nameRow = (a, d, extra) => h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg),
+    h('div', { class: 'muted' }, d.name, extra ? ` · ${extra}` : ''));
+  const empty = (text) => h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, text));
 
-/** Apps aguardando aprovação, de todos os aparelhos (tela do guardião comum). */
-async function appsInboxView() {
-  const { devices } = await loadAll();
-  renderNav('apps');
-  const dec = await api('GET', '/v1/my/decisions');
-  const devs = devices.filter((x) => x.kind === 'device' && (((x.report || {}).pendingApps || []).length || (x.refusedApps || []).length));
-  const byId = new Map(devices.map((x) => [x.id, x]));
-  const label = (a) => { const d = byId.get(a.dev); const f = d && ((d.report || {}).approvedApps || []).find((x) => x.pkg === a.pkg); return (f && f.label) || a.pkg; };
-  const approved = dec.apps.filter((a) => byId.has(a.dev));
-  show(top('Apps'), h('div', { class: 'wrap wide' }, devs.length ? devs.map((d) => [h('div', { class: 'sec' }, d.name), pendingAppNodes(d)]) :
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando aprovação.')),
-    h('div', { class: 'sec' }, `Aprovei · ${approved.length}`),
-    approved.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, approved.map((a) => h('div', { class: 'li' },
-      h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, label(a)), h('div', { class: 'muted mono' }, a.pkg), h('div', { class: 'muted' }, `${byId.get(a.dev).name} · ${ago(a.ts, Math.floor(Date.now() / 1000))}`)),
-      h('button', { class: 'btn', type: 'button', onclick: act(() => confirmSend(a.dev, 'revoke_app', { pkg: a.pkg }, { title: `Revogar “${label(a)}” em ${byId.get(a.dev).name}?`,
-        rows: [['Ação', 'Revogar aprovação'], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok', note: 'O app será suspenso.' }).then(() => route())) }, 'Revogar')))) :
-      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Você ainda não aprovou nenhum app.'))));
+  let body;
+  if (tab === 'solicitacoes') {
+    const rows = shown.flatMap((d) => pendingOf(d).map((a) => ({ d, a })));
+    body = rows.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, rows.map(({ d, a }) => h('div', { class: 'li', style: 'flex-wrap:wrap' },
+      nameRow(a, d, a.asked ? 'pedido do usuário' : ''),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuse(d, a, false) }, 'Recusar'),
+        h('button', { class: 'btn pri', type: 'button', onclick: approve(d, a) }, 'Aprovar')),
+      (a.risks || []).length ? h('div', { style: 'flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap' }, a.risks.map((x) => chip(`risco: ${x}`, appRisky(x) ? 'bad' : 'warn'))) : null))) :
+      empty('Nenhum app aguardando aprovação.');
+  } else if (tab === 'aprovados') {
+    let rows;
+    if (isAdmin()) {
+      rows = shown.flatMap((d) => ((d.report || {}).approvedApps || []).map((a) => ({ d, a, by: (d.approved_by || {})[a.pkg] })));
+    } else {
+      const dec = await api('GET', '/v1/my/decisions');
+      rows = dec.apps.filter((x) => shown.some((d) => d.id === x.dev)).map((x) => {
+        const d = phones.find((p) => p.id === x.dev);
+        const f = ((d.report || {}).approvedApps || []).find((y) => y.pkg === x.pkg);
+        return { d, a: { pkg: x.pkg, label: (f && f.label) || x.pkg }, by: me.guardian.id };
+      });
+    }
+    const listBox = h('div', {});
+    const draw = (q) => {
+      const items = rows.filter(({ a }) => `${a.label} ${a.pkg}`.toLowerCase().includes(q.toLowerCase()));
+      const cut = items.slice(0, 150);
+      listBox.replaceChildren(cut.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, cut.map(({ d, a, by }) => h('div', { class: 'li' },
+        nameRow(a, d, by ? `aprovado por ${gname(by)}` : ''),
+        h('button', { class: 'btn', type: 'button', onclick: act(() => confirmSend(d.id, 'revoke_app', { pkg: a.pkg }, { title: `Revogar “${a.label || a.pkg}” em ${d.name}?`,
+          rows: [['Ação', 'Revogar aprovação'], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok', note: 'O app será suspenso.' }).then(() => route())) }, 'Revogar'))),
+        items.length > cut.length ? h('p', { class: 'muted', style: 'margin:8px 0' }, `Mostrando ${cut.length} de ${items.length}. Use a busca.`) : null) :
+        h('p', { class: 'empty' }, rows.length ? 'Nenhum app com esse nome.' : isAdmin() ? 'O aparelho ainda não enviou a lista.' : 'Você ainda não aprovou nenhum app.'));
+    };
+    draw('');
+    body = [h('div', { class: 'pad', style: 'margin-top:12px' }, h('input', { class: 'inp', type: 'search', placeholder: 'Buscar app aprovado', 'aria-label': 'Buscar app aprovado', oninput: (e) => draw(e.target.value) })), listBox];
+  } else {
+    const rows = shown.flatMap((d) => (d.refusedApps || []).map((a) => ({ d, a, by: (d.refused_by || {})[a.pkg] })));
+    body = rows.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, rows.map(({ d, a, by }) => h('div', { class: 'li' },
+      nameRow(a, d, by ? `recusado por ${gname(by)}` : ''),
+      h('button', { class: 'btn', type: 'button', onclick: refuse(d, a, true) }, 'Reconsiderar')))) : empty('Nenhum app recusado.');
+  }
+  show(top('Apps'), h('div', { class: 'wrap wide' }, segTabs(tabs, tab), filters, body));
   timer = setTimeout(autoRefresh, 20000);
-}
-
-function appsNodes(d) {
-  const r = d.report || {};
-  const approved = r.approvedApps || [];
-  const nodes = pendingAppNodes(d);
-  nodes.push(h('div', { class: 'sec' }, `Aprovados · ${approved.length}`));
-  const listBox = h('div', {});
-  const draw = (q) => {
-    const items = approved.filter((a) => `${a.label} ${a.pkg}`.toLowerCase().includes(q.toLowerCase()));
-    listBox.replaceChildren(items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((a) => h('div', { class: 'li' },
-      h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, a.label || a.pkg), h('div', { class: 'muted mono' }, a.pkg)),
-      h('button', { class: 'btn', type: 'button', onclick: act(() => confirmSend(d.id, 'revoke_app', { pkg: a.pkg }, { title: `Revogar “${a.label || a.pkg}” em ${d.name}?`,
-        rows: [['Ação', 'Revogar aprovação'], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok', note: 'O app será suspenso.' }).then(() => route())) }, 'Revogar')))) :
-      h('p', { class: 'empty' }, approved.length ? 'Nenhum app com esse nome.' : 'O aparelho ainda não enviou a lista.'));
-  };
-  draw('');
-  nodes.push(h('div', { class: 'pad' }, h('input', { class: 'inp', type: 'search', placeholder: 'Buscar app aprovado', 'aria-label': 'Buscar app aprovado', oninput: (e) => draw(e.target.value) })), listBox);
-  return nodes;
 }
 
 function avancadoNodes(d, now) {
@@ -607,130 +710,104 @@ function avancadoNodes(d, now) {
         if (!(await sheet({ title: `Esquecer ${d.name} neste gateway?`, rows: [['Aparelho', d.name], ['Fingerprint', fp(d.id)]], note: 'Ele deixa de aparecer aqui e os comandos na fila são descartados.',
           confirm: 'Esquecer', danger: true }))) return;
         await api('POST', `/v1/devices/${d.id}/forget`, {});
-        location.hash = '#/';
+        location.hash = '#/devices';
       }) }, 'Esquecer neste gateway'))];
 }
 
 // ---------- domínios ----------
-const reqChoice = new Map(); // `${pedido}|${domínio}` -> 'always' | '3600' | '86400' | 'deny'
+let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
+let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let blkDev = '';             // filtro do log: aparelho ('' = todos)
 let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
 let advOpen = false;         // seção Avançado de Liberados aberta
 let blkTtl = 0;              // duração ao liberar direto pelo log (0 = sempre)
 const TTL_CHOICES = [['always', 'Sempre', 0], ['3600', '1 h', 3600], ['86400', '1 dia', 86400], ['deny', 'Negar', null]];
+const REQ_TTLS = [[0, 'Sempre'], [3600, '1 h'], [86400, '1 dia']];
 const fmtWhen = (ts) => new Date(ts * 1000).toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', hour12: false });
 
+/** Domínios. Guardião-mor: Solicitações | Bloqueios | Liberados. Guardião: Solicitações | Liberados | Recusados (o que ele mesmo decidiu). */
 async function domainsView(tab) {
   const { devices, now, reqs } = await loadAll();
   renderNav('domains');
   const ex = devices.find((x) => x.kind === 'executor');
   if (!ex) { show(top('Domínios'), h('div', { class: 'card' }, h('p', { style: 'margin:0 0 10px' }, 'Nenhum executor do Pi-hole pareado.'), h('a', { class: 'btn pri', href: '#/pair', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Parear o executor'))); return; }
   const r = ex.report || {};
+  const admin = isAdmin();
   const unb = reqs.filter((q) => q.kind === 'unblock');
   const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
-  const minimal = !isAdmin();  // guardião de domínios: só os pedidos de liberação e o que ele mesmo liberou
-  if (minimal) tab = tab === 'meus' ? 'meus' : 'pedidos';
-  else if (!tab) tab = reqs.length ? 'pedidos' : 'bloqueios';
+  tab = tab === 'pedidos' ? 'solicitacoes' : tab === 'meus' ? 'liberados' : tab;  // endereços antigos
+  if (!(admin ? ['solicitacoes', 'bloqueios', 'liberados'] : ['solicitacoes', 'liberados', 'recusados']).includes(tab)) tab = admin && !reqs.length ? 'bloqueios' : 'solicitacoes';
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const protectedDevs = devices.filter((x) => x.kind === 'device');
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
-  const covers = (dom) => (r.allow || []).some((a) => dom === a || dom.endsWith('.' + a));  // a regra cobre o domínio e os subdomínios
-  const canary = (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
+  const entryOf = (dom) => (r.allow || []).find((a) => dom === a || dom.endsWith('.' + a));  // a regra cobre o domínio e os subdomínios
+  const covers = (dom) => entryOf(dom) !== undefined;
+  const coverBy = (dom) => { const e = entryOf(dom); return e !== undefined ? (r.allow_by || {})[e] : undefined; };
+  const canary = canaryOf(devices);
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
-  const tabs = minimal ? [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/meus', 'Liberados por mim', 'meus']] :
-    [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados']];
+  const tabs = admin ? [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados']] :
+    [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/liberados', 'Liberados', 'liberados'], ['#/domains/recusados', 'Recusados', 'recusados']];
   const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
     x.cname ? chip('via CNAME') : null];
   const batchSpec = (items) => ({ title: `Liberar ${items.length} domínio${items.length > 1 ? 's' : ''}?`,
     rows: items.map((i) => [i.domain, i.ttl_s ? durLabel(i.ttl_s) : 'sem prazo']), effect: 'vale na hora', effectKind: 'ok',
     note: items.some((i) => !i.ttl_s) ? 'Sem prazo: o domínio fica liberado até alguém bloquear de novo. Vale para a casa toda, com os subdomínios.' : 'Vale para a casa toda, com os subdomínios.', noteKind: 'warn' });
+  const empty = (text) => h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, text));
+  const removeSpec = (name, x) => ({ title: name === 'allow' ? `Bloquear ${x} de novo?` : `Remover ${x} da lista de bloqueados?`,
+    rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
+    note: name === 'allow' ? 'Volta a valer a regra do Pi-hole para este domínio.' : null });
 
   let body;
-  if (tab === 'pedidos') {
+  if (tab === 'solicitacoes') {
     const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
     const info = new Map(blocked.map((b) => [`${b.dev}|${b.domain}`, b]));
-    // "Liberar todos": um só comando (pihole_batch, até 50 domínios) e um só passkey para todos os pedidos abertos.
-    const openReqs = unb.map((q) => ({ q, rows: q.items.filter((i) => i.state === 'open') })).filter((x) => x.rows.length);
-    const pick = (q, d) => reqChoice.get(`${q.id}|${d}`) || 'always';
-    const merged = new Map();  // domínio -> ttl (0 = sem prazo); o mais curto vence se o mesmo domínio estiver em pedidos diferentes
-    for (const { q, rows } of openReqs) for (const i of rows) {
-      const v = pick(q, i.domain);
-      if (v === 'deny') continue;
-      const ttl = v === 'always' ? 0 : Number(v), cur = merged.get(i.domain);
-      merged.set(i.domain, cur === undefined ? ttl : cur === 0 ? ttl : ttl === 0 ? cur : Math.min(cur, ttl));
-    }
-    const allItems = [...merged].slice(0, 50).map(([domain, ttl]) => ({ domain, ...(ttl ? { ttl_s: ttl } : {}) }));
-    const total = new Set(openReqs.flatMap((x) => x.rows.map((i) => i.domain))).size;
-    const confirmAll = act(async () => {
-      let cmd = null;
-      if (allItems.length) {
-        const sent = await confirmSend(ex.id, 'pihole_batch', { items: allItems }, batchSpec(allItems));
-        if (!sent) return;
-        cmd = sent.id;
+    const all = unb.flatMap((q) => q.items.filter((i) => i.state === 'open').map((i) => ({ q, i })));
+    if (reqDev && !protectedDevs.some((x) => x.id === reqDev)) reqDev = '';
+    const shown = reqDev ? all.filter((x) => x.q.dev === reqDev) : all;
+    const ttl = reqTtl ? { ttl_s: reqTtl } : {};
+    const resolveAll = async (domains, cmd) => {  // fecha todas as solicitações abertas desses domínios (a liberação vale para a casa toda)
+      const set = new Set(domains);
+      for (const q of new Set(all.filter((x) => set.has(x.i.domain)).map((x) => x.q))) {
+        await api('POST', `/v1/requests/${q.id}/resolve`, cmd ? { cmd, deny: [] } : { deny: all.filter((x) => x.q.id === q.id && set.has(x.i.domain)).map((x) => x.i.domain) });
       }
-      const sentSet = new Set(allItems.map((x) => x.domain));
-      for (const { q, rows } of openReqs) {
-        const deny = rows.filter((i) => pick(q, i.domain) === 'deny').map((i) => i.domain);
-        if (!deny.length && !(cmd && rows.some((i) => sentSet.has(i.domain)))) continue;  // nada deste pedido entrou no lote
-        await api('POST', `/v1/requests/${q.id}/resolve`, { ...(cmd ? { cmd } : {}), deny });
-        rows.forEach((i) => reqChoice.delete(`${q.id}|${i.domain}`));
-      }
+    };
+    const releaseOne = (x) => act(async () => {
+      const items = [{ domain: x.i.domain, ...ttl }];
+      const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
+      if (!sent) return;
+      await resolveAll([x.i.domain], sent.id);
       route();
     });
-    const refuseEvery = act(async () => {  // recusar não solta nada: sem passkey
-      for (const { q, rows } of openReqs) {
-        await api('POST', `/v1/requests/${q.id}/resolve`, { deny: rows.map((i) => i.domain) });
-        rows.forEach((i) => reqChoice.delete(`${q.id}|${i.domain}`));
-      }
+    const refuseOne = (x) => act(async () => {
+      await api('POST', `/v1/requests/${x.q.id}/resolve`, { deny: [x.i.domain] });  // recusar não solta nada: sem passkey
       route();
     });
-    body = [openReqs.length > 1 ? h('div', { class: 'card' },
-      h('div', { class: 'row', style: 'gap:8px' },
-        h('button', { class: 'btn grow', type: 'button', onclick: refuseEvery }, `Recusar todos (${total})`),
-        h('button', { class: 'btn pri grow', type: 'button', onclick: confirmAll }, allItems.length ? `Liberar todos (${total}) com um passkey` : 'Negar todos')),
-      h('div', { class: 'muted', style: 'margin-top:8px' }, 'Vale a escolha de cada domínio abaixo (Sempre, se você não mudar). A folha mostra tudo antes de assinar.' + (total > 50 ? ' Só os 50 primeiros entram; os outros continuam pedindo.' : ''))) : null,
-      unb.length ? h('div', { class: 'grid2' }, unb.map((q) => {
-      const rows = q.items.filter((i) => i.state === 'open');
-      const key = (d) => `${q.id}|${d}`;
-      const val = (d) => reqChoice.get(key(d)) || 'always';
-      const refuse = act(async () => {
-        await api('POST', `/v1/requests/${q.id}/resolve`, { deny: rows.map((i) => i.domain) });
-        rows.forEach((i) => reqChoice.delete(key(i.domain)));
-        route();
-      });
-      const confirm = act(async () => {
-        const items = rows.filter((i) => val(i.domain) !== 'deny').map((i) => ({ domain: i.domain, ...(val(i.domain) === 'always' ? {} : { ttl_s: Number(val(i.domain)) }) }));
-        const deny = rows.filter((i) => val(i.domain) === 'deny').map((i) => i.domain);
-        let cmd = null;
-        if (items.length) {
-          const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
-          if (!sent) return;
-          cmd = sent.id;
-        }
-        await api('POST', `/v1/requests/${q.id}/resolve`, { ...(cmd ? { cmd } : {}), deny });
-        rows.forEach((i) => reqChoice.delete(key(i.domain)));
-        route();
-      });
-      return h('div', { class: 'card warnb' },
-        h('div', { class: 'row' }, h('strong', { class: 'sp' }, devName(q.dev)), chip(`${rows.length} domínio${rows.length > 1 ? 's' : ''}`, 'warn')),
-        h('div', { class: 'muted' }, `pedido ${ago(q.ts, now)}`),
-        rows.map((i) => {
-          const b = info.get(`${q.dev}|${i.domain}`);
-          return h('div', { class: 'li', style: 'flex-direction:column;align-items:stretch;gap:2px' },
-            h('span', { class: 'mono', style: 'font-weight:600' }, i.domain),
-            h('div', { class: 'muted' }, b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${b.src === 'own' ? 'regra própria' : b.list || 'lista'}` : 'sem bloqueio recente', ' ', flags(b || i)),
-            h('div', { class: 'durs', role: 'group', 'aria-label': `Escolha para ${i.domain}`, style: 'margin-top:6px' },
-              TTL_CHOICES.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(val(i.domain) === k),
-                onclick: () => { reqChoice.set(key(i.domain), k); route(); } }, label))));
-        }),
-        h('div', { class: 'row', style: 'gap:8px;margin-top:12px' },
-          h('button', { class: 'btn grow', type: 'button', onclick: refuse }, 'Recusar'),
-          h('button', { class: 'btn pri grow', type: 'button', onclick: confirm },
-            rows.every((i) => val(i.domain) === 'deny') ? 'Negar' : 'Confirmar com passkey')));
-    })) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido de liberação.')),
-    otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
-      h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
-      h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
+    const doms = [...new Set(shown.map((x) => x.i.domain))];
+    const items50 = doms.slice(0, 50).map((domain) => ({ domain, ...ttl }));
+    const releaseAll = act(async () => {  // um só comando (até 50 domínios) e um só passkey
+      const sent = await confirmSend(ex.id, 'pihole_batch', { items: items50 }, batchSpec(items50));
+      if (!sent) return;
+      await resolveAll(items50.map((x) => x.domain), sent.id);
+      route();
+    });
+    const refuseAll = act(async () => { await resolveAll(doms, null); route(); });
+    body = [phonesFilter(protectedDevs, reqDev, (k) => { reqDev = k; route(); }),
+      h('div', { class: 'sec' }, 'Liberar por'), pillGroup('Duração da liberação', REQ_TTLS, reqTtl, (k) => { reqTtl = k; route(); }),
+      doms.length > 1 ? h('div', { class: 'card', style: 'margin-top:12px' }, h('div', { class: 'row', style: 'gap:8px' },
+        h('button', { class: 'btn grow', type: 'button', onclick: refuseAll }, `Recusar todos (${doms.length})`),
+        h('button', { class: 'btn pri grow', type: 'button', onclick: releaseAll }, `Liberar todos (${doms.length}) com um passkey`)),
+        h('div', { class: 'muted', style: 'margin-top:8px' }, 'A folha mostra tudo antes de assinar.' + (doms.length > 50 ? ' Só os 50 primeiros entram; os outros continuam pedindo.' : ''))) : null,
+      h('div', { class: 'sec' }, `Solicitações · ${shown.length}`),
+      shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => {
+        const b = info.get(`${x.q.dev}|${x.i.domain}`);
+        return h('div', { class: 'li', style: 'flex-wrap:wrap' },
+          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.i.domain),
+            h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${b.src === 'own' ? 'regra própria' : b.list || 'lista'}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
+          h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'), h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
+      })) : empty('Nenhuma solicitação de liberação.'),
+      otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
+        h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
+        h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
   } else if (tab === 'bloqueios') {
     const qs = new URLSearchParams();
     if (blkDev) qs.set('dev', blkDev);
@@ -738,11 +815,9 @@ async function domainsView(tab) {
     const items = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items;
     const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
     body = [h('div', { class: 'sec' }, 'Aparelho'),
-      h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Filtrar por aparelho' },
-        [pill('Todos', !blkDev, () => { blkDev = ''; route(); }), ...protectedDevs.map((x) => pill(x.name, blkDev === x.id, () => { blkDev = x.id; route(); }))]),
+      pillGroup('Filtrar por aparelho', [['', 'Todos'], ...protectedDevs.map((x) => [x.id, x.name])], blkDev, (k) => { blkDev = k; route(); }),
       h('div', { class: 'sec' }, 'Quem bloqueou'),
-      h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Filtrar por origem' },
-        [['own', 'Regras próprias'], ['list', 'Listas'], ['', 'Tudo']].map(([k, label]) => pill(label, blkSrc === k, () => { blkSrc = k; route(); }))),
+      pillGroup('Filtrar por origem', [['own', 'Regras próprias'], ['list', 'Listas'], ['', 'Tudo']], blkSrc, (k) => { blkSrc = k; route(); }),
       h('div', { class: 'sec' }, 'Liberar direto por'),
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
         TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, s]) => pill(label, blkTtl === s, () => { blkTtl = s; route(); }))),
@@ -750,29 +825,25 @@ async function domainsView(tab) {
       items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
           h('div', { class: 'muted' }, `${devName(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${x.src === 'own' ? 'regra própria' : x.list || 'lista'}`, ' ', flags(x))),
-        covers(x.domain) ? chip('liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
-          batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) :
-        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada bloqueado com esses filtros.'))];
-  } else if (tab === 'meus') {
-    // o que ESTE guardião liberou (do relatório do executor) e o que recusou (do gateway): dá para bloquear de novo ou liberar
+        covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
+          batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) : empty('Nada bloqueado com esses filtros.')];
+  } else if (tab === 'liberados' && !admin) {
     const myId = me.guardian.id;
     const by = r.allow_by || {};
-    const myAllowed = (r.allow || []).filter((d) => by[d] === myId);
-    const dec = await api('GET', '/v1/my/decisions');
-    const openDomains = new Set(unb.flatMap((q) => q.items.filter((i) => i.state === 'open').map((i) => i.domain)));
-    const myDenied = dec.denied.filter((x) => !(r.allow || []).some((a) => x.domain === a || x.domain.endsWith('.' + a)) && !openDomains.has(x.domain));
-    body = [h('div', { class: 'sec' }, `Liberei · ${myAllowed.length}`),
-      myAllowed.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, myAllowed.map((x) => h('div', { class: 'li' },
+    const mine = (r.allow || []).filter((d) => by[d] === myId);
+    body = [h('div', { class: 'sec' }, `Liberei · ${mine.length}`),
+      mine.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, mine.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
           h('div', { class: 'muted' }, temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
-        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, { title: `Bloquear ${x} de novo?`,
-          rows: [['Ação', 'Bloquear de novo'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok', note: 'Volta a valer a regra do Pi-hole para este domínio.' }) }, 'Bloquear de novo')))) :
-        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Você ainda não liberou nada.')),
-      h('div', { class: 'sec' }, `Recusei · ${myDenied.length}`),
-      myDenied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, myDenied.map((x) => h('div', { class: 'li' },
+        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) : empty('Você ainda não liberou nada.')];
+  } else if (tab === 'recusados') {
+    const dec = await api('GET', '/v1/my/decisions');
+    const openDomains = new Set(unb.flatMap((q) => q.items.filter((i) => i.state === 'open').map((i) => i.domain)));
+    const denied = dec.denied.filter((x) => !covers(x.domain) && !openDomains.has(x.domain));
+    body = [h('div', { class: 'sec' }, `Recusei · ${denied.length}`),
+      denied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, denied.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, `${devName(x.dev)} · ${ago(x.ts, now)}`)),
-        h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) :
-        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada recusado nos últimos dias.'))];
+        h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
   } else {
     const by = r.allow_by || {};
     const mine = (r.allow || []).filter((d) => by[d] !== undefined);
@@ -784,10 +855,8 @@ async function domainsView(tab) {
       h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
         h('div', { class: 'muted' }, name === 'allow' && by[x] ? `liberado por ${gname(by[x])}` : name === 'deny' && denyBy[x] ? `bloqueado por ${gname(denyBy[x])}` : '', ' ',
           temp.has(`${name}:${x}`) ? chip(`expira ${fmtWhen(temp.get(`${name}:${x}`))}`, 'warn') : name === 'allow' ? chip('sem prazo') : null)),
-      h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, { title: name === 'allow' ? `Bloquear ${x} de novo?` : `Remover ${x} da lista de bloqueados?`,
-        rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
-        note: name === 'allow' ? 'Volta a valer a regra do Pi-hole para este domínio.' : null }) }, name === 'allow' ? 'Bloquear de novo' : 'Remover')))) :
-      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Vazio.'));
+      h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, removeSpec(name, x)) }, name === 'allow' ? 'Bloquear de novo' : 'Remover')))) :
+      empty('Vazio.');
     const dom = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Domínio' });
     const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
     const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
@@ -810,6 +879,12 @@ async function domainsView(tab) {
   show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
     h('div', { class: 'wrap wide' }, segTabs(tabs, tab), body));
   timer = setTimeout(autoRefresh, 20000);
+}
+
+/** Filtro por aparelho (some quando há um só). */
+function phonesFilter(phones, current, onPick) {
+  if (phones.length < 2) return null;
+  return [h('div', { class: 'sec' }, 'Aparelho'), pillGroup('Filtrar por aparelho', [['', 'Todos'], ...phones.map((x) => [x.id, x.name])], current, onPick)];
 }
 
 // ---------- pessoas ----------
@@ -844,10 +919,24 @@ function summarize(env) {
   } catch (_) { return '(ilegível)'; }
 }
 
-async function peopleView() {
+/** Cria o link de convite e o mostra em `out`. */
+function makeInviteLink(out, kind, name, role, policy) {
+  return act(async () => {
+    const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}), ...(role ? { role } : {}), ...(policy || {}) });
+    const text = `${me.origin}/#invite=${r.token}`;
+    out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
+      h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text), shareBtn(() => text))));
+    if (out.scrollIntoView) out.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
+const gOpen = new Set();     // guardiões com "Passkeys e permissões" aberto (sobrevive aos redesenhos)
+
+/** Guardiões: quem são, passkeys e permissões, convite, confiança dos aparelhos e co-assinaturas. */
+async function guardiansView() {
   me = await api('GET', '/v1/me');
   const { devices, aw } = await loadAll();
-  renderNav('people');
+  renderNav('guardians');
   const gs = Object.entries(me.trust);
   const missing = (d) => {
     const have = (d.report && d.report.trust) || {};
@@ -871,101 +960,66 @@ async function peopleView() {
     route();
   });
   const out = h('div', {});
-  const link = (kind, name, role, policy) => act(async () => {
-    const r = await api('POST', '/v1/invites', { kind, ...(name ? { name } : {}), ...(role ? { role } : {}), ...(policy || {}) });
-    const text = `${me.origin}/#invite=${r.token}`;
-    out.replaceChildren(h('div', { class: 'card' }, h('p', { style: 'margin:0 0 8px' }, 'Envie este link (vale 24 h, uso único):'), h('textarea', { class: 'ta', readonly: true }, text),
-      h('div', { class: 'row', style: 'margin-top:8px' }, copyBtn(() => text), shareBtn(() => text))));
-    if (out.scrollIntoView) out.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
-  const nm = h('input', { class: 'inp', placeholder: 'nome do guardião', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião', value: inviteName, oninput: (e) => { inviteName = e.target.value; } });
   const myCreds = Object.keys((me.trust[me.guardian.id] || { creds: {} }).creds).length;
-  const syncOn = inviteSync === null ? inviteRole === 'domains' : inviteSync;  // guardião-mor: só neste aparelho, a menos que se escolha o contrário
   const cos = aw.filter((c) => c.can_cosign);
-  show(top('Pessoas'), h('div', { class: 'wrap' },
-    h('div', { class: 'sec' }, 'Guardiões'),
-    myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
-      h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é o guardião-mor e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
-      h('button', { class: 'btn pri', type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey')) : null,
-    h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, gs.map(([gid, g]) => {
-      const n = Object.keys(g.creds).length;
-      const dom = g.role === 'domains';
-      const see = (me.see_of || {})[gid] || {};
-      const removeCred = (gid2, g2, cred, num) => act(async () => {
-        const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid2] && d.report.trust[gid2].includes(cred));
-        if (!(await sheet({ title: `Remover a passkey ${num} de ${g2.name}?`, rows: [['Guardião', g2.name], ['Passkey', String(num)], ['Aparelhos que confiam nela', String(on.length)]],
-          effect: 'vale na hora', effectKind: 'ok', note: `${on.length ? `Um toque de passkey por aparelho (${on.length}). ` : ''}Depois apague essa passkey também no gerenciador (conta Google, Windows Hello…) onde ela estiver.`,
-          confirm: on.length ? 'Assinar e remover' : 'Remover', danger: true }))) return;
-        for (const d of on) await sendCommand(d.id, 'remove_credential', { id: gid2, cred });
-        await api('POST', `/v1/guardians/${gid2}/credentials/remove`, { cred });
-        toast('Passkey removida.');
-        route();
-      });
-      const removeDomain = act(async () => {
-        const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
-        if (!(await sheet({ title: `Remover ${g.name}?`, rows: [['Guardião', g.name], ['Papel', 'guardião'], ['Aparelhos que confiam', String(on.length)]], effect: 'vale na hora', effectKind: 'ok',
-          note: on.length ? `Um toque de passkey por aparelho (${on.length}). O acesso ao site acaba na hora.` : 'O acesso ao site acaba na hora.', confirm: 'Remover', danger: true }))) return;
-        for (const d of on) await sendCommand(d.id, 'remove_guardian', { id: gid });
-        await api('POST', `/v1/guardians/${gid}/remove`, {});
-        toast(`${g.name} removido.`);
-        route();
-      });
-      return h('div', { class: 'li', style: 'flex-wrap:wrap' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
-        h('div', { class: 'sp' }, h('strong', {}, g.name), ' ', gid === me.guardian.id ? chip('você') : null, ' ', chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok'),
-          h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`),
-          h('div', { style: 'margin-top:4px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
-            g.window ? chip(describeWindow(g.window), 'warn') : null)),
-        gid === me.guardian.id ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') :
-          h('button', { class: 'btn dangero', type: 'button', onclick: act(async () => {
-            if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
-              note: 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
-            for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
-            route();
-          }) }, 'Remover'),
-        dom ? h('div', { style: 'flex-basis:100%;padding:4px 0 6px 46px' }, h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Pode ver, além de domínios:'),
-          h('div', { class: 'durs', role: 'group', 'aria-label': `O que ${g.name} pode ver` }, SEE_LABELS.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(!!see[k]),
-            onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))) : null,
-        gid === me.guardian.id ? h('div', { style: 'flex-basis:100%;padding:0 0 6px 46px' }, h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: link('add_passkey') }, 'Cadastrar outra passkey')) : null,
-        n > 0 ? h('div', { style: 'flex-basis:100%;padding:2px 0 6px 46px' }, Object.entries(g.creds).map(([cred], i) => {
+
+  const guardianCardFull = ([gid, g]) => {
+    const n = Object.keys(g.creds).length;
+    const dom = g.role === 'domains';
+    const mineCard = gid === me.guardian.id;
+    const see = (me.see_of || {})[gid] || {};
+    const removeCred = (cred, num) => act(async () => {
+      const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid] && d.report.trust[gid].includes(cred));
+      if (!(await sheet({ title: `Remover a passkey ${num} de ${g.name}?`, rows: [['Guardião', g.name], ['Passkey', String(num)], ['Aparelhos que confiam nela', String(on.length)]],
+        effect: 'vale na hora', effectKind: 'ok', note: `${on.length ? `Um toque de passkey por aparelho (${on.length}). ` : ''}Depois apague essa passkey também no gerenciador (conta Google, Windows Hello…) onde ela estiver.`,
+        confirm: on.length ? 'Assinar e remover' : 'Remover', danger: true }))) return;
+      for (const d of on) await sendCommand(d.id, 'remove_credential', { id: gid, cred });
+      await api('POST', `/v1/guardians/${gid}/credentials/remove`, { cred });
+      toast('Passkey removida.');
+      route();
+    });
+    const removeDomain = act(async () => {
+      const on = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
+      if (!(await sheet({ title: `Remover ${g.name}?`, rows: [['Guardião', g.name], ['Papel', 'guardião'], ['Aparelhos que confiam', String(on.length)]], effect: 'vale na hora', effectKind: 'ok',
+        note: on.length ? `Um toque de passkey por aparelho (${on.length}). O acesso ao site acaba na hora.` : 'O acesso ao site acaba na hora.', confirm: 'Remover', danger: true }))) return;
+      for (const d of on) await sendCommand(d.id, 'remove_guardian', { id: gid });
+      await api('POST', `/v1/guardians/${gid}/remove`, {});
+      toast(`${g.name} removido.`);
+      route();
+    });
+    const removeMor = act(async () => {
+      if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
+        note: 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
+      for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
+      route();
+    });
+    return h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
+        h('div', { class: 'sp' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, h('strong', { style: 'font-size:16px' }, g.name), mineCard ? chip('você') : null, chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok')),
+          h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
+        mineCard ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') : h('button', { class: 'btn dangero', type: 'button', onclick: removeMor }, 'Remover')),
+      h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
+        g.window ? chip(describeWindow(g.window), 'warn') : chip('a qualquer hora')),
+      h('details', { class: 'gdet', style: 'margin-top:10px', open: gOpen.has(gid), ontoggle: (e) => { if (e.target.open) gOpen.add(gid); else gOpen.delete(gid); } }, h('summary', {}, dom ? 'Passkeys e permissões' : 'Passkeys'),
+        Object.entries(g.creds).map(([cred], i) => {
           const info = (me.cred_info || {})[cred] || {};
           return h('div', { class: 'row', style: 'min-height:40px;gap:8px' },
             h('div', { class: 'sp muted' }, `Passkey ${i + 1}${info.created ? ` · cadastrada ${ago(info.created, me.now)}` : ''}`),
             chip(info.be ? 'sincronizada' : 'só neste aparelho', info.be ? 'warn' : 'ok'),
-            n > 1 ? h('button', { class: 'btn dangero', type: 'button', onclick: removeCred(gid, g, cred, i + 1) }, 'Remover') : null);
-        })) : null);
-    })),
-    h('div', { class: 'sec' }, 'Convidar guardião'),
-    h('div', { class: 'card' }, nm,
-      h('div', { class: 'durs', role: 'group', 'aria-label': 'Papel do convidado' },
-        [['domains', 'Guardião (só domínios)'], ['admin', 'Guardião-mor']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
-      h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
-        'Libera e bloqueia sites e responde aos pedidos. Não mexe em regras, apps, PIN nem pessoas. O que mais ele pode ver você escolhe depois.'),
-      h('div', { class: 'sec', style: 'padding-left:0' }, 'Passkey'),
-      h('div', { class: 'durs', role: 'group', 'aria-label': 'Passkey sincronizável' },
-        [[false, 'Só neste aparelho'], [true, 'Pode sincronizar']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(syncOn === k), onclick: () => { inviteSync = k; route(); } }, label))),
-      h('p', { class: 'muted', style: 'margin:8px 0 0' }, syncOn ? 'A passkey pode ir para a conta Google ou Apple da pessoa e aparecer em outros aparelhos dela.' :
-        'Só vale passkey presa ao aparelho (Windows Hello, Touch ID, chave de segurança). Uma passkey da conta Google é recusada. Não dá para mudar depois.'),
-      h('div', { class: 'sec', style: 'padding-left:0' }, 'Horário'),
-      h('div', { class: 'durs', role: 'group', 'aria-label': 'Limitar a um horário' },
-        [[false, 'A qualquer hora'], [true, 'Só em um horário']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteWin.on === k), onclick: () => { inviteWin.on = k; route(); } }, label))),
-      inviteWin.on ? [h('div', { class: 'durs', role: 'group', 'aria-label': 'Dias da semana' },
-        DAY_NAMES.map((d, i) => h('button', { type: 'button', 'aria-pressed': String(inviteWin.days.includes(i)), onclick: () => {
-          inviteWin.days = inviteWin.days.includes(i) ? inviteWin.days.filter((x) => x !== i) : [...inviteWin.days, i]; route(); } }, d))),
-        h('div', { class: 'row', style: 'margin-top:10px;gap:8px;align-items:center' }, 'Das',
-          h('input', { class: 'inp', type: 'time', value: inviteWin.from, 'aria-label': 'Início', style: 'width:130px', onchange: (e) => { inviteWin.from = e.target.value; } }), 'às',
-          h('input', { class: 'inp', type: 'time', value: inviteWin.to, 'aria-label': 'Fim', style: 'width:130px', onchange: (e) => { inviteWin.to = e.target.value; } })),
-        h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'Horário de Brasília. Fora dele os comandos dessa pessoa não valem, mesmo com a passkey certa; quem confere é o aparelho e o executor, com o relógio deles. Não dá para mudar depois.')] : null,
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
-        if (!nm.value.trim()) throw new Error('Digite o nome.');
-        let window = null;
-        if (inviteWin.on) {
-          if (!inviteWin.days.length) throw new Error('Escolha pelo menos um dia.');
-          if (!inviteWin.from || !inviteWin.to || toMin(inviteWin.from) >= toMin(inviteWin.to)) throw new Error('O horário final precisa ser depois do inicial.');
-          window = { days: [...inviteWin.days].sort(), from: toMin(inviteWin.from), to: toMin(inviteWin.to), utc_offset_min: OFFSET_MIN };
-        }
-        await link('new_guardian', nm.value.trim(), inviteRole, { allow_sync: syncOn, window })();
-      }) }, 'Gerar link de convite')),
-      ),
+            n > 1 ? h('button', { class: 'btn dangero', type: 'button', onclick: removeCred(cred, i + 1) }, 'Remover') : null);
+        }),
+        mineCard ? h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: makeInviteLink(out, 'add_passkey') }, 'Cadastrar outra passkey')) : null,
+        dom ? [h('div', { class: 'muted', style: 'margin:10px 0 6px' }, 'Pode ver, além de domínios e apps:'),
+          h('div', { class: 'durs', role: 'group', 'aria-label': `O que ${g.name} pode ver` }, SEE_LABELS.map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(!!see[k]),
+            onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))] : null));
+  };
+
+  show(top('Guardiões', { actions: h('a', { class: 'btn pri', href: '#/guardians/novo', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Convidar') }), h('div', { class: 'wrap' },
+    myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
+      h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é o guardião-mor e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
+      h('button', { class: 'btn pri', type: 'button', onclick: makeInviteLink(out, 'add_passkey') }, 'Cadastrar outra passkey')) : null,
+    h('div', { class: 'sec' }, `Guardiões · ${gs.length}`),
+    gs.map(guardianCardFull),
     out,
     h('div', { class: 'sec' }, 'Confiança nos aparelhos'),
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, devices.length ? devices.map((d) => {
@@ -987,6 +1041,48 @@ async function peopleView() {
       }) }, 'Co-assinar') : chip('aguardando o outro guardião'))) : h('p', { class: 'muted', style: 'margin:10px 0' }, cos.length ? '' : 'Nenhuma.')),
     h('div', { class: 'sec' }, 'Notificações neste aparelho'), await pushCard(),
     h('div', { class: 'pad', style: 'margin-top:14px' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair'))));
+}
+
+/** Convidar guardião: tela própria, em passos (quem, passkey, horário). */
+async function guardianInviteView() {
+  me = await api('GET', '/v1/me');
+  renderNav('guardians');
+  const out = h('div', {});
+  const nm = h('input', { class: 'inp', placeholder: 'Nome da pessoa', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião', value: inviteName, oninput: (e) => { inviteName = e.target.value; } });
+  const syncOn = inviteSync === null ? inviteRole === 'domains' : inviteSync;  // guardião-mor: só neste aparelho, a menos que se escolha o contrário
+  const step = (n, title) => h('div', { class: 'stephead' }, h('span', { class: 'stepn' }, String(n)), h('strong', {}, title));
+  show(top('Convidar guardião', { back: '#/guardians' }), h('div', { class: 'wrap' },
+    h('div', { class: 'card' }, step(1, 'Quem'), nm,
+      h('div', { class: 'durs', role: 'group', 'aria-label': 'Papel do convidado' },
+        [['domains', 'Guardião (só domínios e apps)'], ['admin', 'Guardião-mor']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
+      h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
+        'Libera e bloqueia sites, responde às solicitações e aprova ou recusa apps. Não mexe em regras, PIN nem pessoas. O que mais ele pode ver você escolhe depois.')),
+    h('div', { class: 'card' }, step(2, 'Passkey'),
+      h('div', { class: 'durs', role: 'group', 'aria-label': 'Passkey sincronizável' },
+        [[false, 'Só neste aparelho'], [true, 'Pode sincronizar']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(syncOn === k), onclick: () => { inviteSync = k; route(); } }, label))),
+      h('p', { class: 'muted', style: 'margin:8px 0 0' }, syncOn ? 'A passkey pode ir para a conta Google ou Apple da pessoa e aparecer em outros aparelhos dela.' :
+        'Só vale passkey presa ao aparelho (Windows Hello, Touch ID, chave de segurança). Uma passkey da conta Google é recusada. Não dá para mudar depois.')),
+    h('div', { class: 'card' }, step(3, 'Horário'),
+      h('div', { class: 'durs', role: 'group', 'aria-label': 'Limitar a um horário' },
+        [[false, 'A qualquer hora'], [true, 'Só em um horário']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteWin.on === k), onclick: () => { inviteWin.on = k; route(); } }, label))),
+      inviteWin.on ? [h('div', { class: 'durs', role: 'group', 'aria-label': 'Dias da semana' },
+        DAY_NAMES.map((d, i) => h('button', { type: 'button', 'aria-pressed': String(inviteWin.days.includes(i)), onclick: () => {
+          inviteWin.days = inviteWin.days.includes(i) ? inviteWin.days.filter((x) => x !== i) : [...inviteWin.days, i]; route(); } }, d))),
+        h('div', { class: 'row', style: 'margin-top:10px;gap:8px;align-items:center' }, 'Das',
+          h('input', { class: 'inp', type: 'time', value: inviteWin.from, 'aria-label': 'Início', style: 'width:130px', onchange: (e) => { inviteWin.from = e.target.value; } }), 'às',
+          h('input', { class: 'inp', type: 'time', value: inviteWin.to, 'aria-label': 'Fim', style: 'width:130px', onchange: (e) => { inviteWin.to = e.target.value; } })),
+        h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'Horário de Brasília. Fora dele os comandos dessa pessoa não valem, mesmo com a passkey certa; quem confere é o aparelho e o executor, com o relógio deles. Não dá para mudar depois.')] : null),
+    h('div', { class: 'pad' }, h('button', { class: 'btn pri block', type: 'button', onclick: act(async () => {
+      if (!nm.value.trim()) throw new Error('Digite o nome.');
+      let window = null;
+      if (inviteWin.on) {
+        if (!inviteWin.days.length) throw new Error('Escolha pelo menos um dia.');
+        if (!inviteWin.from || !inviteWin.to || toMin(inviteWin.from) >= toMin(inviteWin.to)) throw new Error('O horário final precisa ser depois do inicial.');
+        window = { days: [...inviteWin.days].sort(), from: toMin(inviteWin.from), to: toMin(inviteWin.to), utc_offset_min: OFFSET_MIN };
+      }
+      await makeInviteLink(out, 'new_guardian', nm.value.trim(), inviteRole, { allow_sync: syncOn, window })();
+    }) }, 'Gerar link de convite')),
+    out));
 }
 
 // ---------- conta (guardião) ----------
@@ -1194,14 +1290,18 @@ async function route() {
   if (!me) { nav.hidden = true; return loginView(); }
   try {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
-    const dom = hash.match(/^#\/(?:domains\/)?(pedidos|bloqueios|liberados|meus)$/) || hash.match(/^#\/(domains)$/);
+    const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|liberados|recusados|meus)$/) || hash.match(/^#\/(domains)$/);
+    const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados))?$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);
-    else if (hash === '#/people') await (isAdmin() ? peopleView() : contaView());
+    else if (hash === '#/people') { if (isAdmin()) location.hash = '#/guardians'; else await contaView(); }
+    else if (hash === '#/guardians' && isAdmin()) await guardiansView();
+    else if (hash === '#/guardians/novo' && isAdmin()) await guardianInviteView();
+    else if (hash === '#/devices' && isAdmin()) await devicesView();
     else if (his) await (isAdmin() || canSee('history') ? historyView(his[1]) : domainsView());
     else if (hash === '#/pair' && isAdmin()) await pairView();
-    else if (hash === '#/apps') await appsInboxView();
+    else if (ap) await appsView(ap[1]);
     else if (isAdmin() || canSee('devices')) await inicioView();
     else await domainsView();
   } catch (e) {

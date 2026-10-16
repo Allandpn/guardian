@@ -517,11 +517,12 @@ class Gateway:
         _, role, see = self.who(req)
         out = []
         refused = self.store.refused_apps()
+        approved_by, refused_by = self.store.app_marks()
         for r in self.store.devices():
             report = json.loads(r["report"]) if r["report"] else None
             d = {"id": r["id"], "kind": r["kind"], "name": r["name"], "spki": r["spki"], "created": r["created"],
                  "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"], "report": report,
-                 "refused": refused.get(r["id"], [])}
+                 "refused": refused.get(r["id"], []), "approved_by": approved_by.get(r["id"], {}), "refused_by": refused_by.get(r["id"], {})}
             if role != "admin" and r["kind"] != "executor":
                 # apps pendentes todo guardião vê (ele também aprova e recusa); o resto depende do que o guardião-mor liberou
                 keep = (STATUS_KEYS if see["devices"] else set()) | (RULE_KEYS if see["rules"] else set()) | (APP_KEYS if see["apps"] else {"pendingApps"})

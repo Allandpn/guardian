@@ -277,6 +277,16 @@ class Store:
     def unrefuse_app(self, dev: str, pkg: str) -> None:
         self.x("DELETE FROM app_refusals WHERE dev=? AND pkg=?", (dev, pkg))
 
+    def app_marks(self) -> tuple[dict, dict]:
+        """({aparelho: {pacote: guardião que aprovou}}, {aparelho: {pacote: guardião que recusou}})."""
+        ok: dict[str, dict] = {}
+        no: dict[str, dict] = {}
+        for r in self.q("SELECT dev, pkg, guardian FROM app_approvals"):
+            ok.setdefault(r["dev"], {})[r["pkg"]] = r["guardian"]
+        for r in self.q("SELECT dev, pkg, guardian FROM app_refusals"):
+            no.setdefault(r["dev"], {})[r["pkg"]] = r["guardian"]
+        return ok, no
+
     def refused_apps(self) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for r in self.q("SELECT dev, pkg FROM app_refusals ORDER BY ts DESC"):
