@@ -15,7 +15,7 @@ CASES = [
     ("canary", "", "x.com", "tighten"), ("canary", None, "x.com", "tighten"), ("canary", "x.com", "y.com", "loosen"), ("canary", "x.com", "", "loosen"),
     ("routed_extra", "a", "a,b", "tighten"), ("routed_extra", "a,b", "a", "loosen"), ("protected_pkgs", "a", "", "loosen"),
     ("chrome_youtube", "2", "1", "loosen"), ("chrome_youtube", "1", "0", "loosen"), ("chrome_youtube", "0", "2", "tighten"),
-    ("chrome_doh_off", "true", "false", "loosen"), ("chrome_safesearch", "true", "false", "loosen"), ("chrome_incognito_block", "false", "true", "tighten"),
+    ("chrome_doh_off", "true", "false", "loosen"), ("chrome_safesearch", "true", "false", "loosen"), ("chrome_incognito_block", "false", "true", "tighten"), ("chrome_block_ip", "true", "false", "loosen"), ("chrome_block_ip", "false", "true", "tighten"),
     ("store_extra", "a,b", "a", "loosen"), ("store_extra", "a", "a,b", "tighten"),
     ("browsers_exempt", "", "com.android.chrome", "loosen"), ("browsers_exempt", "com.android.chrome", "", "tighten"),
     ("dev_windows_per_day", "3", "5", "loosen"), ("dev_windows_per_day", "3", "1", "tighten"),
