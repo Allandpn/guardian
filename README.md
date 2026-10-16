@@ -14,7 +14,8 @@ Site (PWA, passkey) ──HTTPS/Funnel──► GATEWAY (container isolado, nó 
   O gateway é só um relé: se for comprometido, não forja comandos e não alcança a sua rede (rede isolada + ACL + firewall).
 - O canal remoto **nunca é mais poderoso que o PIN**: afrouxar continua esperando o atraso do aparelho.
 - Documentação: [docs/CONTROLE.md](docs/CONTROLE.md) (desenho e ameaças), [protocol/SPEC.md](protocol/SPEC.md) (protocolo),
-  [docs/OPERACAO.md](docs/OPERACAO.md) (instalação).
+  [docs/OPERACAO.md](docs/OPERACAO.md) (instalação), [docs/DECISOES.md](docs/DECISOES.md) (decisões e estado), [docs/MIGRACAO.md](docs/MIGRACAO.md)
+  (migração do guardião-mor para o computador do trabalho), [docs/PAPEIS.md](docs/PAPEIS.md) e [docs/LIBERACAO.md](docs/LIBERACAO.md).
 
 ## Estado
 
