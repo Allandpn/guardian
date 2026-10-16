@@ -108,6 +108,19 @@ class RegexAllow(unittest.TestCase):
         self.assertNotIn(old, self.fake.regex["allow"])
         self.assertNotIn(r"^([a-zA-Z0-9-]+\.)*science\.org$", self.fake.regex["allow"])
 
+    def test_03c_guardian_entries_are_never_cut_by_hundreds_of_hand_made_ones(self):
+        for i in range(520):  # entradas do dono, direto no Pi-hole, que vêm antes na ordem alfabética
+            self.fake.lists["allow"][f"a{i:04d}.exemplo.net"] = ""
+        self.send("pihole_allow", {"domain": "zzz.depois.com"})
+        self.ex.report()
+        rep = next(d for d in self.c.call("GET", "/v1/devices")[1]["devices"] if d["id"] == self.dev)["report"]
+        self.assertIn("zzz.depois.com", rep["allow"])
+        self.assertIn("zzz.depois.com", rep["allow_by"])
+        self.assertLessEqual(len(rep["allow"]), 500)
+        self.assertGreater(rep["allow_total"], 500)
+        for i in range(520):
+            self.fake.lists["allow"].pop(f"a{i:04d}.exemplo.net")
+
     def test_04_release_that_would_cover_the_canary_is_refused(self):
         self.send("pihole_allow", {"domain": "exemplo.com"})
         self.assertNotIn(domains.to_regex("exemplo.com"), self.fake.regex["allow"])

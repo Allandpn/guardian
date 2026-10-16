@@ -29,8 +29,9 @@ ROLE_DOMAINS = "domains"
 ROLES = {ROLE_ADMIN, ROLE_DOMAINS}
 # O que um guardião pode assinar (além de add_credential para si mesmo).
 DOMAIN_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"}
-# Aprovar app novo também é do guardião comum (decisão de 2026-10-16); revogar, regras, PIN etc. continuam só do guardião-mor.
-GUARDIAN_TYPES = DOMAIN_TYPES | {"approve_app"}
+# Aprovar app novo e revogar app (o que ele mesmo aprovou, pela tela) também são do guardião comum (decisão de 2026-10-16);
+# regras, PIN, janelas, pessoas etc. continuam só do guardião-mor.
+GUARDIAN_TYPES = DOMAIN_TYPES | {"approve_app", "revoke_app"}
 
 
 class CommandError(ValueError):

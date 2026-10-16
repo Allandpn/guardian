@@ -155,6 +155,7 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests/(?P<rid>[0-9]{1,12})/cancel", self.cancel_request),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/clients", self.executor_clients),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/refuse", self.refuse_app),
+            ("GET", r"/v1/my/decisions", self.my_decisions),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.post_blocked),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
             ("GET", r"/v1/blocked", self.blocked),
@@ -570,6 +571,12 @@ class Gateway:
         if cid is None:
             raise HttpError(409, "contador repetido")
         self.store.audit(dev, "queued", f"{gid}: {cmd['type']}" + ("" if ready else " (aguarda 2º guardião)"))
+        pkg = cmd["args"].get("pkg")
+        if ready and isinstance(pkg, str) and re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg):
+            if cmd["type"] == "approve_app":
+                self.store.record_approval(dev, pkg, gid)  # para o guardião ver o que aprovou e poder revogar
+            elif cmd["type"] == "revoke_app":
+                self.store.drop_approval(dev, pkg)
         if ready:
             self._wake()
         return 200, {"id": cid, "status": "ready" if ready else "awaiting"}, {}
@@ -800,6 +807,14 @@ class Gateway:
                                      f"{'ok' if e.get('ok') else 'FALHOU'}: {str(e.get('msg', ''))[:200]}")
         self.store.save_report(dev, report)
         return 200, {"ok": True}, {}
+
+    def my_decisions(self, req):
+        """O que ESTE guardião decidiu: apps que aprovou e domínios que recusou (os domínios que liberou vêm do relatório do executor)."""
+        gid = self.guardian(req)
+        now = int(time.time())
+        return 200, {"apps": [{"dev": r["dev"], "pkg": r["pkg"], "ts": r["ts"]} for r in self.store.approvals_by(gid)],
+                     "denied": [{"dev": r["dev"], "domain": r["domain"], "ts": r["ts"]}
+                                for r in self.store.denied_by(gid, now - 30 * 24 * 3600)]}, {}
 
     def refuse_app(self, req, dev):
         """Recusar um app pendente: some da lista dos guardiões; o aparelho o mantém suspenso. `undo` reconsidera."""

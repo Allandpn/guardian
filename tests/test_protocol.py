@@ -140,8 +140,9 @@ class CommandTests(unittest.TestCase):
         # domínios: liberar e bloquear sim; o resto não
         for t in ("pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"):
             verify_envelope(trust, env("dora", dom, t, {"domain": "a.com"}))
-        verify_envelope(trust, env("dora", dom, "approve_app", {"pkg": "x"}))  # aprovar app também
-        for t, a in (("revoke_app", {"pkg": "x"}), ("set_config", {"patch": {}}), ("set_pin", {}), ("activate", {}),
+        verify_envelope(trust, env("dora", dom, "approve_app", {"pkg": "x"}))  # aprovar e revogar app também
+        verify_envelope(trust, env("dora", dom, "revoke_app", {"pkg": "x"}))
+        for t, a in (("set_config", {"patch": {}}), ("set_pin", {}), ("activate", {}),
                      ("add_guardian", {"id": "z"}), ("remove_guardian", {"id": "bia"}), ("add_credential", {"id": "ana"})):
             with self.assertRaises(CommandError, msg=t):
                 verify_envelope(trust, env("dora", dom, t, a))

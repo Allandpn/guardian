@@ -562,9 +562,19 @@ function pendingAppNodes(d) {
 async function appsInboxView() {
   const { devices } = await loadAll();
   renderNav('apps');
+  const dec = await api('GET', '/v1/my/decisions');
   const devs = devices.filter((x) => x.kind === 'device' && (((x.report || {}).pendingApps || []).length || (x.refusedApps || []).length));
+  const byId = new Map(devices.map((x) => [x.id, x]));
+  const label = (a) => { const d = byId.get(a.dev); const f = d && ((d.report || {}).approvedApps || []).find((x) => x.pkg === a.pkg); return (f && f.label) || a.pkg; };
+  const approved = dec.apps.filter((a) => byId.has(a.dev));
   show(top('Apps'), h('div', { class: 'wrap wide' }, devs.length ? devs.map((d) => [h('div', { class: 'sec' }, d.name), pendingAppNodes(d)]) :
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando aprovação.'))));
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum app aguardando aprovação.')),
+    h('div', { class: 'sec' }, `Aprovei · ${approved.length}`),
+    approved.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, approved.map((a) => h('div', { class: 'li' },
+      h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, label(a)), h('div', { class: 'muted mono' }, a.pkg), h('div', { class: 'muted' }, `${byId.get(a.dev).name} · ${ago(a.ts, Math.floor(Date.now() / 1000))}`)),
+      h('button', { class: 'btn', type: 'button', onclick: act(() => confirmSend(a.dev, 'revoke_app', { pkg: a.pkg }, { title: `Revogar “${label(a)}” em ${byId.get(a.dev).name}?`,
+        rows: [['Ação', 'Revogar aprovação'], ['Pacote', a.pkg]], effect: 'vale na hora', effectKind: 'ok', note: 'O app será suspenso.' }).then(() => route())) }, 'Revogar')))) :
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Você ainda não aprovou nenhum app.'))));
   timer = setTimeout(autoRefresh, 20000);
 }
 
@@ -618,8 +628,8 @@ async function domainsView(tab) {
   const r = ex.report || {};
   const unb = reqs.filter((q) => q.kind === 'unblock');
   const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
-  const minimal = !isAdmin();  // guardião de domínios: só os pedidos de liberação, sem as outras abas
-  if (minimal) tab = 'pedidos';
+  const minimal = !isAdmin();  // guardião de domínios: só os pedidos de liberação e o que ele mesmo liberou
+  if (minimal) tab = tab === 'meus' ? 'meus' : 'pedidos';
   else if (!tab) tab = reqs.length ? 'pedidos' : 'bloqueios';
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const protectedDevs = devices.filter((x) => x.kind === 'device');
@@ -627,8 +637,8 @@ async function domainsView(tab) {
   const covers = (dom) => (r.allow || []).some((a) => dom === a || dom.endsWith('.' + a));  // a regra cobre o domínio e os subdomínios
   const canary = (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
-  const tabs = minimal ? [] : [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'],
-    ['#/domains/liberados', 'Liberados', 'liberados']];
+  const tabs = minimal ? [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/meus', 'Liberados por mim', 'meus']] :
+    [['#/domains/pedidos', `Pedidos · ${reqs.length}`, 'pedidos'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados']];
   const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
     x.cname ? chip('via CNAME') : null];
   const batchSpec = (items) => ({ title: `Liberar ${items.length} domínio${items.length > 1 ? 's' : ''}?`,
@@ -743,13 +753,36 @@ async function domainsView(tab) {
         covers(x.domain) ? chip('liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
           batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) :
         h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada bloqueado com esses filtros.'))];
+  } else if (tab === 'meus') {
+    // o que ESTE guardião liberou (do relatório do executor) e o que recusou (do gateway): dá para bloquear de novo ou liberar
+    const myId = me.guardian.id;
+    const by = r.allow_by || {};
+    const myAllowed = (r.allow || []).filter((d) => by[d] === myId);
+    const dec = await api('GET', '/v1/my/decisions');
+    const openDomains = new Set(unb.flatMap((q) => q.items.filter((i) => i.state === 'open').map((i) => i.domain)));
+    const myDenied = dec.denied.filter((x) => !(r.allow || []).some((a) => x.domain === a || x.domain.endsWith('.' + a)) && !openDomains.has(x.domain));
+    body = [h('div', { class: 'sec' }, `Liberei · ${myAllowed.length}`),
+      myAllowed.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, myAllowed.map((x) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
+          h('div', { class: 'muted' }, temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
+        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, { title: `Bloquear ${x} de novo?`,
+          rows: [['Ação', 'Bloquear de novo'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok', note: 'Volta a valer a regra do Pi-hole para este domínio.' }) }, 'Bloquear de novo')))) :
+        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Você ainda não liberou nada.')),
+      h('div', { class: 'sec' }, `Recusei · ${myDenied.length}`),
+      myDenied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, myDenied.map((x) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, `${devName(x.dev)} · ${ago(x.ts, now)}`)),
+        h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) :
+        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada recusado nos últimos dias.'))];
   } else {
     const by = r.allow_by || {};
     const mine = (r.allow || []).filter((d) => by[d] !== undefined);
-    const others = (r.allow || []).length - mine.length;
+    const others = (r.allow_total || (r.allow || []).length) - mine.length;
+    const denyBy = r.deny_by || {};
+    const denyMine = (r.deny || []).filter((d) => denyBy[d] !== undefined);
+    const denyOthers = (r.deny_total || (r.deny || []).length) - denyMine.length;
     const listCard = (name, list) => list.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, list.map((x) => h('div', { class: 'li' },
       h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
-        h('div', { class: 'muted' }, name === 'allow' && by[x] ? `liberado por ${gname(by[x])}` : '', ' ',
+        h('div', { class: 'muted' }, name === 'allow' && by[x] ? `liberado por ${gname(by[x])}` : name === 'deny' && denyBy[x] ? `bloqueado por ${gname(denyBy[x])}` : '', ' ',
           temp.has(`${name}:${x}`) ? chip(`expira ${fmtWhen(temp.get(`${name}:${x}`))}`, 'warn') : name === 'allow' ? chip('sem prazo') : null)),
       h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, { title: name === 'allow' ? `Bloquear ${x} de novo?` : `Remover ${x} da lista de bloqueados?`,
         rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
@@ -762,7 +795,8 @@ async function domainsView(tab) {
     body = [listCard('allow', mine),
       others ? h('p', { class: 'muted', style: 'margin:8px 14px 0' }, `Mais ${others} entrada${others > 1 ? 's' : ''} criada${others > 1 ? 's' : ''} direto no Pi-hole. Elas não aparecem nem são alteradas aqui.`) : null,
       h('details', { class: 'card flat', style: 'margin-top:12px', open: advOpen, ontoggle: (e) => { advOpen = e.target.open; } }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Avançado: bloqueados e domínio manual'),
-        h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${(r.deny || []).length}`), listCard('deny', r.deny || []),
+        h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${denyMine.length}`), listCard('deny', denyMine),
+        denyOthers ? h('p', { class: 'muted', style: 'margin:8px 0 0' }, `Mais ${denyOthers} bloqueio${denyOthers > 1 ? 's' : ''} criado${denyOthers > 1 ? 's' : ''} direto no Pi-hole.`) : null,
         h('div', { class: 'sec', style: 'padding-left:0' }, 'Liberar ou bloquear um domínio'),
         dom, h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
         h('div', { class: 'row', style: 'margin-top:12px' },
@@ -774,7 +808,7 @@ async function domainsView(tab) {
         h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null];
   }
   show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
-    h('div', { class: 'wrap wide' }, minimal ? null : segTabs(tabs, tab), body));
+    h('div', { class: 'wrap wide' }, segTabs(tabs, tab), body));
   timer = setTimeout(autoRefresh, 20000);
 }
 
@@ -1160,7 +1194,7 @@ async function route() {
   if (!me) { nav.hidden = true; return loginView(); }
   try {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
-    const dom = hash.match(/^#\/(?:domains\/)?(pedidos|bloqueios|liberados)$/) || hash.match(/^#\/(domains)$/);
+    const dom = hash.match(/^#\/(?:domains\/)?(pedidos|bloqueios|liberados|meus)$/) || hash.match(/^#\/(domains)$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);

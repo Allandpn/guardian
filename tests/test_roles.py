@@ -55,7 +55,9 @@ class Roles(unittest.TestCase):
         (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "approve_app", {"pkg": "x"})
         self.assertEqual((st, r.get("status")), (200, "ready"))  # aprovar app: o guardião comum também pode
         (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "revoke_app", {"pkg": "x"})
-        self.assertEqual(st, 403, r)  # revogar continua só do guardião-mor
+        self.assertEqual((st, r.get("status")), (200, "ready"))  # revogar também
+        (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "set_config", {"patch": {}})
+        self.assertEqual(st, 403, r)  # regras continuam só do guardião-mor
         (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.ex, "pihole_allow", {"domain": "a.com"})
         self.assertEqual((st, r.get("status")), (200, "ready"))
 
@@ -90,6 +92,27 @@ class Roles(unittest.TestCase):
         self.assertEqual(refused(), [])
         self.assertEqual(self.env.client().call("POST", f"/v1/devices/{self.dev}/apps/refuse", {"pkg": "a.b"})[0], 401)
         self.assertEqual(self.dc.call("POST", f"/v1/devices/{self.ex}/apps/refuse", {"pkg": "a.b"})[0], 404)  # só aparelho, não o executor
+
+    def test_03c_my_decisions_apps_approved_and_domains_refused(self):
+        import time
+        def mine():
+            st, r, _ = self.dc.call("GET", "/v1/my/decisions")
+            self.assertEqual(st, 200)
+            return r
+        self.assertEqual(self.env.client().call("GET", "/v1/my/decisions")[0], 401)
+        self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "approve_app", {"pkg": "com.meu.app"})
+        self.assertIn(("com.meu.app", self.dev), [(a["pkg"], a["dev"]) for a in mine()["apps"]])
+        self.assertEqual(self.c.call("GET", "/v1/my/decisions")[1]["apps"], [])  # só as decisões de quem pergunta
+        self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "revoke_app", {"pkg": "com.meu.app"})
+        self.assertNotIn("com.meu.app", [a["pkg"] for a in mine()["apps"]])
+        t = int(time.time()) - 5
+        self.env.store.merge_blocked(self.dev, [{"domain": "nego.exemplo.com", "src": "own", "list": "", "cname": 0, "count": 1, "first": t, "last": t}])
+        st, r, _ = self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests", {"kind": "unblock", "domains": ["nego.exemplo.com"]})
+        self.assertEqual(st, 200, r)
+        rid = r["id"]
+        self.assertEqual(self.dc.call("POST", f"/v1/requests/{rid}/resolve", {"deny": ["nego.exemplo.com"]})[0], 200)
+        self.assertIn(("nego.exemplo.com", self.dev), [(d["domain"], d["dev"]) for d in mine()["denied"]])
+        self.assertEqual(self.c.call("GET", "/v1/my/decisions")[1]["denied"], [])
 
     def test_04_history_filtered_unless_allowed(self):
         self.c.call("POST", f"/v1/guardians/{self.dgid}/see", {"history": False})

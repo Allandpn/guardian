@@ -268,9 +268,13 @@ class Executor:
              "executed": self.executed[-50:]}
         try:
             allow, deny = self._entries("allow"), self._entries("deny")
-            r["allow"], r["deny"] = sorted(e["domain"] for e in allow)[:LIST_CAP], sorted(e["domain"] for e in deny)[:LIST_CAP]
-            r["allow_by"] = {e["domain"]: e["comment"][9:] for e in allow if e["comment"].startswith("guardian:")}
-            r["deny_by"] = {e["domain"]: e["comment"][9:] for e in deny if e["comment"].startswith("guardian:")}
+            # As entradas do Guardian vêm primeiro: com centenas de entradas suas no Pi-hole, o corte alfabético escondia as liberações dele.
+            for name, entries in (("allow", allow), ("deny", deny)):
+                mine = sorted(e["domain"] for e in entries if e["comment"].startswith("guardian:"))
+                others = sorted(e["domain"] for e in entries if not e["comment"].startswith("guardian:"))
+                r[name] = (mine + others)[:LIST_CAP]
+                r[name + "_total"] = len(entries)
+                r[name + "_by"] = {e["domain"]: e["comment"][9:] for e in entries if e["comment"].startswith("guardian:")}
             r["pihole_ok"] = True
         except PiholeError as e:
             r["pihole_ok"], r["pihole_error"] = False, str(e)[:200]
