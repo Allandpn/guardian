@@ -1008,15 +1008,15 @@ async function guardiansView() {
     });
     /** Muda o papel de um guardião (promover ou rebaixar) em cada destino que o conhece; o gateway muda o dele quando o comando fica pronto. */
     const setRole = (role) => act(async () => {
-      const alone = isMaster();  // com mestre, ele muda sozinho; sem mestre, só a promoção a mestre, com dois guardiões-mor
+      const alone = true;  // uma assinatura: sem mestre, a promoção a mestre é a montagem do sistema; com mestre, só ele muda papéis
       const knows = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
       const dests = knows.length ? knows : devices;
       const up = role === 'master';
       if (!(await sheet({ title: `${up ? 'Promover' : 'Rebaixar'} ${g.name} a ${roleLabel(role)}?`, rows: [['Guardião', g.name], ['Papel agora', roleLabel(g.role)], ['Papel novo', roleLabel(role)], ['Destinos', String(dests.length)]],
-        effect: alone ? 'vale na hora' : 'dois guardiões-mor', effectKind: 'warn',
+        effect: 'vale na hora', effectKind: 'warn',
         note: (up ? 'O mestre é quem inclui e remove guardiões, sozinho. ' : role === 'admin' ? 'Deixa de incluir e remover guardiões; continua com o resto. ' : 'Passa a cuidar só de domínios e apps. ') +
-          `Um toque de passkey por destino (${dests.length})${alone ? '.' : '; depois o outro guardião-mor co-assina cada um.'}`,
-        confirm: alone ? `Assinar e ${up ? 'promover' : 'rebaixar'}` : 'Assinar e pedir', danger: true }))) return;
+          `Um toque de passkey por destino (${dests.length}).` + (up && !hasMaster() ? ' Depois disso só um mestre promove, rebaixa, inclui ou remove guardiões.' : ''),
+        confirm: `Assinar e ${up ? 'promover' : 'rebaixar'}`, danger: true }))) return;
       for (const d of dests) await sendCommand(d.id, 'set_role', { id: gid, role });
       route();
     });
@@ -1048,7 +1048,7 @@ async function guardiansView() {
 
   show(top('Guardiões', { actions: canManage() ? h('a', { class: 'btn pri', href: '#/guardians/novo', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Convidar') : null }), h('div', { class: 'wrap' },
     !hasMaster() ? h('div', { class: 'card warnb' }, h('strong', {}, 'Ainda não há guardião-mestre'),
-      h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'O mestre é quem inclui e remove guardiões, sozinho; o guardião-mor faz o resto. Enquanto não existir um, incluir e remover guardiões exige dois guardiões-mor. Promova a pessoa de confiança em "Promover a mestre".')) : null,
+      h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'O mestre é quem inclui e remove guardiões, sozinho; o guardião-mor faz o resto. Enquanto não existir um, incluir e remover guardiões exige dois guardiões-mor. Promova o primeiro mestre em "Promover a mestre" (uma assinatura); depois só um mestre mexe em guardiões.')) : null,
     hasMaster() && !isMaster() ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Só o guardião-mestre inclui, remove e propaga guardiões.')) : null,
     myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
       h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é o guardião-mor e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),

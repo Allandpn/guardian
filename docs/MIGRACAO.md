@@ -97,7 +97,7 @@ Dicas: sempre confirmar "confia em todos os passkeys" antes de remover qualquer 
 Sem mestre vale o modo antigo. Para o Gandalf virar o mestre (e só ele incluir e remover guardiões, sozinho, dentro da janela dele):
 
 1. Já com o Pi atualizado e o app novo nos aparelhos, entre como guardião-mor em **Guardiões**.
-2. No cartão do Gandalf, **Promover a mestre**. Um toque de passkey por destino (cada aparelho e o executor).
-3. O Gandalf (ou outro guardião-mor) abre **Guardiões → Co-assinaturas pendentes** e co-assina cada um. O gateway já passa a tratar o Gandalf como mestre na primeira co-assinatura; cada aparelho e o executor aplicam ao receber o comando (a tela mostra "só o mestre propaga" para quem não é mestre).
+2. No cartão do guardião-mor que será o primeiro mestre (hoje o Heimdall), **Promover a mestre**. Uma assinatura, um toque de passkey por destino (cada aparelho e o executor). O gateway o trata como mestre na hora; cada aparelho e o executor aplicam ao receber o comando.
+3. Na terça, o Heimdall (mestre) promove o Gandalf a mestre no cartão dele, também sozinho. Depois o Gandalf rebaixa ou remove o Heimdall.
 4. A partir daí: o mestre convida (inclusive outro mestre, a reserva), propaga e remove, sozinho. A remoção do Heimdall passa a ser do Gandalf, sozinho; cada aparelho ainda espera o atraso antes de aplicar.
 5. Convide um segundo mestre (reserva da pessoa de confiança) assim que possível: o último mestre não pode ser removido nem rebaixado, e sem reserva a perda da passkey dele trava a inclusão de guardiões.

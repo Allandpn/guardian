@@ -29,16 +29,13 @@ class MasterRole(unittest.TestCase):
         self.assertEqual(self.role_of(self.c, self.g2), "admin")
         # sem mestre, o modo antigo: convidar vale para o guardião-mor
         self.assertEqual(self.c.call("POST", "/v1/invites", {"kind": "new_guardian", "name": "Teste"})[0], 200)
-        # a promoção pede duas assinaturas
-        (st, r, _), p = self.env.sign_post(self.c, self.a, self.gid, self.dev, "set_role", {"id": self.g2, "role": "master"})
-        self.assertEqual((st, r["status"]), (200, "awaiting"), r)
-        self.assertEqual(self.role_of(self.c, self.g2), "admin")  # ainda não
-        self.assertEqual(self.c2.call("POST", f"/v1/commands/{r['id']}/cosign", {"sig": self.a2.sign_command(self.g2, p)})[0], 200)
+        # o primeiro mestre nasce com uma assinatura
+        (st, r, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.dev, "set_role", {"id": self.g2, "role": "master"})
+        self.assertEqual((st, r["status"]), (200, "ready"), r)
         self.assertEqual(self.role_of(self.c, self.g2), "master")
-        # o mesmo pedido para o outro destino (já em andamento) continua valendo, mesmo com o gateway já promovido
-        (st, r2, _), p2 = self.env.sign_post(self.c, self.a, self.gid, self.ex, "set_role", {"id": self.g2, "role": "master"})
-        self.assertEqual((st, r2["status"]), (200, "awaiting"), r2)
-        self.assertEqual(self.c2.call("POST", f"/v1/commands/{r2['id']}/cosign", {"sig": self.a2.sign_command(self.g2, p2)})[0], 200)
+        # o mesmo pedido para o outro destino (que ainda não aplicou) continua valendo, mesmo com o gateway já promovido
+        (st, r2, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.ex, "set_role", {"id": self.g2, "role": "master"})
+        self.assertEqual((st, r2["status"]), (200, "ready"), r2)
 
         # agora o guardião-mor não convida, não remove e não manda comando de guardiões
         self.assertEqual(self.c.call("POST", "/v1/invites", {"kind": "new_guardian", "name": "X"})[0], 403)

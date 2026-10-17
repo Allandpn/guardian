@@ -206,11 +206,10 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(c.trust.guardians["ana"].role, "master")
 
     def test_promotion_to_master_uses_the_old_rule(self):
-        """Sem mestre vale o modo antigo: dois guardiões-mor promovem um deles a mestre. É o único caminho para o primeiro mestre."""
+        """Sem mestre, um guardião-mor promove um guardião-mor a mestre com uma assinatura: é o único caminho para o primeiro mestre."""
         trust = trust_with(("ana", self.a), ("bia", self.b))
         p = command("dev1", "ana", 1, "set_role", {"id": "bia", "role": "master"})
-        with self.assertRaises(CommandError):
-            verify_envelope(trust, envelope(p, self.a.sign_command("ana", p)))  # uma assinatura só não basta
+        verify_envelope(trust, envelope(p, self.a.sign_command("ana", p)))
         verify_envelope(trust, envelope(p, self.a.sign_command("ana", p), self.b.sign_command("bia", p)))
         for bad in ({"id": "bia", "role": "admin"}, {"id": "bia", "role": "domains"}, {"id": "nao", "role": "master"}):
             q = command("dev1", "ana", 2, "set_role", bad)

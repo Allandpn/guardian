@@ -17,9 +17,9 @@ Um terceiro papel, `master`, fecha a brecha de um guardião-mor criar outro (ele
 
 ### Migração (como nasce o primeiro mestre)
 
-Enquanto **não existe mestre**, vale o modo antigo: incluir e remover guardiões é do guardião-mor, com duas assinaturas se houver dois. A única mudança de papel possível nesse modo é `set_role {id, role: "master"}` de um guardião-mor, também com duas assinaturas, enviada a cada aparelho e ao executor. O gateway muda o papel no próprio banco quando o comando fica pronto. Depois da promoção a regra antiga some.
+Enquanto **não existe mestre**, vale o modo antigo: incluir e remover guardiões é do guardião-mor, com duas assinaturas se houver dois. A única mudança de papel possível nesse modo é `set_role {id, role: "master"}` de um guardião-mor, **com uma assinatura** (é a montagem do sistema), enviada a cada aparelho e ao executor. A brecha não reabre: depois do primeiro mestre, só mestre muda papéis. O gateway muda o papel no próprio banco quando o comando fica pronto. Depois da promoção a regra antiga some.
 
-O quórum depende do **autor**: autor mestre = uma assinatura; senão vale o modo antigo. Por isso uma promoção que ainda está em andamento em outros destinos continua válida depois de o gateway já ter promovido o alvo.
+O quórum depende do **autor**: autor mestre = uma assinatura; senão vale o modo antigo (duas assinaturas só para remover guardião ou passkey). Por isso uma promoção que ainda está em andamento em outros destinos continua válida depois de o gateway já ter promovido o alvo.
 
 ---
 
@@ -102,4 +102,4 @@ Uma segunda passkey do mesmo guardião, cadastrada no computador de casa (Window
 
 ## Rebaixar (2026-10-17)
 
-O mestre muda o papel de qualquer guardião sozinho (`set_role`): mestre → guardião-mor → guardião, e de volta. Não rebaixa o último mestre. Sem mestre, só existe a promoção de um guardião-mor a mestre (duas assinaturas). Na tela Guardiões, os botões "Promover a mestre", "Rebaixar a guardião-mor" e "Rebaixar a guardião" ficam no cartão. O app dos aparelhos já aceita (não precisa reinstalar).
+O mestre muda o papel de qualquer guardião sozinho (`set_role`): mestre → guardião-mor → guardião, e de volta. Não rebaixa o último mestre. Sem mestre, só existe a promoção de um guardião-mor a mestre (uma assinatura). Na tela Guardiões, os botões "Promover a mestre", "Rebaixar a guardião-mor" e "Rebaixar a guardião" ficam no cartão. O app dos aparelhos já aceita (não precisa reinstalar).

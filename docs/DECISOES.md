@@ -91,7 +91,7 @@ No aparelho o horário usa o relógio do Android: ligar a restrição "Bloquear 
 
 ## Guardião-mestre e domínio pai (2026-10-17)
 
-40. **Guardião-mestre (`master`)**: inclui e remove guardiões (inclusive outro mestre) sozinho, sem co-assinatura; o guardião-mor passa a fazer tudo menos isso; o guardião comum fica como estava. Motivo: com a regra "dois guardiões-mor removem", um guardião-mor sozinho podia criar um segundo e remover a pessoa de confiança. Primeiro mestre: promoção `set_role` com o modo antigo (duas assinaturas). Detalhes em `PAPEIS.md`. Protocolo novo nos três lugares (Python, Kotlin, gateway); o relatório dos destinos ganhou `roles`.
+40. **Guardião-mestre (`master`)**: inclui e remove guardiões (inclusive outro mestre) sozinho, sem co-assinatura; o guardião-mor passa a fazer tudo menos isso; o guardião comum fica como estava. Motivo: com a regra "dois guardiões-mor removem", um guardião-mor sozinho podia criar um segundo e remover a pessoa de confiança. Primeiro mestre: promoção `set_role` de um guardião-mor, com uma assinatura (só enquanto não existe mestre). Detalhes em `PAPEIS.md`. Protocolo novo nos três lugares (Python, Kotlin, gateway); o relatório dos destinos ganhou `roles`.
 41. **Encurtar o domínio no pedido**: no app, `«` tira o rótulo da esquerda de um bloqueio (advertise.cloudlinks.cn -> cloudlinks.cn) e `»` devolve. O gateway aceita o pedido do domínio bloqueado **ou de um pai dele**, nunca de um sufixo público (cn, com.br; heurística sem lista pública em `domains.is_public_suffix`) e nunca de um pai que cubra o canário.
 
 ## Como retomar

@@ -23,7 +23,8 @@ T_SET_ROLE = "set_role"
 TRUST_TYPES = {T_ADD_GUARDIAN, T_ADD_CREDENTIAL, T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL, T_SET_ROLE}
 # Pedem a assinatura de dois guardiões-mor distintos (se houver dois ou mais) ENQUANTO NÃO EXISTE UM MESTRE (modo antigo).
 # Com mestre, quem mexe em guardiões é só ele, sozinho (veja docs/PAPEIS.md).
-TWO_SIG_TYPES = {T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL, T_SET_ROLE}
+# set_role não entra: o primeiro mestre nasce com uma assinatura (é a montagem do sistema); depois só um mestre muda papéis.
+TWO_SIG_TYPES = {T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL}
 
 # Papéis. O papel fica fixado na confiança de cada consumidor, junto com as passkeys (veja docs/PAPEIS.md).
 ROLE_MASTER = "master"    # guardião-mestre: inclui e remove guardiões (inclusive outro mestre), sozinho; tem tudo do guardião-mor
