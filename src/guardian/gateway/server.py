@@ -695,7 +695,9 @@ class Gateway:
             raise HttpError(400, "aparelho inválido")
         if src is not None and src not in BLOCK_SOURCES:
             raise HttpError(400, "origem inválida")
-        return 200, {"items": [self._blocked_row(r) for r in self.store.blocked_list(dev, src)], "now": int(time.time())}, {}
+        canaries: dict[str, str] = {}
+        rows = [r for r in self.store.blocked_list(dev, src) if r["domain"] != canaries.setdefault(r["dev"], self._canary(r["dev"]))]
+        return 200, {"items": [self._blocked_row(r) for r in rows], "now": int(time.time())}, {}
 
     @staticmethod
     def _blocked_row(r) -> dict:
@@ -914,6 +916,14 @@ class Gateway:
         self.store.merge_blocked(target, items)
         return 200, {"ok": True, "accepted": len(items)}, {}
 
+    def _canary(self, dev: str) -> str:
+        """O domínio-canário que o aparelho relatou ('' se não houver). Ele é o teste de saúde: bloqueado de propósito."""
+        row = self.store.device(dev)
+        try:
+            return normalize_domain(json.loads(row["report"])["snapshot"]["canary"])
+        except (TypeError, KeyError, ValueError, AttributeError):
+            return ""
+
     def device_blocked(self, req, dev):
         row = self.device(req, dev)
         if row["kind"] != "device":
@@ -922,7 +932,9 @@ class Gateway:
         if src is not None and src not in BLOCK_SOURCES:
             raise HttpError(400, "origem inválida")
         self.store.touch(dev)
-        return 200, {"items": [self._blocked_row(r) for r in self.store.blocked_list(dev, src, 300)], "now": int(time.time())}, {}
+        canary = self._canary(dev)
+        return 200, {"items": [self._blocked_row(r) for r in self.store.blocked_list(dev, src, 300) if r["domain"] != canary],
+                     "now": int(time.time())}, {}
 
     def device_requests(self, req, dev):
         self.device(req, dev)
@@ -948,6 +960,8 @@ class Gateway:
                 doms = sorted({normalize_domain(x) for x in raw})
             except ValueError:
                 raise HttpError(400, "domínio inválido")
+            if self._canary(dev) in doms:
+                raise HttpError(400, "o domínio-canário não pode ser liberado")
             if not all(self.store.blocked_has(dev, x) for x in doms):
                 raise HttpError(400, "só dá para pedir domínios que foram bloqueados")
             rid = self.store.add_unblock_request(dev, doms)

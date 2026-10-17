@@ -170,6 +170,19 @@ class UnblockFlow(unittest.TestCase):
         self.ex.step(wait_s=0)
         self.assertNotIn("um.example", self.fake.lists["allow"])
 
+    def test_09b_canary_is_hidden_and_cannot_be_requested(self):
+        self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/report", {
+            "kind": "device", "snapshot": {"canary": "Canario.Exemplo.com"}, "trust": {}, "ctrs": {}})
+        now = int(time.time())
+        self.env.store.merge_blocked(self.dev, [{"domain": "canario.exemplo.com", "src": "own", "list": "", "cname": 0,
+                                                 "count": 3, "first": now - 5, "last": now - 5}])  # registro antigo, de antes do filtro do executor
+        self.assertNotIn("canario.exemplo.com", self.blocked())
+        st, r, _ = self.c.call("GET", f"/v1/blocked?dev={self.dev}")
+        self.assertNotIn("canario.exemplo.com", {i["domain"] for i in r["items"]})
+        st, r, _ = self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests", {"kind": "unblock", "domains": ["canario.exemplo.com"]})
+        self.assertEqual(st, 400)
+        self.assertIn("canário", r["error"])
+
     def test_10_blocked_cap_and_retention(self):
         items = [{"domain": f"d{i}.exemplo.com", "src": "list", "list": "", "cname": 0, "count": 1, "first": int(NOW) - 5,
                   "last": int(NOW) - 5} for i in range(150)]
