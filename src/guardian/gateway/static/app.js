@@ -1007,9 +1007,10 @@ async function guardiansView() {
       route();
     });
     const promote = act(async () => {
-      if (!(await sheet({ title: `Promover ${g.name} a mestre?`, rows: [['Guardião', g.name], ['Destinos', String(devices.length)]], effect: 'dois guardiões-mor', effectKind: 'warn',
-        note: `O mestre passa a ser o único que inclui e remove guardiões, sozinho. Um toque de passkey por destino (${devices.length}); depois o outro guardião-mor co-assina cada um. Só é possível enquanto não existe mestre.`,
-        confirm: 'Assinar e pedir', danger: true }))) return;
+      const alone = isMaster();  // com mestre, ele promove sozinho; sem mestre, dois guardiões-mor
+      if (!(await sheet({ title: `Promover ${g.name} a mestre?`, rows: [['Guardião', g.name], ['Destinos', String(devices.length)]], effect: alone ? 'vale na hora' : 'dois guardiões-mor', effectKind: 'warn',
+        note: `O mestre é quem inclui e remove guardiões, sozinho. Um toque de passkey por destino (${devices.length})${alone ? '.' : '; depois o outro guardião-mor co-assina cada um.'}`,
+        confirm: alone ? 'Assinar e promover' : 'Assinar e pedir', danger: true }))) return;
       for (const d of devices) await sendCommand(d.id, 'set_role', { id: gid, role: 'master' });
       route();
     });
@@ -1018,7 +1019,7 @@ async function guardiansView() {
         h('div', { class: 'sp' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, h('strong', { style: 'font-size:16px' }, g.name), mineCard ? chip('você') : null, chip(roleLabel(g.role), dom ? '' : 'ok')),
           h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
         mineCard || !canManage() ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') : h('button', { class: 'btn dangero', type: 'button', onclick: removeMor }, 'Remover')),
-      !hasMaster() && g.role === 'admin' && isAdmin() ? h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn', type: 'button', onclick: promote }, 'Promover a mestre')) : null,
+      g.role === 'admin' && canManage() ? h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn', type: 'button', onclick: promote }, 'Promover a mestre')) : null,
       h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
         g.window ? chip(describeWindow(g.window), 'warn') : chip('a qualquer hora')),
       h('details', { class: 'gdet', style: 'margin-top:10px', open: gOpen.has(gid), ontoggle: (e) => { if (e.target.open) gOpen.add(gid); else gOpen.delete(gid); } }, h('summary', {}, dom ? 'Passkeys e permissões' : 'Passkeys'),
