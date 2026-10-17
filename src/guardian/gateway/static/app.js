@@ -130,8 +130,8 @@ const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
 const isAdmin = () => !!me && me.guardian.role === 'admin';
 const canSee = (k) => isAdmin() || !!(me && me.guardian.see && me.guardian.see[k]);
 const SEE_LABELS = [['devices', 'Estado dos aparelhos'], ['rules', 'Regras (só leitura)'], ['apps', 'Apps (só leitura)'], ['history', 'Histórico completo']];
-/** Confiança que vai na string de pareamento: o aparelho só precisa dos guardiões-mor; o executor, de todos. */
-const trustFor = (kind) => Object.fromEntries(Object.entries(me.trust).filter(([, g]) => kind === 'executor' || g.role !== 'domains'));
+/** Confiança que vai na string de pareamento: aparelho e executor conhecem todos os guardiões (o comum aprova apps, o aparelho confere a assinatura). */
+const trustFor = (_kind) => ({ ...me.trust });
 
 // ---------- dados ----------
 async function loadAll() {
@@ -947,7 +947,6 @@ async function guardiansView() {
     const have = (d.report && d.report.trust) || {};
     const out = [];
     for (const [gid, g] of gs) {
-      if (d.kind !== 'executor' && g.role === 'domains') continue;  // o aparelho não precisa conhecer guardiões
       for (const cred of Object.keys(g.creds)) if (!(have[gid] || []).includes(cred)) out.push({ gid, g, cred });
     }
     return out;

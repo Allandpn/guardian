@@ -378,7 +378,7 @@ def main():
         page.reload()
         devrow = page.locator(".li", has_text="Tab S8")
         devrow.wait_for(timeout=10000)
-        out["device_does_not_need_domain_guardian"] = "Bia" not in devrow.inner_text()
+        out["device_trusts_domain_guardian"] = "Bia" in devrow.inner_text() or page.get_by_text("Propagar").count() == 0
         shot("17-pessoas-papeis", PHONE)
         back()
         fake.queries.append({"time": _t.time() - 5, "domain": "escola.exemplo.com", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
@@ -566,7 +566,7 @@ def main():
     fake.close()
     env.close()
     print(json.dumps(out, indent=1, ensure_ascii=False))
-    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "admin_guardian_filter", "admin_history_in_nav", "domain_guardian_nav", "domain_guardian_minimal", "guardian_sees_pending_app", "guardian_refuse_app", "guardian_approved_app", "guardian_revoked_own_app", "guardian_my_decisions", "release_all_one_passkey", "domain_refused", "executor_knows_domain_role", "device_does_not_need_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
+    need = ("registered", "login", "pin_roundtrip", "activate_verified", "set_config_verified", "allowed", "blocks_hidden_ads", "unblock_applied", "unblock_ttl", "unblock_state_back_to_device", "block_again", "canary_refused", "history_ui", "admin_guardian_filter", "admin_history_in_nav", "domain_guardian_nav", "domain_guardian_minimal", "guardian_sees_pending_app", "guardian_refuse_app", "guardian_approved_app", "guardian_revoked_own_app", "guardian_my_decisions", "release_all_one_passkey", "domain_refused", "executor_knows_domain_role", "device_trusts_domain_guardian", "domain_guardian_allowed", "visibility_toggle", "back_closes_sheet", "synced_passkey_refused", "device_bound_passkey_accepted", "out_of_window_screen")
     return 0 if all(out.get(k) is True for k in need) and not out["console_errors"] else 1
 
 
