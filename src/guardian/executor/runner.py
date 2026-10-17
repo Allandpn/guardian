@@ -265,6 +265,7 @@ class Executor:
         r = {"kind": "executor", "ts": int(self.now()), "canary_set": bool(self.cfg.canary),
              "ctrs": self.consumer.last_ctr, "temp": self.state.data["temp"][:100],
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
+             "roles": {g: v.role for g, v in self.consumer.trust.guardians.items()},
              "executed": self.executed[-50:]}
         try:
             allow, deny = self._entries("allow"), self._entries("deny")

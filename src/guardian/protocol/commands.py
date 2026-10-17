@@ -19,14 +19,18 @@ T_ADD_GUARDIAN = "add_guardian"
 T_ADD_CREDENTIAL = "add_credential"
 T_REMOVE_GUARDIAN = "remove_guardian"
 T_REMOVE_CREDENTIAL = "remove_credential"
-TRUST_TYPES = {T_ADD_GUARDIAN, T_ADD_CREDENTIAL, T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL}
-# Pedem a assinatura de dois guardiões-mor distintos (se houver dois ou mais).
-TWO_SIG_TYPES = {T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL}
+T_SET_ROLE = "set_role"
+TRUST_TYPES = {T_ADD_GUARDIAN, T_ADD_CREDENTIAL, T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL, T_SET_ROLE}
+# Pedem a assinatura de dois guardiões-mor distintos (se houver dois ou mais) ENQUANTO NÃO EXISTE UM MESTRE (modo antigo).
+# Com mestre, quem mexe em guardiões é só ele, sozinho (veja docs/PAPEIS.md).
+TWO_SIG_TYPES = {T_REMOVE_GUARDIAN, T_REMOVE_CREDENTIAL, T_SET_ROLE}
 
 # Papéis. O papel fica fixado na confiança de cada consumidor, junto com as passkeys (veja docs/PAPEIS.md).
-ROLE_ADMIN = "admin"
-ROLE_DOMAINS = "domains"
-ROLES = {ROLE_ADMIN, ROLE_DOMAINS}
+ROLE_MASTER = "master"    # guardião-mestre: inclui e remove guardiões (inclusive outro mestre), sozinho; tem tudo do guardião-mor
+ROLE_ADMIN = "admin"      # guardião-mor: tudo, menos incluir e remover guardiões
+ROLE_DOMAINS = "domains"  # guardião: domínios e apps
+ROLES = {ROLE_MASTER, ROLE_ADMIN, ROLE_DOMAINS}
+ADMINISH = {ROLE_MASTER, ROLE_ADMIN}  # papéis com poderes de guardião-mor
 # O que um guardião pode assinar (além de add_credential para si mesmo).
 DOMAIN_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"}
 # Aprovar app novo e revogar app (o que ele mesmo aprovou, pela tela) também são do guardião comum (decisão de 2026-10-16);
@@ -91,7 +95,11 @@ class Trust:
                       for g, v in d.get("guardians", {}).items()})
 
     def admins(self) -> set:
-        return {g for g, v in self.guardians.items() if v.role == ROLE_ADMIN}
+        """Guardiões com poderes de guardião-mor (inclui o mestre)."""
+        return {g for g, v in self.guardians.items() if v.role in ADMINISH}
+
+    def masters(self) -> set:
+        return {g for g, v in self.guardians.items() if v.role == ROLE_MASTER}
 
 
 def _bool(b) -> bool:
@@ -155,9 +163,12 @@ def verify_sigs(trust: Trust, payload: bytes, sigs: list) -> set:
     return signers
 
 
-def required_signers(trust: Trust, cmd_type: str) -> int:
-    """Quantos guardiões-mor precisam assinar (comandos de domínio e aprovar app: o autor basta)."""
-    return 2 if cmd_type in TWO_SIG_TYPES and len(trust.admins()) >= 2 else 1
+def required_signers(trust: Trust, cmd: dict) -> int:
+    """Quantos guardiões-mor precisam assinar. Se o autor é o mestre, ele basta; senão vale o modo antigo (dois, se houver dois)."""
+    author = trust.guardians.get(cmd["guardian"])
+    if author is not None and author.role == ROLE_MASTER:
+        return 1
+    return 2 if cmd["type"] in TWO_SIG_TYPES and len(trust.admins()) >= 2 else 1
 
 
 def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
@@ -173,18 +184,29 @@ def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
     t = cmd["type"]
     if t in GUARDIAN_TYPES:
         return author
-    if author.role != ROLE_ADMIN:
-        if t == T_ADD_CREDENTIAL and cmd["args"].get("id") == cmd["guardian"]:
-            return author
+    if t == T_ADD_CREDENTIAL and cmd["args"].get("id") == cmd["guardian"]:
+        return author  # qualquer guardião inclui passkey para si mesmo
+    if author.role not in ADMINISH:
         raise CommandError("o guardião não pode mandar este comando")
+    if t in TRUST_TYPES and author.role != ROLE_MASTER:
+        tg = trust.guardians.get(cmd["args"].get("id"))
+        target = tg.role if tg else None
+        promotion = t == T_SET_ROLE and cmd["args"].get("role") == ROLE_MASTER
+        # Sem mestre: modo antigo, e a única mudança de papel possível é promover um guardião-mor a mestre.
+        # (Com mestre, a promoção que ainda está em andamento nos outros destinos continua valendo: o alvo já é mestre aqui.)
+        if trust.masters():
+            if not (promotion and target == ROLE_MASTER):
+                raise CommandError("só o guardião-mestre inclui, remove ou muda guardiões")
+        elif t == T_SET_ROLE and not (promotion and target == ROLE_ADMIN):
+            raise CommandError("sem mestre, só dá para promover um guardião-mor a mestre")
     return author
 
 
 def authorize(trust: Trust, cmd: dict, signers: set, now: float | None = None) -> None:
     author = check_author(trust, cmd, now)
-    if cmd["type"] in GUARDIAN_TYPES or author.role != ROLE_ADMIN:
+    if cmd["type"] in GUARDIAN_TYPES or author.role not in ADMINISH:
         return
-    if len(signers & trust.admins()) < required_signers(trust, cmd["type"]):
+    if len(signers & trust.admins()) < required_signers(trust, cmd):
         raise CommandError("faltam assinaturas de outro guardião-mor")
 
 
@@ -249,8 +271,18 @@ class Consumer:
                     raise CommandError("guardião inexistente")
                 if self.trust.admins() == {a["id"]}:
                     raise CommandError("não remove o último guardião-mor")
+                if self.trust.masters() == {a["id"]}:
+                    raise CommandError("não remove o último mestre")
                 del self.trust.guardians[a["id"]]
                 self.last_ctr.pop(a["id"], None)
+            elif t == T_SET_ROLE:
+                g = self.trust.guardians.get(a["id"])
+                role = _role(a["role"])
+                if g is None:
+                    raise CommandError("guardião inexistente")
+                if self.trust.masters() == {a["id"]} and role != ROLE_MASTER:
+                    raise CommandError("não rebaixa o último mestre")
+                g.role = role
             else:
                 raise CommandError("não é comando de confiança")
         except KeyError as e:

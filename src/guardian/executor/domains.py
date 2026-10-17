@@ -24,6 +24,18 @@ _PREFIX = r"^([a-zA-Z0-9-]+\.)*"
 _SHAPE = re.compile(r"^\^\(\[a-zA-Z0-9-\]\+\\\.\)\*((?:[a-z0-9-]+\\\.)+[a-z0-9-]+)\$$")
 
 
+# Segundo nível de domínios de país (com.br, co.uk, gov.cn...): o sufixo público tem duas partes. Heurística sem lista pública.
+_SLD = {"com", "net", "org", "gov", "edu", "co", "ac", "or", "ne", "go", "mil", "ltd", "plc", "sch", "nom", "ind", "firm", "gob"}
+
+
+def is_public_suffix(domain: str) -> bool:
+    """O domínio é só um sufixo público (cn, com.br, co.uk)? Nunca se libera isso: abriria um país ou uma categoria inteira."""
+    parts = domain.split(".")
+    if len(parts) < 2:
+        return True
+    return len(parts) == 2 and len(parts[1]) == 2 and parts[0] in _SLD
+
+
 def rule_domain(domain: str) -> str:
     """O domínio que a regra cobre: sem o "www." da frente (www.science.org e science.org são o mesmo site)."""
     d = normalize(domain)

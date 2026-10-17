@@ -165,6 +165,65 @@ class CommandTests(unittest.TestCase):
         del j["guardians"]["ana"]["role"]
         self.assertEqual(Trust.from_json(j).guardians["ana"].role, "admin")
 
+    def test_master_role(self):
+        mst, dom = FakeAuthenticator(RP, ORIGIN), FakeAuthenticator(RP, ORIGIN)
+        trust = trust_with(("ana", self.a), ("bia", self.b))
+        trust.guardians["mel"] = Guardian("Mel", {mst.cred_id_b64: b64.enc(mst.spki)}, "master")
+        trust.guardians["dora"] = Guardian("Dora", {dom.cred_id_b64: b64.enc(dom.spki)}, "domains")
+
+        def ok(author, auth, type_, args=None, *more):
+            p = command("dev1", author, 1, type_, args)
+            return verify_envelope(trust, envelope(p, auth.sign_command(author, p), *[a.sign_command(g, p) for g, a in more]))
+
+        # o mestre inclui e remove guardiões sozinho, inclusive outro mestre
+        ok("mel", mst, "add_guardian", {"id": "novo", "name": "Novo", "cred": "c", "spki": "s", "role": "master", "allow_sync": True})
+        ok("mel", mst, "remove_guardian", {"id": "bia"})
+        ok("mel", mst, "remove_credential", {"id": "dora", "cred": "c"})
+        # tem tudo do guardião-mor
+        ok("mel", mst, "set_config", {"patch": {}})
+        ok("mel", mst, "approve_app", {"pkg": "x"})
+        # o guardião-mor faz tudo, menos mexer em guardiões, nem com a assinatura de outro guardião-mor
+        ok("ana", self.a, "set_config", {"patch": {}})
+        for t, args in (("add_guardian", {"id": "z", "name": "Z", "cred": "c", "spki": "s", "role": "admin", "allow_sync": True}),
+                        ("remove_guardian", {"id": "mel"}), ("remove_credential", {"id": "bia", "cred": "c"}),
+                        ("add_credential", {"id": "bia", "cred": "c", "spki": "s"}), ("set_role", {"id": "ana", "role": "master"})):
+            with self.assertRaises(CommandError, msg=t):
+                ok("ana", self.a, t, args)
+            with self.assertRaises(CommandError, msg=t + " 2 assinaturas"):
+                ok("ana", self.a, t, args, ("bia", self.b))
+        ok("ana", self.a, "add_credential", {"id": "ana", "cred": "c2", "spki": "s"})  # a própria passkey, qualquer um
+        # o guardião comum continua como antes
+        with self.assertRaises(CommandError):
+            ok("dora", dom, "remove_guardian", {"id": "bia"})
+        # o último mestre não sai nem é rebaixado
+        c = Consumer("dev1", trust)
+        c.apply_trust({"type": "remove_guardian", "args": {"id": "bia"}})
+        with self.assertRaises(CommandError):
+            c.apply_trust({"type": "remove_guardian", "args": {"id": "mel"}})
+        with self.assertRaises(CommandError):
+            c.apply_trust({"type": "set_role", "args": {"id": "mel", "role": "admin"}})
+        c.apply_trust({"type": "set_role", "args": {"id": "ana", "role": "master"}})
+        self.assertEqual(c.trust.guardians["ana"].role, "master")
+
+    def test_promotion_to_master_uses_the_old_rule(self):
+        """Sem mestre vale o modo antigo: dois guardiões-mor promovem um deles a mestre. É o único caminho para o primeiro mestre."""
+        trust = trust_with(("ana", self.a), ("bia", self.b))
+        p = command("dev1", "ana", 1, "set_role", {"id": "bia", "role": "master"})
+        with self.assertRaises(CommandError):
+            verify_envelope(trust, envelope(p, self.a.sign_command("ana", p)))  # uma assinatura só não basta
+        verify_envelope(trust, envelope(p, self.a.sign_command("ana", p), self.b.sign_command("bia", p)))
+        for bad in ({"id": "bia", "role": "admin"}, {"id": "bia", "role": "domains"}, {"id": "nao", "role": "master"}):
+            q = command("dev1", "ana", 2, "set_role", bad)
+            with self.assertRaises(CommandError, msg=str(bad)):
+                verify_envelope(trust, envelope(q, self.a.sign_command("ana", q), self.b.sign_command("bia", q)))
+        # nos destinos que ainda não aplicaram, o mesmo comando continua valendo depois de o gateway já ter promovido o alvo
+        trust.guardians["bia"].role = "master"
+        verify_envelope(trust, envelope(p, self.a.sign_command("ana", p), self.b.sign_command("bia", p)))
+        # a partir daí, o guardião-mor não promove mais ninguém
+        q = command("dev1", "ana", 3, "set_role", {"id": "ana", "role": "master"})
+        with self.assertRaises(CommandError):
+            verify_envelope(trust, envelope(q, self.a.sign_command("ana", q), self.b.sign_command("bia", q)))
+
     def test_consumer_json_roundtrip(self):
         c = Consumer("dev1", self.trust, {"ana": 4})
         c2 = Consumer.from_json(json.loads(json.dumps(c.to_json())))

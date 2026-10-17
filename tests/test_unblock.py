@@ -183,6 +183,23 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(st, 400)
         self.assertIn("canário", r["error"])
 
+    def test_09c_parent_domain_can_be_requested_but_never_a_suffix(self):
+        now = int(time.time())
+        self.env.store.merge_blocked(self.dev, [{"domain": "advertise.cloudlinks.cn", "src": "own", "list": "", "cname": 0, "count": 1, "first": now, "last": now},
+                                                {"domain": "x.shop.com.br", "src": "own", "list": "", "cname": 0, "count": 1, "first": now, "last": now}])
+
+        def ask(*doms):
+            return self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests", {"kind": "unblock", "domains": list(doms)})
+
+        self.assertEqual(ask("cloudlinks.cn")[0], 200)          # o pai do que foi bloqueado
+        self.assertEqual(ask("shop.com.br")[0], 200)
+        self.assertEqual(ask("outro.cn")[0], 400)               # não é pai de nada bloqueado
+        self.assertEqual(ask("com.br")[0], 400)                 # sufixo público
+        self.assertEqual(ask("loudlinks.cn")[0], 400)           # sufixo de texto não é pai
+        self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/report", {
+            "kind": "device", "snapshot": {"canary": "teste.cloudlinks.cn"}, "trust": {}, "ctrs": {}})
+        self.assertEqual(ask("cloudlinks.cn")[0], 400)          # um pai que cobre o canário também não
+
     def test_10_blocked_cap_and_retention(self):
         items = [{"domain": f"d{i}.exemplo.com", "src": "list", "list": "", "cname": 0, "count": 1, "first": int(NOW) - 5,
                   "last": int(NOW) - 5} for i in range(150)]

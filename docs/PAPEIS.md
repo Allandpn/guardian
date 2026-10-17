@@ -1,3 +1,28 @@
+# Papéis: guardião-mestre, guardião-mor e guardião
+
+## Guardião-mestre (2026-10-17)
+
+Um terceiro papel, `master`, fecha a brecha de um guardião-mor criar outro (ele mesmo, com outra passkey) para juntar duas assinaturas e remover a pessoa de confiança.
+
+| | Mestre | Guardião-mor | Guardião |
+|---|---|---|---|
+| Incluir, remover e promover guardiões (`add_guardian`, `remove_guardian`, `remove_credential`, `set_role`, `add_credential` de outro) e convidar | sim, **sozinho** | não | não |
+| Tudo o mais (regras, PIN, janelas, domínios, apps, ativar, parear aparelho) | sim | sim | só domínios e apps |
+| `add_credential` para si mesmo | sim | sim | sim |
+
+- Com mestre, nenhuma assinatura de guardião-mor ou guardião vale para mexer em guardiões, nem junta de duas.
+- Não existe remover ou rebaixar o **último mestre**. O ideal é ter dois (a pessoa de confiança e uma reserva dela), um incluindo o outro.
+- No aparelho, remover um guardião-mor ou mestre continua passando pelo atraso (24 h). Remover um guardião comum vale na hora.
+- Janela de horário e tipo de passkey (`window`, `allow_sync`) seguem imutáveis por guardião, também para o mestre.
+
+### Migração (como nasce o primeiro mestre)
+
+Enquanto **não existe mestre**, vale o modo antigo: incluir e remover guardiões é do guardião-mor, com duas assinaturas se houver dois. A única mudança de papel possível nesse modo é `set_role {id, role: "master"}` de um guardião-mor, também com duas assinaturas, enviada a cada aparelho e ao executor. O gateway muda o papel no próprio banco quando o comando fica pronto. Depois da promoção a regra antiga some.
+
+O quórum depende do **autor**: autor mestre = uma assinatura; senão vale o modo antigo. Por isso uma promoção que ainda está em andamento em outros destinos continua válida depois de o gateway já ter promovido o alvo.
+
+---
+
 # Papéis: guardião-mor e guardião
 
 Nos textos e telas, o papel `admin` é o **guardião-mor** e o papel `domains` é o **guardião**. Os nomes internos (`admin`, `domains`) não mudam.

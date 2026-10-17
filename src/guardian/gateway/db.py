@@ -118,7 +118,13 @@ class Store:
         return self.one("SELECT * FROM guardians WHERE id=?", (gid,))
 
     def admin_count(self) -> int:
-        return self.one("SELECT COUNT(*) c FROM guardians WHERE role='admin'")["c"]
+        return self.one("SELECT COUNT(*) c FROM guardians WHERE role IN ('admin','master')")["c"]
+
+    def master_count(self) -> int:
+        return self.one("SELECT COUNT(*) c FROM guardians WHERE role='master'")["c"]
+
+    def set_role(self, gid: str, role: str) -> None:
+        self.x("UPDATE guardians SET role=? WHERE id=?", (role, gid))
 
     def set_see(self, gid: str, see: dict):
         self.x("UPDATE guardians SET see=? WHERE id=?", (json.dumps(see), gid))
@@ -362,6 +368,12 @@ class Store:
     def blocked_has(self, dev: str, domain: str) -> bool:
         return self.one("SELECT 1 FROM blocked WHERE dev=? AND domain=? AND last>=?",
                         (dev, domain, int(time.time()) - BLOCKED_KEEP_S)) is not None
+
+    def blocked_under(self, dev: str, domain: str) -> bool:
+        """O domínio foi bloqueado ou é o pai de algo bloqueado (cloudlinks.cn para advertise.cloudlinks.cn).
+        `domain` já vem normalizado (letras, dígitos, hífen e ponto), então não tem curinga de LIKE."""
+        return self.one("SELECT 1 FROM blocked WHERE dev=? AND (domain=? OR domain LIKE ?) AND last>=?",
+                        (dev, domain, "%." + domain, int(time.time()) - BLOCKED_KEEP_S)) is not None
 
     def add_unblock_request(self, dev: str, domains: list[str]) -> int | None:
         """Cria o pedido com os domínios que ainda não têm pedido aberto. None se nada novo ou se há pedidos demais."""

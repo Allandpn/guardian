@@ -84,7 +84,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
+  remove_guardian: 'remover guardião', set_role: 'promover a mestre', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -127,7 +127,12 @@ async function confirmSend(dev, type, args, spec) {
   return (await sendCommand(dev, type, args)) || true;
 }
 const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
-const isAdmin = () => !!me && me.guardian.role === 'admin';
+const isAdmin = () => !!me && (me.guardian.role === 'admin' || me.guardian.role === 'master');   // guardião-mor ou mestre
+const isMaster = () => !!me && me.guardian.role === 'master';
+const hasMaster = () => !!me && Object.values(me.trust || {}).some((g) => g.role === 'master');
+/** Incluir, remover e promover guardiões: só o mestre. Enquanto não existe mestre, vale o modo antigo (guardião-mor, com duas assinaturas). */
+const canManage = () => isMaster() || (isAdmin() && !hasMaster());
+const roleLabel = (r) => (r === 'master' ? 'mestre' : r === 'domains' ? 'guardião' : 'guardião-mor');
 const canSee = (k) => isAdmin() || !!(me && me.guardian.see && me.guardian.see[k]);
 const SEE_LABELS = [['devices', 'Estado dos aparelhos'], ['rules', 'Regras (só leitura)'], ['apps', 'Apps (só leitura)'], ['history', 'Histórico completo']];
 /** Confiança que vai na string de pareamento: aparelho e executor conhecem todos os guardiões (o comum aprova apps, o aparelho confere a assinatura). */
@@ -272,7 +277,7 @@ function guardianCard(id, g, { sel, href, onclick } = {}) {
   const dom = g.role === 'domains';
   return h('a', { class: 'card' + (sel ? ' sel' : ''), href: href || '#/guardians', onclick },
     h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()), h('strong', {}, g.name), id === me.guardian.id ? chip('você') : null,
-      h('span', { class: 'sp' }), chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok')),
+      h('span', { class: 'sp' }), chip(roleLabel(g.role), dom ? '' : 'ok')),
     h('div', { class: 'muted', style: 'margin-top:6px' }, `${n} passkey${n === 1 ? '' : 's'} · ${g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'}${g.window ? ` · ${describeWindow(g.window)}` : ''}`));
 }
 
@@ -317,7 +322,7 @@ function guardianInfoNodes(id, g) {
   const dom = g.role === 'domains';
   const seen = SEE_LABELS.filter(([k]) => see[k]).map(([, label]) => label);
   return [h('div', { class: 'sec' }, 'Perfil'), h('div', { class: 'card' }, kvRows([
-    ['Papel', dom ? 'guardião' : 'guardião-mor'], ['Passkeys', String(creds.length)], ['Sincronização', g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'],
+    ['Papel', roleLabel(g.role)], ['Passkeys', String(creds.length)], ['Sincronização', g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'],
     ['Horário', describeWindow(g.window)], ...(dom ? [['Pode ver além de domínios', seen.length ? seen.join(', ') : 'nada']] : []),
   ], true)),
   h('div', { class: 'sec' }, 'Passkeys'), h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, creds.map((cred, i) => {
@@ -369,7 +374,7 @@ async function inicioView() {
     const d = devices.find((x) => x.id === selected);
     const ge = gs.find(([id]) => id === selected);
     if (d) pane = h('div', { class: 'pane' }, paneHead(d.name, d.kind === 'executor' ? 'Pi-hole' : 'Aparelho'), d.kind === 'executor' ? executorInfoNodes(d, now, devices) : deviceInfoNodes(d, now));
-    else if (ge) pane = h('div', { class: 'pane' }, paneHead(ge[1].name, ge[1].role === 'domains' ? 'Guardião' : 'Guardião-mor'), guardianInfoNodes(ge[0], ge[1]));
+    else if (ge) pane = h('div', { class: 'pane' }, paneHead(ge[1].name, roleLabel(ge[1].role).replace(/^./, (c) => c.toUpperCase())), guardianInfoNodes(ge[0], ge[1]));
   }
   show(top('Início'), h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)));
   timer = setTimeout(autoRefresh, 20000);
@@ -992,16 +997,28 @@ async function guardiansView() {
       route();
     });
     const removeMor = act(async () => {
-      if (!(await sheet({ title: `Pedir a remoção de ${g.name}?`, rows: [['Ação', 'Remover guardião-mor'], ['Guardião', g.name], ['Aparelhos', String(devices.length)]], effect: 'dois guardiões-mor + espera', effectKind: 'warn',
-        note: 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.', confirm: 'Assinar e pedir', danger: true }))) return;
+      const alone = isMaster();  // o mestre remove sozinho; sem mestre ainda vale o modo antigo (dois guardiões-mor)
+      if (!(await sheet({ title: `${alone ? 'Remover' : 'Pedir a remoção de'} ${g.name}?`, rows: [['Ação', `Remover ${roleLabel(g.role)}`], ['Guardião', g.name], ['Aparelhos', String(devices.length)]],
+        effect: alone ? 'vale após a espera de cada aparelho' : 'dois guardiões-mor + espera', effectKind: 'warn',
+        note: alone ? `Um toque de passkey por aparelho (${devices.length}). O acesso ao site acaba na hora; cada aparelho aplica depois da espera.` : 'Exige a co-assinatura do outro guardião-mor e passa pelo atraso de cada aparelho.',
+        confirm: alone ? 'Assinar e remover' : 'Assinar e pedir', danger: true }))) return;
       for (const d of devices) await sendCommand(d.id, 'remove_guardian', { id: gid });
+      if (alone) { await api('POST', `/v1/guardians/${gid}/remove`, {}); toast(`${g.name} removido.`); }
+      route();
+    });
+    const promote = act(async () => {
+      if (!(await sheet({ title: `Promover ${g.name} a mestre?`, rows: [['Guardião', g.name], ['Destinos', String(devices.length)]], effect: 'dois guardiões-mor', effectKind: 'warn',
+        note: `O mestre passa a ser o único que inclui e remove guardiões, sozinho. Um toque de passkey por destino (${devices.length}); depois o outro guardião-mor co-assina cada um. Só é possível enquanto não existe mestre.`,
+        confirm: 'Assinar e pedir', danger: true }))) return;
+      for (const d of devices) await sendCommand(d.id, 'set_role', { id: gid, role: 'master' });
       route();
     });
     return h('div', { class: 'card' },
       h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
-        h('div', { class: 'sp' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, h('strong', { style: 'font-size:16px' }, g.name), mineCard ? chip('você') : null, chip(dom ? 'guardião' : 'guardião-mor', dom ? '' : 'ok')),
+        h('div', { class: 'sp' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, h('strong', { style: 'font-size:16px' }, g.name), mineCard ? chip('você') : null, chip(roleLabel(g.role), dom ? '' : 'ok')),
           h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
-        mineCard ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') : h('button', { class: 'btn dangero', type: 'button', onclick: removeMor }, 'Remover')),
+        mineCard || !canManage() ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') : h('button', { class: 'btn dangero', type: 'button', onclick: removeMor }, 'Remover')),
+      !hasMaster() && g.role === 'admin' && isAdmin() ? h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn', type: 'button', onclick: promote }, 'Promover a mestre')) : null,
       h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
         g.window ? chip(describeWindow(g.window), 'warn') : chip('a qualquer hora')),
       h('details', { class: 'gdet', style: 'margin-top:10px', open: gOpen.has(gid), ontoggle: (e) => { if (e.target.open) gOpen.add(gid); else gOpen.delete(gid); } }, h('summary', {}, dom ? 'Passkeys e permissões' : 'Passkeys'),
@@ -1018,7 +1035,10 @@ async function guardiansView() {
             onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))] : null));
   };
 
-  show(top('Guardiões', { actions: h('a', { class: 'btn pri', href: '#/guardians/novo', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Convidar') }), h('div', { class: 'wrap' },
+  show(top('Guardiões', { actions: canManage() ? h('a', { class: 'btn pri', href: '#/guardians/novo', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Convidar') : null }), h('div', { class: 'wrap' },
+    !hasMaster() ? h('div', { class: 'card warnb' }, h('strong', {}, 'Ainda não há guardião-mestre'),
+      h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'O mestre é quem inclui e remove guardiões, sozinho; o guardião-mor faz o resto. Enquanto não existir um, incluir e remover guardiões exige dois guardiões-mor. Promova a pessoa de confiança em "Promover a mestre".')) : null,
+    hasMaster() && !isMaster() ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Só o guardião-mestre inclui, remove e propaga guardiões.')) : null,
     myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
       h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é o guardião-mor e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
       h('button', { class: 'btn pri', type: 'button', onclick: makeInviteLink(out, 'add_passkey') }, 'Cadastrar outra passkey')) : null,
@@ -1030,14 +1050,14 @@ async function guardiansView() {
       const m = missing(d);
       return h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, d.name), d.kind === 'executor' ? ' ' : null, d.kind === 'executor' ? chip('executor') : null,
         h('div', { class: 'muted', style: m.length ? 'color:var(--orange)' : '' }, m.length ? `ainda não confia em ${[...new Set(m.map((x) => x.g.name))].join(', ')}` : 'confia em todos os passkeys')),
-        m.length ? h('button', { class: 'btn pri', type: 'button', onclick: propagate(d) }, 'Propagar') : chip('ok', 'ok'));
+        m.length ? (canManage() ? h('button', { class: 'btn pri', type: 'button', onclick: propagate(d) }, 'Propagar') : chip('só o mestre propaga', 'warn')) : chip('ok', 'ok'));
     }) : h('p', { class: 'muted' }, 'Nenhum aparelho pareado.')),
     h('div', { class: 'sec' }, 'Co-assinaturas pendentes'),
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, aw.length ? aw.map((c) => h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, (devices.find((x) => x.id === c.dev) || { name: c.dev }).name),
       h('div', { class: 'muted' }, `${summarize(c.envelope)} · pedido de ${gname(c.guardian)}`)),
       c.can_cosign ? h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
         if (!(await sheet({ title: `Co-assinar: ${summarize(c.envelope)}?`, rows: [['Pedido de', gname(c.guardian)], ['Aparelho', (devices.find((x) => x.id === c.dev) || { name: c.dev }).name]],
-          effect: 'dois guardiões + espera', effectKind: 'warn', note: 'Remover um guardião exige a assinatura dos dois.', confirm: 'Co-assinar' }))) return;
+          effect: 'dois guardiões + espera', effectKind: 'warn', note: 'Esta ação exige a assinatura de dois guardiões-mor.', confirm: 'Co-assinar' }))) return;
         const sig = await signPayload(dec(c.envelope.payload));
         await api('POST', `/v1/commands/${c.id}/cosign`, { sig });
         toast('Co-assinado.');
@@ -1051,15 +1071,17 @@ async function guardiansView() {
 async function guardianInviteView() {
   me = await api('GET', '/v1/me');
   renderNav('guardians');
+  if (!canManage()) { show(top('Convidar guardião', { back: '#/guardians' }), h('div', { class: 'wrap' }, h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Só o guardião-mestre convida guardiões.')))); return; }
   const out = h('div', {});
   const nm = h('input', { class: 'inp', placeholder: 'Nome da pessoa', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião', value: inviteName, oninput: (e) => { inviteName = e.target.value; } });
-  const syncOn = inviteSync === null ? inviteRole === 'domains' : inviteSync;  // guardião-mor: só neste aparelho, a menos que se escolha o contrário
+  const syncOn = inviteSync === null ? inviteRole === 'domains' : inviteSync;  // guardião-mor e mestre: só neste aparelho, a menos que se escolha o contrário
   const step = (n, title) => h('div', { class: 'stephead' }, h('span', { class: 'stepn' }, String(n)), h('strong', {}, title));
   show(top('Convidar guardião', { back: '#/guardians' }), h('div', { class: 'wrap' },
     h('div', { class: 'card' }, step(1, 'Quem'), nm,
       h('div', { class: 'durs', role: 'group', 'aria-label': 'Papel do convidado' },
-        [['domains', 'Guardião (só domínios e apps)'], ['admin', 'Guardião-mor']].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
-      h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'admin' ? 'Controle completo. Use só para uma chave de reserva sua ou alguém que divide a administração com você.' :
+        [['domains', 'Guardião (só domínios e apps)'], ['admin', 'Guardião-mor'], ...(isMaster() ? [['master', 'Mestre']] : [])].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
+      h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'master' ? 'Inclui e remove guardiões, inclusive outro mestre, sozinho; e tem tudo do guardião-mor. Use para a pessoa de confiança e para a reserva dela.' :
+        inviteRole === 'admin' ? 'Faz tudo, menos incluir e remover guardiões: regras, PIN, janelas, domínios e apps.' :
         'Libera e bloqueia sites, responde às solicitações e aprova ou recusa apps. Não mexe em regras, PIN nem pessoas. O que mais ele pode ver você escolhe depois.')),
     h('div', { class: 'card' }, step(2, 'Passkey'),
       h('div', { class: 'durs', role: 'group', 'aria-label': 'Passkey sincronizável' },
@@ -1120,7 +1142,7 @@ async function contaView() {
         for (const c of miss) await sendCommand(ex.id, 'add_credential', { id: gid, cred: c, spki: creds[c] });
         route();
       }) }, 'Propagar ao executor')) : null,
-    ex && !exHave ? h('div', { class: 'card warnb' }, h('p', { style: 'margin:0' }, 'O executor ainda não confia em você. Peça ao guardião-mor para abrir Pessoas e tocar em Propagar.')) : null,
+    ex && !exHave ? h('div', { class: 'card warnb' }, h('p', { style: 'margin:0' }, 'O executor ainda não confia em você. Peça ao guardião-mestre para abrir Guardiões e tocar em Propagar.')) : null,
     h('div', { class: 'sec' }, 'O que você pode ver'),
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, ['Domínios', ...seen].join(' · ') + '. Quem define é o guardião-mor.')),
     h('div', { class: 'sec' }, 'Notificações neste aparelho'), await pushCard(),

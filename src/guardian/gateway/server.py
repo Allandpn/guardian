@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import serialization
 
 from ..protocol import b64, commands as cmds, devauth, tailnet, webauthn
+from ..executor.domains import is_public_suffix
 from ..executor.domains import normalize as normalize_domain
 from . import webpush
 from .alerts import Alerts, Notifier
@@ -339,9 +340,16 @@ class Gateway:
 
     def admin(self, req: Req) -> str:
         gid, role, _ = self.who(req)
-        if role != "admin":
+        if role not in cmds.ADMINISH:
             raise HttpError(403, "só o guardião-mor")
         return gid
+
+    def master(self, req: Req) -> str:
+        """Incluir e remover guardiões: só o mestre. Enquanto não existe mestre, vale o modo antigo (guardião-mor)."""
+        gid, role, _ = self.who(req)
+        if role == cmds.ROLE_MASTER or (role == cmds.ROLE_ADMIN and self.store.master_count() == 0):
+            return gid
+        raise HttpError(403, "só o guardião-mestre inclui, remove ou muda guardiões")
 
     def trust(self) -> cmds.Trust:
         return cmds.Trust(self.cfg.rp_id, self.cfg.origin,
@@ -476,9 +484,9 @@ class Gateway:
     def me(self, req):
         gid, role, see = self.who(req)
         g = self.store.guardian(gid)
-        others = {r["id"]: json.loads(r["see"] or "{}") for r in self.store.q("SELECT id, see FROM guardians")} if role == "admin" else {}
+        others = {r["id"]: json.loads(r["see"] or "{}") for r in self.store.q("SELECT id, see FROM guardians")} if role in cmds.ADMINISH else {}
         creds = {r["cred"]: {"created": r["created"], "be": bool(r["be"])} for guardian in self.store.trust_dict() for r in self.store.credentials_of(guardian)
-                 if role == "admin" or guardian == gid}
+                 if role in cmds.ADMINISH or guardian == gid}
         return 200, {"guardian": {"id": gid, "name": g["name"], "role": role, "see": see}, "see_of": others, "cred_info": creds, "now": int(time.time()),
                      "trust": self.store.trust_dict(),
                      "rp_id": self.cfg.rp_id, "origin": self.cfg.origin}, {}
@@ -489,11 +497,13 @@ class Gateway:
         kind = d.get("kind")
         if kind not in ("new_guardian", "add_passkey"):
             raise HttpError(400, "tipo de convite inválido")
-        if kind == "new_guardian" and role != "admin":
-            raise HttpError(403, "só o guardião-mor convida")
+        if kind == "new_guardian":
+            self.master(req)
         new_role = d.get("role", "domains")
         if new_role not in cmds.ROLES:
             raise HttpError(400, "papel inválido")
+        if new_role == cmds.ROLE_MASTER and role != cmds.ROLE_MASTER:
+            raise HttpError(403, "só um mestre convida outro mestre (sem mestre, promova um guardião-mor)")
         allow_sync = d.get("allow_sync", True)
         if not isinstance(allow_sync, bool):
             raise HttpError(400, "valor inválido para passkey sincronizável")
@@ -528,7 +538,7 @@ class Gateway:
                  "refused": refused.get(r["id"], []), "approved_by": approved_by.get(r["id"], {}), "refused_by": refused_by.get(r["id"], {})}
             if report and report.get("pendingApps") and asked.get(r["id"]):
                 report["pendingApps"] = [{**a, "asked": True} if a.get("pkg") in asked[r["id"]] else a for a in report["pendingApps"] if isinstance(a, dict)]
-            if role != "admin" and r["kind"] != "executor":
+            if role not in cmds.ADMINISH and r["kind"] != "executor":
                 # apps pendentes todo guardião vê (ele também aprova e recusa); o resto depende do que o guardião-mor liberou
                 keep = (STATUS_KEYS if see["devices"] else set()) | (RULE_KEYS if see["rules"] else set()) | (APP_KEYS if see["apps"] else {"pendingApps"})
                 d["report"] = {k: v for k, v in report.items() if k in keep} if report and keep else None
@@ -572,7 +582,7 @@ class Gateway:
             raise HttpError(403, str(e))
         if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
             raise HttpError(429, "fila cheia")
-        ready = cmd["type"] in cmds.GUARDIAN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd["type"])
+        ready = cmd["type"] in cmds.GUARDIAN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd)
         cid = self.store.enqueue(dev, gid, cmd["ctr"], {"payload": env["payload"], "sigs": env["sigs"]}, ready)
         if cid is None:
             raise HttpError(409, "contador repetido")
@@ -584,8 +594,18 @@ class Gateway:
             elif cmd["type"] == "revoke_app":
                 self.store.drop_approval(dev, pkg)
         if ready:
+            self._after_ready(cmd, gid)
             self._wake()
         return 200, {"id": cid, "status": "ready" if ready else "awaiting"}, {}
+
+    def _after_ready(self, cmd: dict, by: str) -> None:
+        """Efeitos no próprio gateway de um comando que já tem as assinaturas: o gateway guarda o papel de cada guardião."""
+        if cmd["type"] == cmds.T_SET_ROLE:
+            a = cmd["args"]
+            g = self.store.guardian(a.get("id"))
+            if g and a.get("role") in cmds.ROLES and not (g["role"] == cmds.ROLE_MASTER and a["role"] != cmds.ROLE_MASTER and self.store.master_count() <= 1):
+                self.store.set_role(a["id"], a["role"])
+                self.store.audit(None, "guardian", f"{by} mudou o papel de {a['id']} para {a['role']}")
 
     def _wake(self):
         with self.cond:
@@ -594,7 +614,7 @@ class Gateway:
     def awaiting(self, req):
         gid, role, _ = self.who(req)
         out = []
-        if role != "admin":
+        if role not in cmds.ADMINISH:
             return 200, {"commands": out}, {}
         for r in self.store.awaiting():
             env = json.loads(r["envelope"])
@@ -626,10 +646,11 @@ class Gateway:
             cmds.check_author(trust, cmd)
         except cmds.CommandError as e:
             raise HttpError(400, str(e))
-        if len(signers & trust.admins()) < cmds.required_signers(trust, cmd["type"]):
+        if len(signers & trust.admins()) < cmds.required_signers(trust, cmd):
             raise HttpError(400, "ainda faltam assinaturas")
         self.store.make_ready(row["id"], {"payload": env["payload"], "sigs": sigs})
         self.store.audit(row["dev"], "queued", f"{gid} co-assinou {cmd['type']}")
+        self._after_ready(cmd, gid)
         self._wake()
         return 200, {"status": "ready"}, {}
 
@@ -638,7 +659,7 @@ class Gateway:
         q = parse_qs(req.query)
         limit = min(int(q.get("limit", ["100"])[0]) if q.get("limit", ["100"])[0].isdigit() else 100, 500)
         rows = [dict(r) for r in self.store.audit_list(limit)]
-        if role != "admin" and not see["history"]:  # sem permissão: só o que é de domínio (executor e pedidos)
+        if role not in cmds.ADMINISH and not see["history"]:  # sem permissão: só o que é de domínio (executor e pedidos)
             ex = {r["id"] for r in self.store.q("SELECT id FROM devices WHERE kind='executor'")}
             rows = [r for r in rows if r["dev"] in ex or r["kind"] == "request"]
         return 200, {"items": rows}, {}
@@ -646,7 +667,7 @@ class Gateway:
     def set_see(self, req, gid):
         self.admin(req)
         g = self.store.guardian(gid)
-        if not g or g["role"] == "admin":
+        if not g or g["role"] in cmds.ADMINISH:
             raise HttpError(404, "guardião não encontrado")
         d = req.json()
         see = {k: bool(d.get(k)) for k in SEE_FLAGS}
@@ -655,7 +676,7 @@ class Gateway:
         return 200, {"see": see}, {}
 
     def remove_credential(self, req, gid):
-        me = self.admin(req)
+        me = self.master(req)
         cred = _str(req.json(), "cred", 1400)
         if not self.store.delete_credential(gid, cred):
             raise HttpError(400, "passkey inexistente, ou é a última do guardião (remova o guardião)")
@@ -665,12 +686,12 @@ class Gateway:
         return 200, {"ok": True}, {}
 
     def remove_guardian(self, req, gid):
-        me = self.admin(req)
+        me = self.master(req)
         g = self.store.guardian(gid)
         if not g:
             raise HttpError(404, "guardião não encontrado")
-        if gid == me or (g["role"] == "admin" and self.store.admin_count() <= 1):
-            raise HttpError(400, "não remove o último guardião-mor nem a si mesmo")
+        if gid == me or (g["role"] in cmds.ADMINISH and self.store.admin_count() <= 1) or (g["role"] == cmds.ROLE_MASTER and self.store.master_count() <= 1):
+            raise HttpError(400, "não remove o último guardião-mor, o último mestre nem a si mesmo")
         self.store.delete_guardian(gid)
         with self.lock:
             self.sessions = {k: v for k, v in self.sessions.items() if v[0] != gid}
@@ -750,7 +771,7 @@ class Gateway:
         row = self.store.request(int(rid))
         if not row:
             raise HttpError(404, "pedido não encontrado")
-        if role != "admin" and row["kind"] not in ("domain", "unblock"):
+        if role not in cmds.ADMINISH and row["kind"] not in ("domain", "unblock"):
             raise HttpError(403, "só o guardião-mor")
         self.store.dismiss_request(int(rid))
         return 200, {"ok": True}, {}
@@ -960,9 +981,12 @@ class Gateway:
                 doms = sorted({normalize_domain(x) for x in raw})
             except ValueError:
                 raise HttpError(400, "domínio inválido")
-            if self._canary(dev) in doms:
+            canary = self._canary(dev)
+            if canary and any(canary == x or canary.endswith("." + x) for x in doms):  # nem ele, nem um pai que o cubra
                 raise HttpError(400, "o domínio-canário não pode ser liberado")
-            if not all(self.store.blocked_has(dev, x) for x in doms):
+            if any(is_public_suffix(x) for x in doms):
+                raise HttpError(400, "não dá para pedir um sufixo inteiro (como cn ou com.br)")
+            if not all(self.store.blocked_under(dev, x) for x in doms):  # o domínio bloqueado ou o pai dele (o app deixa encurtar)
                 raise HttpError(400, "só dá para pedir domínios que foram bloqueados")
             rid = self.store.add_unblock_request(dev, doms)
             if rid is None:
