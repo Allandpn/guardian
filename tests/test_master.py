@@ -63,6 +63,25 @@ class MasterRole(unittest.TestCase):
         self.assertEqual(self.c2.call("POST", f"/v1/guardians/{self.g2}/remove", {})[0], 400)  # nem o último mestre
         self.assertEqual(self.c2.call("POST", f"/v1/guardians/{self.gid}/remove", {})[0], 200)
 
+    def test_02_master_demotes_but_never_the_last_master(self):
+        c3, a3, g3 = self.env.register_guardian("Reserva")  # entra como guardião-mor (convite padrão)
+        # o mestre (Gandalf) rebaixa um guardião-mor a guardião, sozinho
+        (st, r, _), _ = self.env.sign_post(self.c2, self.a2, self.g2, self.dev, "set_role", {"id": g3, "role": "domains"})
+        self.assertEqual((st, r["status"]), (200, "ready"), r)
+        self.assertEqual(self.role_of(self.c2, g3), "domains")
+        self.assertEqual(c3.call("POST", "/v1/invites", {"kind": "new_guardian", "name": "X"})[0], 403)
+        # promove de volta e rebaixa o mestre a guardião-mor: o último mestre fica
+        for role in ("admin", "master"):
+            (st, r, _), _ = self.env.sign_post(self.c2, self.a2, self.g2, self.dev, "set_role", {"id": g3, "role": role})
+            self.assertEqual(st, 200, r)
+        self.assertEqual(self.role_of(self.c2, g3), "master")
+        (st, r, _), _ = self.env.sign_post(self.c2, self.a2, self.g2, self.dev, "set_role", {"id": self.g2, "role": "admin"})
+        self.assertEqual(st, 200, r)  # existem dois mestres: pode
+        self.assertEqual(self.role_of(c3, self.g2), "admin")
+        (st, r, _), _ = self.env.sign_post(c3, a3, g3, self.dev, "set_role", {"id": g3, "role": "domains"})
+        self.assertEqual(st, 200, r)  # o mestre que sobrou tenta se rebaixar: o gateway não aplica
+        self.assertEqual(self.role_of(c3, g3), "master")
+
 
 if __name__ == "__main__":
     unittest.main()

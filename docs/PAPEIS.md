@@ -99,3 +99,7 @@ Definidos **na criação** do guardião (no convite) e **não mudam**: não exis
 Efeito prático para quem se protege: a passkey do computador do trabalho (Windows Hello, sem sincronizar) só existe naquele computador
 e só vale em dia útil das 12h às 17h; em casa, à noite, nem com acesso remoto ao computador do trabalho ela vale.
 Uma segunda passkey do mesmo guardião, cadastrada no computador de casa (Windows Hello), tem a mesma regra: serve de reserva sem reabrir o buraco da noite.
+
+## Rebaixar (2026-10-17)
+
+O mestre muda o papel de qualquer guardião sozinho (`set_role`): mestre → guardião-mor → guardião, e de volta. Não rebaixa o último mestre. Sem mestre, só existe a promoção de um guardião-mor a mestre (duas assinaturas). Na tela Guardiões, os botões "Promover a mestre", "Rebaixar a guardião-mor" e "Rebaixar a guardião" ficam no cartão. O app dos aparelhos já aceita (não precisa reinstalar).

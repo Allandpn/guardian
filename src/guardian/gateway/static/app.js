@@ -84,7 +84,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', set_role: 'promover a mestre', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
+  remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -1006,20 +1006,30 @@ async function guardiansView() {
       if (alone) { await api('POST', `/v1/guardians/${gid}/remove`, {}); toast(`${g.name} removido.`); }
       route();
     });
-    const promote = act(async () => {
-      const alone = isMaster();  // com mestre, ele promove sozinho; sem mestre, dois guardiões-mor
-      if (!(await sheet({ title: `Promover ${g.name} a mestre?`, rows: [['Guardião', g.name], ['Destinos', String(devices.length)]], effect: alone ? 'vale na hora' : 'dois guardiões-mor', effectKind: 'warn',
-        note: `O mestre é quem inclui e remove guardiões, sozinho. Um toque de passkey por destino (${devices.length})${alone ? '.' : '; depois o outro guardião-mor co-assina cada um.'}`,
-        confirm: alone ? 'Assinar e promover' : 'Assinar e pedir', danger: true }))) return;
-      for (const d of devices) await sendCommand(d.id, 'set_role', { id: gid, role: 'master' });
+    /** Muda o papel de um guardião (promover ou rebaixar) em cada destino que o conhece; o gateway muda o dele quando o comando fica pronto. */
+    const setRole = (role) => act(async () => {
+      const alone = isMaster();  // com mestre, ele muda sozinho; sem mestre, só a promoção a mestre, com dois guardiões-mor
+      const knows = devices.filter((d) => ((d.report && d.report.trust) || {})[gid]);
+      const dests = knows.length ? knows : devices;
+      const up = role === 'master';
+      if (!(await sheet({ title: `${up ? 'Promover' : 'Rebaixar'} ${g.name} a ${roleLabel(role)}?`, rows: [['Guardião', g.name], ['Papel agora', roleLabel(g.role)], ['Papel novo', roleLabel(role)], ['Destinos', String(dests.length)]],
+        effect: alone ? 'vale na hora' : 'dois guardiões-mor', effectKind: 'warn',
+        note: (up ? 'O mestre é quem inclui e remove guardiões, sozinho. ' : role === 'admin' ? 'Deixa de incluir e remover guardiões; continua com o resto. ' : 'Passa a cuidar só de domínios e apps. ') +
+          `Um toque de passkey por destino (${dests.length})${alone ? '.' : '; depois o outro guardião-mor co-assina cada um.'}`,
+        confirm: alone ? `Assinar e ${up ? 'promover' : 'rebaixar'}` : 'Assinar e pedir', danger: true }))) return;
+      for (const d of dests) await sendCommand(d.id, 'set_role', { id: gid, role });
       route();
     });
+    const roleBtns = [];
+    if (canManage() && g.role === 'admin') roleBtns.push(h('button', { class: 'btn', type: 'button', onclick: setRole('master') }, 'Promover a mestre'));
+    if (isMaster() && g.role === 'master') roleBtns.push(h('button', { class: 'btn dangero', type: 'button', onclick: setRole('admin') }, 'Rebaixar a guardião-mor'));
+    if (isMaster() && g.role === 'admin') roleBtns.push(h('button', { class: 'btn dangero', type: 'button', onclick: setRole('domains') }, 'Rebaixar a guardião'));
     return h('div', { class: 'card' },
       h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
         h('div', { class: 'sp' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, h('strong', { style: 'font-size:16px' }, g.name), mineCard ? chip('você') : null, chip(roleLabel(g.role), dom ? '' : 'ok')),
           h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
         mineCard || !canManage() ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') : h('button', { class: 'btn dangero', type: 'button', onclick: removeMor }, 'Remover')),
-      g.role === 'admin' && canManage() ? h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn', type: 'button', onclick: promote }, 'Promover a mestre')) : null,
+      roleBtns.length ? h('div', { style: 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap' }, roleBtns) : null,
       h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
         g.window ? chip(describeWindow(g.window), 'warn') : chip('a qualquer hora')),
       h('details', { class: 'gdet', style: 'margin-top:10px', open: gOpen.has(gid), ontoggle: (e) => { if (e.target.open) gOpen.add(gid); else gOpen.delete(gid); } }, h('summary', {}, dom ? 'Passkeys e permissões' : 'Passkeys'),
