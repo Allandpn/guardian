@@ -15,7 +15,7 @@
   powershell -ExecutionPolicy Bypass -File install.ps1 -Pairing "<string do site>" -Tray
 #>
 param(
-  [Parameter(Mandatory = $true)][string]$Pairing,
+  [string]$Pairing = "",    # obrigatório só na primeira instalação; depois a chave e o pareamento ficam em ProgramData
   [string]$Name = $env:COMPUTERNAME,
   [string]$Python = "",
   [int]$Port = 47657,
@@ -78,16 +78,30 @@ if ($LASTEXITCODE) { throw "Falhou instalar a biblioteca cryptography." }
 if ($Tray) { & $Py -m pip install --quiet --disable-pip-version-check pystray pillow; if ($LASTEXITCODE) { throw "Falhou instalar pystray e pillow." } }
 
 Write-Host "3/6 Trancando as pastas"
-& icacls $App /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)RX" | Out-Null
-& icacls $State /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
+# Identificadores universais (SID), não nomes: no Windows em português o grupo não se chama "Administrators" nem "Users".
+$SYS = "*S-1-5-18"; $ADM = "*S-1-5-32-544"; $USR = "*S-1-5-32-545"
+& icacls $App /inheritance:r /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" "${USR}:(OI)(CI)RX" /T /C | Out-Null
+if ($LASTEXITCODE) { throw "Falhou trancar $App." }
+& icacls $State /inheritance:r /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" /T /C | Out-Null
+if ($LASTEXITCODE) { throw "Falhou trancar $State." }
+# A pasta de estado guarda a chave do agente: nada de usuário comum, "Todos" ou "Usuários autenticados" nela.
+$bad = (Get-Acl $State).Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -in @("S-1-5-32-545", "S-1-1-0", "S-1-5-11") }
+if ($bad) { throw "A pasta $State ainda é acessível a usuários comuns. Não vou continuar." }
 
 Write-Host "4/6 Pareando com o Guardian"
 $env:AGENT_STATE = $State
 $env:PYTHONPATH = $Dest
-$fp = & $Py -m guardian.agent pair --pairing $Pairing --name $Name
-if ($LASTEXITCODE) { throw "Pareamento recusado. Gere uma string nova no site (vale por pouco tempo) e tente de novo." }
-Write-Host $fp
-Write-Host "   Confira este fingerprint por voz com o guardião antes de continuar." -ForegroundColor Yellow
+$env:PYTHONIOENCODING = "utf-8"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+if ((Test-Path (Join-Path $State "agent.pem")) -and (Test-Path (Join-Path $State "state.json"))) {
+  Write-Host "   Já pareado: mantendo a chave e o pareamento existentes (para parear de novo, rode uninstall.ps1 e apague $State)."
+} else {
+  if (-not $Pairing) { throw "Passe -Pairing com a string gerada no site (Dispositivos > Parear aparelho)." }
+  $fp = & $Py -m guardian.agent pair --pairing $Pairing --name $Name
+  if ($LASTEXITCODE) { throw "Pareamento recusado. Gere uma string nova no site (vale por pouco tempo) e tente de novo." }
+  Write-Host $fp
+  Write-Host "   Confira este fingerprint por voz com o guardião antes de continuar." -ForegroundColor Yellow
+}
 
 Write-Host "5/6 Criando a tarefa do agente (SYSTEM)"
 $Run = Join-Path $App "run-agent.cmd"
@@ -118,7 +132,7 @@ set PYTHONPATH=$Dest
 "@ | Set-Content -Encoding ASCII $trayRun
   $tAction = New-ScheduledTaskAction -Execute $trayRun
   $tTrigger = New-ScheduledTaskTrigger -AtLogOn
-  $tPrincipal = New-ScheduledTaskPrincipal -GroupId "BUILTIN\Users" -RunLevel Limited
+  $tPrincipal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545" -RunLevel Limited   # grupo Users, pelo SID (o nome muda com o idioma)
   Register-ScheduledTask -TaskName "GuardianAgentTray" -Action $tAction -Trigger $tTrigger -Principal $tPrincipal -Force | Out-Null
 }
 
