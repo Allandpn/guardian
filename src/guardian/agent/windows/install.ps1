@@ -60,6 +60,12 @@ if ($Python) {
 }
 Write-Host "Python: $Python"
 
+Write-Host "0/6 Parando o agente, se já estiver rodando (reinstalar por cima)"
+foreach ($t in "GuardianAgent", "GuardianAgentTray") { if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue } }
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*guardian.agent*" -and $_.Name -match "^pythonw?\.exe$" } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 3   # o cmd mantém o run-agent.cmd aberto enquanto o agente roda
+
 Write-Host "1/6 Copiando o agente para $App"
 New-Item -ItemType Directory -Force -Path $App, $State | Out-Null
 $Dest = Join-Path $App "src"
