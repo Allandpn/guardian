@@ -102,8 +102,20 @@ $SidType = [Security.Principal.SecurityIdentifier]
 # GetAccessRules já devolve SIDs (sem traduzir nomes, que falha com contas que o Windows em português não resolve).
 $writable = (Get-Acl $App).GetAccessRules($true, $true, $SidType) | Where-Object { $_.IdentityReference.Value -eq "S-1-5-32-545" -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -and $_.AccessControlType -eq "Allow" }
 if ($writable) { throw "A pasta $App é gravável por usuários comuns. Não vou continuar." }
-& icacls $State /inheritance:r /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" /T /C | Out-Null
-if ($LASTEXITCODE) { throw "Falhou trancar $State." }
+# Pasta de estado: protege SÓ a raiz e depois manda cada item de dentro herdar dela. NÃO use /T com /inheritance:r:
+# o /T deixa os arquivos de dentro com a lista de acesso VAZIA (nem o SYSTEM abre a chave do agente).
+$old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+& icacls $State /setowner $ADM /T /C 2>&1 | Out-Null
+& icacls $State /inheritance:r 2>&1 | Out-Null
+& icacls $State /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" 2>&1 | Out-Null
+$grantExit = $LASTEXITCODE
+Get-ChildItem -LiteralPath $State -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { & icacls $_.FullName /reset 2>&1 | Out-Null }
+$ErrorActionPreference = $old
+if ($grantExit) { throw "Falhou trancar $State." }
+# Todo arquivo de dentro precisa estar acessível ao SYSTEM (o agente roda como SYSTEM).
+$noSystem = Get-ChildItem -LiteralPath $State -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {
+  -not ((Get-Acl -LiteralPath $_.FullName).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq "S-1-5-18" }) }
+if ($noSystem) { throw "Arquivos em $State sem acesso para o SYSTEM: $($noSystem.Name -join ', ')" }
 # A pasta de estado guarda a chave do agente: nada de usuário comum, "Todos" ou "Usuários autenticados" nela.
 $bad = (Get-Acl $State).GetAccessRules($true, $true, $SidType) | Where-Object { $_.IdentityReference.Value -in @("S-1-5-32-545", "S-1-1-0", "S-1-5-11") }
 if ($bad) { throw "A pasta $State ainda é acessível a usuários comuns. Não vou continuar." }
@@ -156,8 +168,20 @@ set PYTHONPATH=$Dest
   Register-ScheduledTask -TaskName "GuardianAgentTray" -Action $tAction -Trigger $tTrigger -Principal $tPrincipal -Force | Out-Null
 }
 
-Start-Sleep -Seconds 5
-try { $ok = (Invoke-WebRequest -UseBasicParsing "http://localhost:$Port/api/state").StatusCode -eq 200 } catch { $ok = $false }
+$ok = $false
+foreach ($i in 1..15) {                       # até ~30 s: a primeira partida da tarefa pode demorar
+  Start-Sleep -Seconds 2
+  try { $ok = (Invoke-WebRequest -UseBasicParsing "http://localhost:$Port/api/state" -TimeoutSec 3).StatusCode -eq 200 } catch { $ok = $false }
+  if ($ok) { break }
+}
 if ($ok) { Write-Host "Pronto: o agente está no ar em http://localhost:$Port/" -ForegroundColor Green }
-else { Write-Host "O agente ainda não respondeu. Veja a tarefa 'GuardianAgent' no Agendador de Tarefas." -ForegroundColor Yellow }
+else {
+  Write-Host "O agente não respondeu em 30 s. Rodando uma vez em primeiro plano por 8 s para mostrar o erro:" -ForegroundColor Yellow
+  $log = Join-Path $env:TEMP "guardian-agent-diag.txt"
+  $proc = Start-Process -FilePath $Py -ArgumentList "-m", "guardian.agent", "run" -PassThru -WindowStyle Hidden -RedirectStandardError $log -RedirectStandardOutput "$log.out"
+  Start-Sleep -Seconds 8
+  if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; Write-Host "  (ele ficou de pé em primeiro plano: o problema é a tarefa agendada, não o agente)" }
+  Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
+  Remove-Item $log, "$log.out" -Force -ErrorAction SilentlyContinue
+}
 Write-Host "Próximo passo (importante): leia docs/AGENTE.md, seção 'Conta comum'."
