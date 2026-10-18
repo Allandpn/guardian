@@ -71,9 +71,10 @@ Write-Host "1/6 Copiando o agente para $App"
 # Reassume a posse (como grupo Administradores, pelo SID) e volta à herança do Program Files: SYSTEM e administradores com controle total, usuários só leitura.
 function Reset-Tree([string]$p) {
   if (-not (Test-Path $p)) { return }
-  & takeown /F $p /R /A /D S 2>&1 | Out-Null     # "S" (português) e "Y" (inglês): a resposta da pergunta muda com o idioma
-  & takeown /F $p /R /A /D Y 2>&1 | Out-Null
+  $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"       # o stderr dos programas nativos não pode derrubar o script
+  & icacls $p /setowner "*S-1-5-32-544" /T /C 2>&1 | Out-Null             # dono = grupo Administradores, pelo SID (sem perguntas, em qualquer idioma)
   & icacls $p /reset /T /C 2>&1 | Out-Null
+  $ErrorActionPreference = $old
 }
 Reset-Tree $App
 New-Item -ItemType Directory -Force -Path $App, $State | Out-Null
