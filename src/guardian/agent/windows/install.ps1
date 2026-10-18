@@ -67,6 +67,15 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.
 Start-Sleep -Seconds 3   # o cmd mantém o run-agent.cmd aberto enquanto o agente roda
 
 Write-Host "1/6 Copiando o agente para $App"
+# Uma instalação anterior que falhou pode ter deixado arquivos com a lista de acesso quebrada (sem ninguém, nem administradores).
+# Reassume a posse (como grupo Administradores, pelo SID) e volta à herança do Program Files: SYSTEM e administradores com controle total, usuários só leitura.
+function Reset-Tree([string]$p) {
+  if (-not (Test-Path $p)) { return }
+  & takeown /F $p /R /A /D S 2>&1 | Out-Null     # "S" (português) e "Y" (inglês): a resposta da pergunta muda com o idioma
+  & takeown /F $p /R /A /D Y 2>&1 | Out-Null
+  & icacls $p /reset /T /C 2>&1 | Out-Null
+}
+Reset-Tree $App
 New-Item -ItemType Directory -Force -Path $App, $State | Out-Null
 $Dest = Join-Path $App "src"
 if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
@@ -86,8 +95,10 @@ if ($Tray) { & $Py -m pip install --quiet --disable-pip-version-check pystray pi
 Write-Host "3/6 Trancando as pastas"
 # Identificadores universais (SID), não nomes: no Windows em português o grupo não se chama "Administrators" nem "Users".
 $SYS = "*S-1-5-18"; $ADM = "*S-1-5-32-544"; $USR = "*S-1-5-32-545"
-& icacls $App /inheritance:r /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" "${USR}:(OI)(CI)RX" /T /C | Out-Null
-if ($LASTEXITCODE) { throw "Falhou trancar $App." }
+& icacls $App /reset /T /C | Out-Null       # herda do Program Files: só administradores escrevem (ver acima)
+if ($LASTEXITCODE) { throw "Falhou ajustar $App." }
+$writable = (Get-Acl $App).Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq "S-1-5-32-545" -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -and $_.AccessControlType -eq "Allow" }
+if ($writable) { throw "A pasta $App é gravável por usuários comuns. Não vou continuar." }
 & icacls $State /inheritance:r /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" /T /C | Out-Null
 if ($LASTEXITCODE) { throw "Falhou trancar $State." }
 # A pasta de estado guarda a chave do agente: nada de usuário comum, "Todos" ou "Usuários autenticados" nela.
