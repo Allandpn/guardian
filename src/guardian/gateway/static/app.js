@@ -1365,7 +1365,7 @@ async function route() {
   if (!me) { nav.hidden = true; return loginView(); }
   try {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
-    const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|liberados|recusados|meus)$/) || hash.match(/^#\/(domains)$/);
+    const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|liberados|recusados|vetos|meus)$/) || hash.match(/^#\/(domains)$/);
     const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados))?$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
