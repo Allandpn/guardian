@@ -18,8 +18,10 @@ instalar um programa ou rodar algo como administrador, a pessoa **pede** e um gu
 
 - O agente é um **aparelho** como o celular: chave própria, relatório, pedidos. Os **domínios** bloqueados do PC e os pedidos de liberação usam o fluxo que já existe
   (`docs/LIBERACAO.md`): o IP do PC na Tailscale vai no relatório e o executor do Pi-hole separa o que foi bloqueado para ele.
-- **Instalar programa** (`win_install`): um pacote do **winget** (id e versão) ou um **instalador por link** (`.msi` ou `.exe`) com o **SHA-256** que o guardião conferiu.
+- **Instalar programa** (`win_install`): um pacote do **winget** (id e versão), um **instalador por link** (`.msi` ou `.exe`) com o **SHA-256** que o guardião conferiu,
+  ou um **arquivo que a pessoa já baixou** no computador (caminho em `C:\Users`, SHA-256 e, se tiver, o nome do assinante da assinatura digital).
   O agente baixa por https (redirecionamentos só para https), compara o hash e só então executa. Hash diferente: nada roda.
+  No arquivo local ele **copia para a pasta protegida lendo uma vez, confere o hash e a assinatura na cópia e executa a cópia**: trocar o original depois da aprovação não adianta.
 - **Rodar comando** (`win_run`): um script do PowerShell, até 6000 bytes, como administrador, **uma vez**, com tempo limite (padrão 10 min, máximo 1 h).
   O que o guardião assina é o texto exato: o gateway recusa a aprovação se o comando assinado não for idêntico ao pedido.
 - Quem aprova: **guardião-mor ou mestre, com uma passkey**. O guardião comum só mexe em domínios (nem vê o pedido de instalação).
