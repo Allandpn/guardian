@@ -215,5 +215,26 @@ class ExecutorVeto(unittest.TestCase):
         self.assertEqual(got(), {"bom.example", "outro.example"})
 
 
+    def test_07_sweep_removes_stored_blocks_that_became_vetoed(self):
+        k, d = self.k1, self.d1
+        got = lambda: {i["domain"] for i in self.env.client().signed(k, "GET", f"/v1/devices/{d}/blocked")[1]["items"]}
+        off = Executor(ExecConfig(self.tmp.name, self.fake.url, "senha-app", "canario.example", allow_mode="regex"), now=lambda: NOW)  # sem veto
+        self.fake.queries.append({"time": NOW - 5, "domain": "cdn.vetar-depois.example", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
+        off.state.data["blocked_since"] = 0
+        off.collect_blocks()
+        self.assertIn("cdn.vetar-depois.example", got())
+        self.ex.sweep_vetoed()
+        self.assertIn("cdn.vetar-depois.example", got())                                                              # ainda não vetado: a varredura deixa
+        self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "add", "domain": "vetar-depois.example"}))             # o mestre veta o site
+        self.assertGreaterEqual(self.ex.sweep_vetoed(), 1)                                                            # ninguém consultou de novo: a varredura apaga
+        self.assertNotIn("cdn.vetar-depois.example", got())
+        self.assertIn("bom.example", got())                                                                           # o resto fica
+        self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "remove", "domain": "vetar-depois.example"}))
+
+    def test_08_only_the_executor_reads_the_index(self):
+        st, _, _ = self.env.client().signed(self.k1, "GET", f"/v1/devices/{self.d1}/blocked-index")
+        self.assertEqual(st, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

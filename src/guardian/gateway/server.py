@@ -163,6 +163,7 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/request", self.device_ask_apps),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.post_blocked),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked-index", self.executor_blocked_index),
             ("GET", r"/v1/blocked", self.blocked),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/resolve", self.resolve),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
@@ -956,6 +957,13 @@ class Gateway:
                 claims[r["id"]] = tailnet.valid_ips(json.loads(r["report"]).get("tsIps"))
         ok = tailnet.ip_map(claims)  # IP declarado por dois aparelhos não vale para nenhum
         return 200, {"clients": [{"dev": d, "ips": [ip for ip in ips if ip in ok]} for d, ips in claims.items() if any(ip in ok for ip in ips)]}, {}
+
+    def executor_blocked_index(self, req, dev):
+        """O que está guardado, para o executor apagar o que passou a ser vetado (site vetado pelo mestre, lista nova). Só o executor lê."""
+        row = self.device(req, dev)
+        if row["kind"] != "executor":
+            raise HttpError(403, "só o executor lê isto")
+        return 200, {"items": [{"dev": r["dev"], "domain": r["domain"]} for r in self.store.blocked_pairs()]}, {}
 
     def post_blocked(self, req, dev):
         row = self.device(req, dev)

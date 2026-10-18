@@ -238,6 +238,17 @@ class AgentEndToEnd(unittest.TestCase):
 
 
 class ActionsUnit(unittest.TestCase):
+    def test_winget_download_failure_names_the_blocked_domain(self):
+        out = "Found 7-Zip [7zip.7zip] Version 26.04\nDownloading https://www.7-zip.org/a/7z2604-x64.exe\nInternetOpenUrl() failed.\n0x80072ee7 : unknown error"
+        self.assertEqual(actions.download_blocked_host(out), "www.7-zip.org")
+        self.assertIsNone(actions.download_blocked_host("Installer failed with exit code: 1603"))
+        self.assertIsNone(actions.download_blocked_host("0x80072ee7 sem linha de download"))
+        fake = FakeSys()
+        fake.replies.append((2147954407, out))
+        res = actions.install(fake, {"name": "7-Zip", "source": "winget", "id": "7zip.7zip"})
+        self.assertFalse(res.ok)
+        self.assertIn("Peça a liberação de 7-zip.org", res.msg)
+
     def test_clip_keeps_head_and_tail(self):
         long = "A" * 3000 + "B" * 3000
         out = actions.clip(long, 1000)

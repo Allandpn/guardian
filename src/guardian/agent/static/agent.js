@@ -54,7 +54,11 @@ async function send(body, ok) {
 
 // ---- domínios: o domínio que será pedido é o de base com N rótulos cortados à esquerda (advertise.exemplo.com -> exemplo.com) ----
 const parts = (d) => d.split('.');
-const maxCut = (d) => Math.max(0, parts(d).length - 2);
+// Sufixo público (cn, com.br, co.uk…): abriria um país ou uma categoria inteira, então nunca se pede. Mesma regra do executor.
+const SLD = new Set(['com', 'net', 'org', 'gov', 'edu', 'co', 'ac', 'or', 'ne', 'go', 'mil', 'ltd', 'plc', 'sch', 'nom', 'ind', 'firm', 'gob']);
+const isSuffix = (d) => { const p = parts(d); return p.length < 2 || (p.length === 2 && p[1].length === 2 && SLD.has(p[0])); };
+// Quantos rótulos dá para cortar da esquerda sem chegar a um sufixo público.
+const maxCut = (d) => { let k = 0; while (k + 1 < parts(d).length && !isSuffix(parts(d).slice(k + 1).join('.'))) k++; return k; };
 const eff = (d) => parts(d).slice(Math.min(cut[d] || 0, maxCut(d))).join('.');
 const openDomains = () => new Set((st.requests || []).flatMap((q) => (q.items || []).filter((i) => i.state === 'open').map((i) => i.domain)));
 
@@ -74,6 +78,7 @@ function blockedTab() {
     sel.forEach((x) => picked.delete(x));
     draw();
   });
+  const clearList = () => { rows.forEach((b) => { hidden.add(b.domain); picked.delete(b.domain); }); store.set('hidden', [...hidden]); draw(); };
   const hideSelected = () => { sel.forEach((d) => { hidden.add(d); picked.delete(d); }); store.set('hidden', [...hidden]); draw(); };
 
   return [
@@ -82,10 +87,12 @@ function blockedTab() {
       h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Marque o que você precisa e peça a liberação; o guardião decide. Use « e » para pedir o domínio inteiro (exemplo.com) em vez de só um subdomínio.'),
       f.search,
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' },
+        small('Atualizar', act(async () => { await refresh(); toast('Lista atualizada.'); })),
         small('Mais recentes', () => { sortBy = 'recent'; draw(); }, { 'aria-pressed': String(sortBy === 'recent') }),
         small('Mais bloqueados', () => { sortBy = 'count'; draw(); }, { 'aria-pressed': String(sortBy === 'count') }),
         small('Marcar todos', () => { rows.forEach((b) => { if (!open.has(eff(b.domain))) picked.add(b.domain); }); draw(); }),
         small('Esconder marcados', hideSelected, { disabled: !sel.length }),
+        small('Limpar lista', clearList, { disabled: !rows.length, title: 'Esconde todos os domínios visíveis (dá para mostrar de novo)' }),
         nHidden ? small(showHidden ? 'Ocultar escondidos' : `Mostrar escondidos (${nHidden})`, () => { showHidden = !showHidden; draw(); }) : null),
       rows.length ? rows.map((b) => {
         const e = eff(b.domain), isOpen = open.has(e);
@@ -97,12 +104,12 @@ function blockedTab() {
           maxCut(b.domain) ? [
             small('«', () => { cut[b.domain] = Math.min((cut[b.domain] || 0) + 1, maxCut(b.domain)); draw(); }, { 'aria-label': 'Encurtar: pedir o domínio pai', disabled: (cut[b.domain] || 0) >= maxCut(b.domain), style: 'min-height:38px;min-width:38px;padding:0' }),
             small('»', () => { cut[b.domain] = Math.max((cut[b.domain] || 0) - 1, 0); draw(); }, { 'aria-label': 'Ampliar: voltar ao domínio de baixo', disabled: !(cut[b.domain] > 0), style: 'min-height:38px;min-width:38px;padding:0' })] : null);
-      }) : h('p', { class: 'muted', style: 'margin:12px 0 0' }, all.length ? 'Nada com esse filtro.' : 'Nada bloqueado nas últimas 24 horas.')),
-    h('div', { style: 'height:84px' }),   // espaço para a barra fixa de baixo não cobrir o fim da lista
-    sel.length ? h('div', { class: 'sticky', style: 'bottom:0;left:0' },
-      h('div', { class: 'sp' }, h('strong', {}, `${sel.length} selecionado${sel.length > 1 ? 's' : ''}`)),
-      h('button', { class: 'btn', type: 'button', onclick: () => { picked.clear(); draw(); } }, 'Limpar seleção'),
-      h('button', { class: 'btn pri', type: 'button', onclick: request }, 'Pedir liberação')) : null,
+      }) : h('p', { class: 'muted', style: 'margin:12px 0 0' }, all.length ? 'Nada com esse filtro.' : 'Nada bloqueado nas últimas 24 horas.'),
+      // O botão de pedir fica logo abaixo dos domínios, onde a pessoa está olhando (não numa barra no rodapé da página).
+      h('div', { class: 'row', style: 'margin-top:14px;gap:10px;flex-wrap:wrap;align-items:center' },
+        h('button', { class: 'btn pri', type: 'button', disabled: !sel.length, onclick: request }, sel.length ? `Pedir liberação (${sel.length})` : 'Pedir liberação'),
+        sel.length ? h('button', { class: 'btn', type: 'button', onclick: () => { picked.clear(); draw(); } }, 'Limpar seleção') : null,
+        h('span', { class: 'muted' }, sel.length ? `${sel.length} marcado${sel.length > 1 ? 's' : ''}` : 'Marque os domínios acima'))),
   ];
 }
 
@@ -199,7 +206,7 @@ function draw() {
   const [reqNodes, open] = requestsTab();
   const body = tab === 'bloqueados' ? blockedTab() : tab === 'programas' ? programsTab() : tab === 'comando' ? commandTab() : reqNodes;
   main.replaceChildren(
-    h('header', { class: 'top' }, h('div', { style: 'margin-left:8px;display:flex;align-items:center;gap:10px' }, insignia('device', 28), h('h1', { style: 'padding-left:0' }, `Guardian · ${st.host}`)),
+    h('header', { class: 'top' }, h('div', { style: 'margin-left:8px;display:flex;align-items:center;gap:10px' }, insignia('device', 28), h('h1', { style: 'padding-left:0' }, `NotToday PC · ${st.host}`)),
       h('span', { class: 'sp' }), chip(st.gateway_ok ? 'conectado' : 'sem conexão', st.gateway_ok ? 'ok' : 'bad'),
       h('button', { class: 'ib', type: 'button', 'aria-label': 'Atualizar', title: 'Atualizar', onclick: act(async () => { await refresh(); toast('Atualizado.'); }) }, icon('sync'))),
     h('div', { class: 'wrap' },

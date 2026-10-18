@@ -38,7 +38,7 @@ instalar um programa ou rodar algo como administrador, a pessoa **pede** e um gu
    Precisa de **Python 3.11+ instalado para todos os usuários** (em `C:\Program Files`): `winget install --id Python.Python.3.12 --scope machine`, ainda como administrador.
    O instalador recusa um Python dentro de `C:\Users\...` e o atalho da Microsoft Store: o agente roda como SYSTEM e uma conta comum poderia trocar o `python.exe` dela.
    O script copia o agente para `C:\Program Files\GuardianAgent`, cria o estado em `C:\ProgramData\GuardianAgent`
-   (só SYSTEM e administradores), pareia, cria a tarefa `GuardianAgent` (SYSTEM, sobe na inicialização, reinicia se cair) e o atalho **Guardian** na área de trabalho.
+   (só SYSTEM e administradores), pareia, cria a tarefa `GuardianAgent` (SYSTEM, sobe na inicialização, reinicia se cair) e o atalho **NotToday PC** na área de trabalho.
 3. Confira o **fingerprint** que o script mostra, por voz, com o guardião.
 4. No site, o PC aparece em **Dispositivos** (chip "Windows") e na tela **PC**.
 
@@ -63,7 +63,7 @@ Para valer:
 - Programas já instalados continuam rodando: o agente controla o que **entra**, não bloqueia por hash o que já existe (AppLocker/WDAC ficam para uma etapa futura).
 - O agente rodando como SYSTEM é uma permissão grande por design: a segurança dele é a assinatura dos guardiões. Proteja as passkeys dos guardiões-mor e do mestre.
 
-## Tela local (`http://localhost:47657/`)
+## Tela local, o **NotToday PC** (`http://localhost:47657/`)
 
 Só em `127.0.0.1`. Confere o `Host` (contra DNS rebinding) e, nos POST, a origem e o cabeçalho `X-Guardian-Agent` (contra páginas de outros sites).
 Abas: **Bloqueados** (marcar e pedir liberação), **Programas** (winget ou link com SHA-256), **Comando** (script) e **Pedidos** (estado, e o que o agente executou, com a saída).

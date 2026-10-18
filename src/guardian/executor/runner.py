@@ -22,6 +22,7 @@ BLOCKS_EVERY_S = 10
 BLOCKS_CHUNK = 150
 BLOCKS_BACKFILL_S = 3600
 BLOCKS_VETO_MAX = 400
+SWEEP_EVERY_S = 120
 OWN_STATUSES = {"REGEX", "DENYLIST", "REGEX_CNAME", "DENYLIST_CNAME"}
 LIST_STATUSES = {"GRAVITY", "GRAVITY_CNAME"}
 
@@ -397,10 +398,34 @@ class Executor:
             self.state.save()
         return total
 
+    def sweep_vetoed(self) -> int:
+        """Apaga do gateway o que já estava guardado e passou a ser vetado (o mestre vetou um site, as listas mudaram).
+        Sem isto, só sumiria quando alguém consultasse o domínio de novo ou em 24 h. Devolve quantos."""
+        got = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked-index").get("items", [])
+        regex = self.cfg.allow_mode == "regex"
+        per_dev: dict[str, list] = {}
+        for it in got:
+            try:
+                d = domains.normalize(it.get("domain"))
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(it.get("dev"), str) and self.veto.reason(d, regex):
+                per_dev.setdefault(it["dev"], []).append(d)
+        n = 0
+        for dev, ds in per_dev.items():
+            for i in range(0, len(ds), BLOCKS_VETO_MAX):
+                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": dev, "items": [], "veto": ds[i:i + BLOCKS_VETO_MAX]})
+            n += len(ds)
+        return n
+
     def _blocks_loop(self, stop) -> None:
+        last_sweep = 0.0
         while not stop.is_set():
             try:
                 self.collect_blocks()
+                if time.monotonic() - last_sweep >= SWEEP_EVERY_S:
+                    last_sweep = time.monotonic()
+                    self.sweep_vetoed()
             except (GatewayError, PiholeError) as e:
                 print("bloqueios:", e, file=sys.stderr)
             stop.wait(BLOCKS_EVERY_S)

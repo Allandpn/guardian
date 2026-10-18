@@ -892,7 +892,7 @@ async function domainsView(tab) {
       // O campo para vetar fica no topo; a lista de vetados e o histórico (liberações em conflito) ficam embaixo.
       master ? [h('div', { class: 'sec' }, 'Vetar sites'),
         h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sites grandes e abertos, como reddit.com, x.com e tumblr.com, que ninguém pode liberar nem pelo pai nem por subdomínio. Vale para todos os guardiões.'),
-          pdom, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+          pdom, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
             const list = [...new Set(pdom.value.toLowerCase().split(/[\s,;]+/).filter(Boolean))];
             if (!list.length) throw new Error('Digite o site.');
             if (list.length > 80) throw new Error('No máximo 80 sites por vez.');

@@ -373,6 +373,10 @@ class Store:
             with self.lock:
                 self.db.executemany("DELETE FROM blocked WHERE dev=? AND domain=?", [(dev, d) for d in domains])
 
+    def blocked_pairs(self, limit: int = 20000):
+        """Todos os (aparelho, domínio) guardados: o executor confere quais não podem mais ser pedidos (veto)."""
+        return self.q("SELECT dev, domain FROM blocked WHERE last>=? LIMIT ?", (int(time.time()) - BLOCKED_KEEP_S, limit))
+
     def blocked_list(self, dev: str | None = None, src: str | None = None, limit: int = 500):
         sql, args = "SELECT * FROM blocked WHERE last>=?", [int(time.time()) - BLOCKED_KEEP_S]
         if dev:

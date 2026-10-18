@@ -153,7 +153,8 @@ Register-ScheduledTask -TaskName "GuardianAgent" -Action $action -Trigger $trigg
 Start-ScheduledTask -TaskName "GuardianAgent"
 
 Write-Host "6/6 Atalhos"
-"[InternetShortcut]`r`nURL=http://localhost:$Port/`r`nIconIndex=0" | Set-Content -Encoding ASCII (Join-Path $env:PUBLIC "Desktop\Guardian.url")
+Remove-Item -Force (Join-Path $env:PUBLIC "Desktop\Guardian.url") -ErrorAction SilentlyContinue   # nome antigo do atalho
+"[InternetShortcut]`r`nURL=http://localhost:$Port/`r`nIconIndex=0" | Set-Content -Encoding ASCII (Join-Path $env:PUBLIC "Desktop\NotToday PC.url")
 if ($Tray) {
   $trayRun = Join-Path $App "run-tray.cmd"
   @"

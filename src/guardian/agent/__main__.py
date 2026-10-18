@@ -40,8 +40,8 @@ def tray(port: int) -> int:
         d.polygon([(18, 40), (16, 22), (26, 30), (32, 18), (38, 30), (48, 22), (46, 40)], fill=color)
         return im
 
-    ic = pystray.Icon("guardian", icon_image(True), "Guardian", menu=pystray.Menu(
-        pystray.MenuItem("Abrir o Guardian", lambda: webbrowser.open(url), default=True),
+    ic = pystray.Icon("nottoday-pc", icon_image(True), "NotToday PC", menu=pystray.Menu(
+        pystray.MenuItem("Abrir o NotToday PC", lambda: webbrowser.open(url), default=True),
         pystray.MenuItem("Sair", lambda icon: icon.stop())))
 
     def poll():
@@ -56,7 +56,7 @@ def tray(port: int) -> int:
             except (OSError, ValueError):
                 ok, pending = False, 0
             ic.icon = icon_image(ok)
-            ic.title = "Guardian: " + ("conectado" if ok else "sem conexão") + (f" · {pending} pedido(s) aguardando" if pending else "")
+            ic.title = "NotToday PC: " + ("conectado" if ok else "sem conexão") + (f" · {pending} pedido(s) aguardando" if pending else "")
 
     threading.Thread(target=poll, daemon=True).start()
     ic.run()

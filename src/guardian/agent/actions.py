@@ -4,6 +4,7 @@ Tudo que toca o sistema passa por `Sys`, para testar sem Windows. Os argumentos 
 """
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -109,6 +110,18 @@ class Sys:
         return ips
 
 
+_NET_FAIL = re.compile(r"0x80072(ee7|ee2|efd|efe|f78)|InternetOpenUrl\(\) failed|name (could not be )?resolved", re.I)
+_DOWNLOAD = re.compile(r"Downloading\s+https?://([^/\s]+)", re.I)
+
+
+def download_blocked_host(out: str) -> str | None:
+    """O winget falhou na rede: o domínio de onde ele tentava baixar (quase sempre é o Pi-hole bloqueando). None se for outro erro."""
+    if not _NET_FAIL.search(out):
+        return None
+    m = _DOWNLOAD.search(out)
+    return m.group(1).lower() if m else None
+
+
 def install(system: Sys, a: dict) -> Result:
     if a["source"] == "winget":
         argv = [system.winget(), "install", "--id", a["id"], "--exact", "--silent", "--source", "winget",
@@ -116,7 +129,12 @@ def install(system: Sys, a: dict) -> Result:
         if a.get("version"):
             argv += ["--version", a["version"]]
         rc, out = system.run(argv, INSTALL_TIMEOUT_S)
-        return Result(rc == 0, rc, clip(out), f"winget {a['id']}: código {rc}")
+        msg = f"winget {a['id']}: código {rc}"
+        if rc != 0:
+            host = download_blocked_host(out)
+            if host:
+                msg += f". Não conseguiu baixar de {host}: o domínio deve estar bloqueado. Peça a liberação de {host.removeprefix('www.')} e peça a instalação de novo"
+        return Result(rc == 0, rc, clip(out), msg)
     d = system.workdir()
     try:
         path = os.path.join(d, "setup." + a["kind"])
