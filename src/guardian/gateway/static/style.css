@@ -264,3 +264,12 @@ a.gcard:hover { border-color: var(--role); }
   .sec.royal::before, .sec.royal::after { background: var(--line); }
 }
 .banner.gcard:not(.warn):not(.bad) { border-color: var(--green); }
+
+/* ---- quem está logado: brasão do papel + nome, na barra do topo (inscrição, não botão) ---- */
+.who { display: flex; align-items: center; gap: 8px; min-width: 0; margin-right: 4px; cursor: default; }
+.who.r-master { --role: var(--gold); } .who.r-admin { --role: var(--steel); } .who.r-domains { --role: var(--sage); }
+.who .insignia { width: 24px; height: auto; }
+.who .wt { min-width: 0; line-height: 1.15; }
+.who .wn { max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 14px var(--serif); }
+.who .wr { font: 600 10px var(--serif); letter-spacing: .12em; text-transform: uppercase; color: var(--role); white-space: nowrap; }
+@media (min-width: 600px) { .who .wn { max-width: 220px; } .who .insignia { width: 28px; } }

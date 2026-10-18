@@ -185,7 +185,15 @@ function statusOf(d, now) {
 // ---------- peças comuns ----------
 function top(title, { back, actions } = {}) {
   return h('header', { class: 'top' }, back ? h('a', { class: 'ib', href: back, 'aria-label': 'Voltar' }, icon('back')) : null,
-    h('h1', {}, title), actions || null);
+    h('h1', {}, title), whoami(), actions || null);
+}
+
+/** Quem está logado e com que força: brasão do papel + nome + título, em todas as telas (só leitura, não é botão). */
+function whoami() {
+  if (!me || !me.guardian) return null;
+  const r = roleKey(me.guardian.role);
+  return h('div', { class: 'who r-' + r, role: 'img', 'aria-label': `Você: ${me.guardian.name}, ${roleLabel(me.guardian.role)}` },
+    insignia(r, 28), h('div', { class: 'wt' }, h('div', { class: 'wn' }, me.guardian.name), h('div', { class: 'wr' }, roleLabel(me.guardian.role))));
 }
 
 function renderNav(active) {
