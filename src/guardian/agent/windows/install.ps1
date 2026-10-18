@@ -31,12 +31,34 @@ $State = Join-Path $env:ProgramData "GuardianAgent"
 $Src = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path          # a pasta "src" do repositório (contém "guardian")
 if (-not (Test-Path (Join-Path $Src "guardian\agent\agent.py"))) { throw "Não achei guardian\agent\agent.py em $Src. Rode o script de dentro do repositório." }
 
-if (-not $Python) {
-  $cmd = Get-Command python.exe -ErrorAction SilentlyContinue
-  if (-not $cmd) { $cmd = Get-Command py.exe -ErrorAction SilentlyContinue }
-  if (-not $cmd) { throw "Python 3.11 ou mais novo não encontrado. Instale-o (para todos os usuários) ou passe -Python <caminho>." }
-  $Python = $cmd.Source
+# O agente roda como SYSTEM: o Python dele TEM de ficar numa pasta que só administrador escreve (Program Files ou Windows).
+# Um Python dentro do perfil de usuário (C:\Users\...) deixaria uma conta comum trocar o python.exe e executar código como SYSTEM.
+$safeRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:SystemRoot) | Where-Object { $_ }
+function Test-Python([string]$exe) {
+  if (-not $exe -or -not (Test-Path $exe)) { return $false }
+  $full = (Resolve-Path $exe).Path
+  if ($full -like "*\WindowsApps\*") { return $false }                       # o atalho da Microsoft Store não é um Python
+  if (-not ($safeRoots | Where-Object { $full.StartsWith($_ + "\", [StringComparison]::OrdinalIgnoreCase) })) { return $false }
+  $ok = & $full -c "import sys; print(sys.version_info >= (3, 11))" 2>$null
+  return ($LASTEXITCODE -eq 0 -and "$ok".Trim() -eq "True")
 }
+if ($Python) {
+  if (-not (Test-Python $Python)) { throw "O Python '$Python' não serve: precisa ser 3.11+ e estar em Program Files (uma pasta que só administrador escreve)." }
+} else {
+  $cands = @()
+  $cands += Get-ChildItem -Path (Join-Path $env:ProgramFiles "Python3*\python.exe") -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object { $_.FullName }
+  $py = Get-Command py.exe -ErrorAction SilentlyContinue
+  if ($py) { $p = & $py.Source -3 -c "import sys; print(sys.executable)" 2>$null; if ($LASTEXITCODE -eq 0) { $cands += "$p".Trim() } }
+  $pc = Get-Command python.exe -ErrorAction SilentlyContinue
+  if ($pc) { $cands += $pc.Source }
+  $Python = $cands | Where-Object { Test-Python $_ } | Select-Object -First 1
+  if (-not $Python) {
+    throw ("Não achei um Python 3.11+ instalado para todos os usuários (em Program Files). Instale um, ainda como administrador, e rode de novo:`n" +
+           "  winget install --id Python.Python.3.12 --scope machine`n" +
+           "(Pythons dentro de C:\Users\... e o atalho da Microsoft Store não servem: seriam um caminho para uma conta comum virar SYSTEM.)")
+  }
+}
+Write-Host "Python: $Python"
 
 Write-Host "1/6 Copiando o agente para $App"
 New-Item -ItemType Directory -Force -Path $App, $State | Out-Null
