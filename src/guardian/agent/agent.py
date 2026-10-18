@@ -59,6 +59,17 @@ def pair(cfg: AgentConfig, pairing: str, name: str | None = None) -> str:
     return devauth.fingerprint(spki)
 
 
+# Argumentos silenciosos que cada fabricante documenta. Só uma sugestão: o que vale é o que o guardião lê e aprova.
+SILENT_ARGS = (("dbeaver", "/S /allusers"),)   # o instalador do DBeaver recusa o /S sozinho (código 666660)
+
+
+def suggest_args(kind: str, signer: str) -> str:
+    if kind == "msi":
+        return ""   # o msiexec já roda com /qn
+    s = (signer or "").lower()
+    return next((a for k, a in SILENT_ARGS if k in s), "/S")
+
+
 class Agent:
     def __init__(self, cfg: AgentConfig, system: actions.Sys | None = None, now=time.time):
         self.cfg, self.now = cfg, now
@@ -200,7 +211,7 @@ class Agent:
         info = self.system.file_info(path)
         ext = path.lower().rsplit(".", 1)[-1]
         stem = path.replace("/", "\\").rsplit("\\", 1)[-1].rsplit(".", 1)[0]
-        return {**info, "path": path, "kind": ext, "name": stem[:80]}
+        return {**info, "path": path, "kind": ext, "name": stem[:80], "suggested_args": suggest_args(ext, info.get("signer", ""))}
 
     def ui_request(self, body: dict) -> dict:
         return self.gw.call("POST", f"/v1/devices/{self.dev}/requests", body)

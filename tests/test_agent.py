@@ -353,6 +353,18 @@ class AgentEndToEnd(unittest.TestCase):
 
 
 class ActionsUnit(unittest.TestCase):
+    def test_suggested_silent_args_and_known_exit_code(self):
+        from guardian.agent.agent import suggest_args
+        self.assertEqual(suggest_args("exe", "DBeaver Corp"), "/S /allusers")
+        self.assertEqual(suggest_args("exe", "Wireshark Foundation"), "/S")
+        self.assertEqual(suggest_args("exe", ""), "/S")
+        self.assertEqual(suggest_args("msi", "Qualquer"), "")
+        fake = FakeSys()
+        fake.replies.append((666660, ""))
+        res = actions.install(fake, {"name": "DBeaver", "source": "url", "url": "https://exemplo.com/d.exe", "sha256": SHA, "kind": "exe", "args": "/S"})
+        self.assertFalse(res.ok)
+        self.assertIn("/S /allusers", res.msg)
+
     def test_timeout_message_explains_the_interactive_installer(self):
         fake = FakeSys()
         fake.replies.append((-1, "x\n[tempo limite estourado]"))

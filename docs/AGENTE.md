@@ -80,6 +80,10 @@ Pedidos aguardando (com o texto exato), **Revisar e aprovar** (folha com o scrip
 
 - O PC fica "Sem sinal" no site se o agente parar (alerta existente): é o aviso de que alguém mexeu.
 - `winget` como SYSTEM: o agente usa o `winget.exe` da pasta do App Installer. Se faltar, instale o App Installer ou use instalador por link.
-- Um `.exe` precisa de argumentos silenciosos (`/S`, `/quiet`...), senão fica esperando uma janela que o SYSTEM não mostra e vence no tempo limite (30 min).
+- Um `.exe` precisa de argumentos silenciosos (`/S`, `/quiet`...), senão fica esperando uma janela que o SYSTEM não mostra e vence no tempo limite (10 min por padrão).
+  A tela local sugere os argumentos pelo assinante do arquivo (Wireshark: `/S`; DBeaver: `/S /allusers`, e o `/S` sozinho dá o código 666660 = parâmetros inválidos).
+- **Instaladores só com janela** (Npcap gratuito, drivers, alguns pacotes): o agente não consegue (o SYSTEM não tem tela, e abrir janela como SYSTEM na área de trabalho de quem usa seria um caminho para virar administrador).
+  Esses a pessoa de confiança instala uma vez com a conta de administrador. O resultado do pedido que estoura o tempo diz isso.
+- O agente roda um comando do Windows por vez, numa fila própria: um instalador preso não derruba a conversa com o gateway (o site mostra "executando X há N min"), mas os outros esperam até ele terminar ou estourar o tempo.
 - Logs: a tarefa `GuardianAgent` no Agendador de Tarefas; o resultado de cada comando também vai para o histórico do site.
 - Atualizar o agente: rode `install.ps1` de novo (a chave e o pareamento ficam em `C:\ProgramData\GuardianAgent`).

@@ -36,7 +36,7 @@ const f = {
   uName: input('Nome do programa'), uUrl: input('https://…/instalador.msi'), uSha: input('SHA-256 do arquivo (64 caracteres)'),
   uKind: h('select', { class: 'sel' }, h('option', { value: 'msi' }, 'Instalador .msi'), h('option', { value: 'exe' }, 'Instalador .exe')),
   uArgs: input('Argumentos silenciosos (ex.: /S), se precisar'),
-  fPath: input('C:\\Users\\allan\\Downloads\\programa-x64.exe'), fName: input('Nome do programa'), fArgs: input('/S', { value: '/S' }),
+  fPath: input('C:\\Users\\allan\\Downloads\\programa-x64.exe'), fName: input('Nome do programa'), fArgs: input('/S', { value: '/S' }),   // sugerido de novo a cada arquivo conferido
   cName: input('O que o comando faz, em poucas palavras'),
   cScript: h('textarea', { class: 'ta', rows: '8', placeholder: 'Write-Output "olá"', spellcheck: 'false', 'aria-label': 'Script do PowerShell' }),
   cCount: h('div', { class: 'muted', style: 'margin-top:4px' }),
@@ -121,8 +121,10 @@ const fill = (map) => { for (const [el, v] of Object.entries(map)) f[el].value =
 const inspectFile = act(async () => {
   const path = f.fPath.value.trim();
   if (!path) throw new Error('Cole o caminho do arquivo.');
-  const before = inspected ? inspected.name : '';
+  const before = inspected ? inspected.name : '', beforeArgs = inspected ? inspected.suggested_args : null;
   inspected = await api('POST', '/api/inspect', { path });
+  // os argumentos silenciosos também acompanham o programa (DBeaver pede /S /allusers), a menos que a pessoa tenha digitado outra coisa
+  if (!f.fArgs.value.trim() || f.fArgs.value.trim() === '/S' || f.fArgs.value.trim() === beforeArgs) f.fArgs.value = inspected.suggested_args;
   // o nome acompanha o arquivo: troca se estiver vazio ou ainda for o nome automático do arquivo anterior (não o que a pessoa digitou)
   if (!f.fName.value.trim() || f.fName.value.trim() === before) f.fName.value = inspected.name;
   toast('Arquivo conferido.');

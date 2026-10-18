@@ -159,11 +159,17 @@ def download_blocked_host(out: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+# Códigos de saída conhecidos de instaladores que recusam a linha de comando (e o que fazer).
+KNOWN_EXIT_HINTS = {
+    666660: " O instalador recusou os parâmetros. Para o DBeaver use /S /allusers (o /S sozinho não basta); outros instaladores NSIS usam só /S.",
+}
+
+
 def _timed_out(rc, out: str) -> str:
     """Instalador que estoura o tempo quase sempre espera uma janela que o SYSTEM não mostra (sem modo silencioso)."""
     if rc == -1 and "tempo limite" in out:
         return " Não terminou no tempo: provavelmente espera uma janela (esse instalador não tem modo silencioso). Peça à pessoa de confiança para instalar com a conta de administrador."
-    return ""
+    return KNOWN_EXIT_HINTS.get(rc, "")
 
 
 def install(system: Sys, a: dict) -> Result:
