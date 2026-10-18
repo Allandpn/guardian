@@ -16,6 +16,7 @@ from ..protocol import b64, commands as cmds, devauth, tailnet, webauthn
 from ..executor.domains import is_public_suffix
 from ..executor.domains import normalize as normalize_domain
 from . import webpush
+from .advisor import Advisor
 from .alerts import Alerts, Notifier
 from .config import Config
 from .db import REQUEST_DOMAINS_MAX, Store
@@ -111,6 +112,7 @@ class Gateway:
     def __init__(self, cfg: Config, store: Store | None = None):
         self.cfg = cfg
         self.store = store or Store(cfg.db_path)
+        self.advisor = Advisor(self.store, cfg.ai_key, cfg.ai_model, cfg.ai_daily_max)   # desligado se não houver chave
         self.lock = threading.Lock()
         self.sessions: dict[str, tuple[str, float]] = {}
         self.challenges: dict[str, tuple[bytes, str, dict, float]] = {}
@@ -178,6 +180,7 @@ class Gateway:
             ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/remove", self.remove_guardian),
             ("POST", r"/v1/guardians/(?P<gid>g_[0-9a-f]{8})/credentials/remove", self.remove_credential),
             ("GET", r"/v1/requests", self.requests),
+            ("GET", r"/v1/analyses", self.analyses),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/dismiss", self.dismiss),
         ]
         self.routes = [(m, re.compile(p + r"\Z"), f) for m, p, f in self.routes]
@@ -885,7 +888,14 @@ class Gateway:
                     self.store.audit(dev, "executed", f"{str(e.get('type', '?'))[:40]} "
                                      f"{'ok' if e.get('ok') else 'FALHOU'}: {str(e.get('msg', ''))[:200]}")
         self.store.save_report(dev, report)
+        if report.get("platform") == "windows":
+            self.advisor.consider(dev, report)   # instalação que falhou ou não conferiu: abre a análise (em segundo plano)
         return 200, {"ok": True}, {}
+
+    def analyses(self, req):
+        """As análises por IA das instalações, para o guardião-mor e o mestre."""
+        self.admin(req)
+        return 200, {"items": self.store.analyses_for(None, 40), "enabled": self.advisor.enabled}, {}
 
     def device_refused_apps(self, req, dev):
         """O aparelho pergunta quais dos apps suspensos foram recusados (para mostrar o estado e permitir pedir de novo)."""
@@ -1023,7 +1033,8 @@ class Gateway:
 
     def device_requests(self, req, dev):
         self.device(req, dev)
-        return 200, {"requests": self.store.device_requests(dev), "admin": self.store.device_admin_requests(dev), "now": int(time.time())}, {}
+        return 200, {"requests": self.store.device_requests(dev), "admin": self.store.device_admin_requests(dev),
+                     "analyses": self.store.analyses_for(dev, 10), "now": int(time.time())}, {}
 
     def cancel_request(self, req, dev, rid):
         self.device(req, dev)

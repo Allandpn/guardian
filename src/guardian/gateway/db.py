@@ -27,6 +27,8 @@ CREATE INDEX IF NOT EXISTS blocked_last ON blocked(dev, last);
 CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_asks(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
+CREATE TABLE IF NOT EXISTS analyses(dev TEXT NOT NULL, ctr INTEGER NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', PRIMARY KEY(dev, ctr));
 CREATE TABLE IF NOT EXISTS request_domains(rid INTEGER NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open',
   ttl_s INTEGER, by TEXT, ts INTEGER NOT NULL, PRIMARY KEY(rid, domain));
 """
@@ -372,6 +374,31 @@ class Store:
         if domains:
             with self.lock:
                 self.db.executemany("DELETE FROM blocked WHERE dev=? AND domain=?", [(dev, d) for d in domains])
+
+    # --- análise por IA das instalações (advisor.py) ---------------------------------------
+    def analysis_claim(self, dev: str, ctr: int, now: int) -> bool:
+        """Reserva a análise desta execução (uma só por execução). False se já existe."""
+        with self.lock:
+            cur = self.db.execute("INSERT OR IGNORE INTO analyses(dev,ctr,ts,status) VALUES(?,?,?,'pending')", (dev, ctr, now))
+            return cur.rowcount == 1
+
+    def analysis_done(self, dev: str, ctr: int, status: str, model: str, result: str) -> None:
+        self.x("UPDATE analyses SET status=?, model=?, result=?, ts=? WHERE dev=? AND ctr=?", (status, model, result[:6000], int(time.time()), dev, ctr))
+
+    def analyses_called_since(self, ts: int) -> int:
+        """Quantas consultas à IA foram feitas desde `ts` (as puladas por limite não contam)."""
+        return self.one("SELECT COUNT(*) c FROM analyses WHERE ts>=? AND status IN ('done','error','pending')", (ts,))["c"]
+
+    def analyses_for(self, dev: str | None = None, limit: int = 20):
+        rows = self.q("SELECT * FROM analyses WHERE (?1 IS NULL OR dev=?1) ORDER BY ts DESC LIMIT ?2", (dev, limit))
+        out = []
+        for r in rows:
+            try:
+                res = json.loads(r["result"]) if r["result"] else None
+            except ValueError:
+                res = None
+            out.append({"dev": r["dev"], "ctr": r["ctr"], "ts": r["ts"], "status": r["status"], "result": res})
+        return out
 
     def blocked_pairs(self, limit: int = 20000):
         """Todos os (aparelho, domínio) guardados: o executor confere quais não podem mais ser pedidos (veto)."""

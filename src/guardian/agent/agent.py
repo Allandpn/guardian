@@ -103,8 +103,14 @@ class Agent:
             with self.busy:
                 res = actions.install(self.system, a) if t == cmds.T_WIN_INSTALL else actions.run_script(self.system, a)
             with self.lock:
-                self.runs.append({"ctr": cmd["ctr"], "type": t, "name": (a.get("name") or "")[:80], "ok": res.ok, "rc": res.rc,
-                                  "out": res.out, "by": cmd["guardian"], "ts": int(self.now())})
+                run = {"ctr": cmd["ctr"], "type": t, "name": (a.get("name") or "")[:80], "ok": res.ok, "rc": res.rc,
+                       "out": res.out, "by": cmd["guardian"], "ts": int(self.now())}
+                if t == cmds.T_WIN_INSTALL:
+                    # O pedido original (sem a validade), para a tela poder pedir de novo com outros argumentos, e o que a conferência achou.
+                    # `needs_help`: falhou, ou o código foi bom mas nada instalou: é o que dispara a análise (gateway).
+                    run.update(req={k: v for k, v in a.items() if k != "not_after"}, installed=res.installed, verified=res.verified,
+                               needs_help=(not res.ok) or res.verified is False)
+                self.runs.append(run)
                 self.runs = self.runs[-RUNS_KEEP:]
                 self.state.data["runs"] = self.runs
             if not res.ok:
@@ -198,6 +204,7 @@ class Agent:
             out["blocked"] = [{k: i[k] for k in ("domain", "count", "last")} for i in b.get("items", [])][:UI_BLOCKED_MAX]
             q = self.gw.call("GET", f"/v1/devices/{self.dev}/requests")
             out["requests"], out["admin"] = q.get("requests", []), q.get("admin", [])
+            out["analyses"] = q.get("analyses", [])   # análise por IA das instalações que falharam (se o gateway tiver a chave)
         except GatewayError as e:
             out["gateway_ok"], out["error"] = False, str(e)[:200]
         return out

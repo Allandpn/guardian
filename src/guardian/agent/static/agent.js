@@ -204,6 +204,29 @@ function commandTab() {
   ];
 }
 
+// ---- análise por IA (sugestão, nunca ação automática) ----
+const ACTION_LABEL = { retry_with_args: 'Argumentos para tentar', release_domain: 'Domínio para liberar', admin_manual: 'Instalar com a conta de administrador', other: 'Sugestão' };
+function aiCard(r) {
+  if (!r.needs_help) return null;
+  const a = (st.analyses || []).find((x) => x.ctr === r.ctr);
+  if (!a) return h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Sem análise por IA (desligada, ou ainda não chegou).');
+  if (a.status === 'pending') return h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'A IA está analisando este resultado…');
+  const res = a.result || {};
+  const retry = (args) => act(async () => send({ kind: 'install', payload: { ...r.req, args } }, 'Pedido de instalação enviado com os novos argumentos.'));
+  const release = (domains) => act(async () => send({ kind: 'unblock', domains }, 'Pedido de liberação enviado.'));
+  return h('div', { class: 'note', style: 'margin:12px 0 0' },
+    h('strong', {}, 'Sugestão da IA'), ' ', a.status === 'done' ? chip(`confiança ${({ low: 'baixa', medium: 'média', high: 'alta' })[res.confidence] || 'baixa'}`, res.confidence === 'high' ? 'ok' : 'warn') : null,
+    h('div', { class: 'muted', style: 'margin-top:4px' }, 'Gerada automaticamente: pode estar errada. Confira antes de pedir. Nada é executado sem a aprovação do guardião.'),
+    res.summary ? h('p', { style: 'margin:8px 0 0' }, res.summary) : null,
+    res.cause && a.status === 'done' ? h('p', { class: 'muted', style: 'margin:4px 0 0' }, `Causa provável: ${res.cause}`) : null,
+    (res.actions || []).map((x) => h('div', { class: 'li', style: 'min-height:48px;border-top:1px solid var(--line)' },
+      h('div', { class: 'sp' }, h('strong', {}, ACTION_LABEL[x.kind] || 'Sugestão'),
+        x.kind === 'retry_with_args' ? h('div', { class: 'mono' }, x.args) : null, x.kind === 'release_domain' ? h('div', { class: 'mono' }, (x.domains || []).join(', ')) : null,
+        x.kind === 'other' ? h('div', {}, x.text) : null, x.why ? h('div', { class: 'muted' }, x.why) : null),
+      x.kind === 'retry_with_args' && r.req ? h('button', { class: 'btn pri', type: 'button', onclick: retry(x.args) }, 'Pedir de novo com isto') : null,
+      x.kind === 'release_domain' ? h('button', { class: 'btn pri', type: 'button', onclick: release(x.domains) }, 'Pedir liberação') : null)));
+}
+
 // ---- pedidos e o que foi executado ----
 function requestsTab() {
   const keep = (ts, open) => open || ts > clearedAt;       // "limpar histórico" esconde o que já foi resolvido até agora; o que está aberto continua
@@ -225,8 +248,11 @@ function requestsTab() {
     h('div', { class: 'sp' }, (q.items || []).map((i) => h('div', {}, h('span', { class: 'mono' }, i.domain), ' ', chip(i.state === 'allowed' ? (i.ttl_s ? 'liberado por tempo' : 'liberado') : i.state === 'denied' ? 'negado' : 'aguardando', i.state === 'allowed' ? 'ok' : i.state === 'denied' ? 'bad' : 'warn'))),
       h('div', { class: 'muted' }, ago(q.ts)))))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido.')));
   blocks.push(h('div', { class: 'sec' }, 'O que o agente executou'));
-  blocks.push(runs.length ? runs.map((r) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'), ` ${ago(r.ts)}`),
-    h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`))) :
+  blocks.push(runs.length ? runs.map((r) => h('details', { class: 'card', open: !!r.needs_help }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'),
+      r.verified === true ? [' ', chip('conferido', 'ok')] : r.verified === false && r.ok ? [' ', chip('não confirmou', 'warn')] : null, ` ${ago(r.ts)}`),
+    r.installed && r.installed.length ? h('div', { class: 'muted', style: 'margin-top:8px' }, `Apareceu: ${r.installed.join(', ')}`) : null,
+    h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`),
+    aiCard(r))) :
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado.')));
   return [blocks, open];
 }

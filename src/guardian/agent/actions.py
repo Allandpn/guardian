@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 OUT_MAX = 4000
 DOWNLOAD_MAX = 2 * 1024 ** 3
@@ -27,6 +27,8 @@ class Result:
     rc: int | None
     out: str
     msg: str
+    installed: list = field(default_factory=list)   # programas que apareceram (ou mudaram de versão) depois da instalação
+    verified: bool | None = None                    # True: achei programa novo; False: código ok mas nada mudou, ou falhou; None: não deu para conferir
 
 
 def clip(text: str, limit: int = OUT_MAX) -> str:
@@ -128,6 +130,32 @@ class Sys:
         status, signer = self.signature(path)
         return {"size": os.path.getsize(path), "sha256": h.hexdigest(), "status": status, "signer": signer}
 
+    def installed_programs(self) -> dict[str, str]:
+        """Programas instalados para todos os usuários (registro de desinstalação do Windows): {nome: versão}. Vazio fora do Windows."""
+        if sys.platform != "win32":
+            return {}
+        import winreg
+        out: dict[str, str] = {}
+        for sub in (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"):
+            try:
+                root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub)
+            except OSError:
+                continue
+            with root:
+                for i in range(winreg.QueryInfoKey(root)[0]):
+                    try:
+                        with winreg.OpenKey(root, winreg.EnumKey(root, i)) as k:
+                            name = str(winreg.QueryValueEx(k, "DisplayName")[0]).strip()
+                            try:
+                                ver = str(winreg.QueryValueEx(k, "DisplayVersion")[0]).strip()
+                            except OSError:
+                                ver = ""
+                    except OSError:
+                        continue
+                    if name:
+                        out[name] = ver
+        return out
+
     def winget(self) -> str:
         """O winget como SYSTEM não está no PATH: ele fica na pasta do App Installer."""
         import glob
@@ -172,7 +200,33 @@ def _timed_out(rc, out: str) -> str:
     return KNOWN_EXIT_HINTS.get(rc, "")
 
 
+def _snapshot(system: Sys) -> dict[str, str]:
+    try:
+        return dict(system.installed_programs())
+    except Exception:  # conferir é um extra: nunca derruba a instalação
+        return {}
+
+
 def install(system: Sys, a: dict) -> Result:
+    """Instala e CONFERE o resultado: o código de saída 0 não prova que instalou (o Wireshark deu 0 sem o Npcap, com a saída vazia).
+    Compara os programas instalados antes e depois: programa novo ou versão nova = verificado."""
+    before = _snapshot(system)
+    res = _install(system, a)
+    after = _snapshot(system)
+    if not before and not after:
+        return res   # sem como conferir (fora do Windows)
+    new = sorted((f"{n} {v}".strip() for n, v in after.items() if n not in before))
+    changed = sorted((f"{n} {before[n] or '?'} -> {v or '?'}" for n, v in after.items() if n in before and before[n] != v))
+    res.installed = [x[:100] for x in (new + changed)[:10]]
+    res.verified = bool(res.installed) if res.ok else False
+    if res.ok and not res.verified:
+        res.msg += " Conferi o que está instalado antes e depois e não achei programa novo nem versão nova: ele já existia, ou a instalação não fez efeito."
+    elif res.ok:
+        res.msg += f" Conferido: {', '.join(res.installed[:3])}."
+    return res
+
+
+def _install(system: Sys, a: dict) -> Result:
     limit = a.get("timeout_s", INSTALL_TIMEOUT_S)
     if a["source"] == "winget":
         argv = [system.winget(), "install", "--id", a["id"], "--exact", "--silent", "--source", "winget",

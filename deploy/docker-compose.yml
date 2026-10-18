@@ -35,6 +35,9 @@ services:
       GATEWAY_BIND: 127.0.0.1
       GATEWAY_PORT: "8080"
       GATEWAY_DB: /data/gateway.db
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}     # opcional: análise por IA das instalações que falham (docs/AGENTE.md)
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-haiku-4.5}
+      AI_DAILY_MAX: ${AI_DAILY_MAX:-30}
     volumes:
       - gateway-data:/data
     read_only: true

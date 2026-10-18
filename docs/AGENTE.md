@@ -76,6 +76,30 @@ Nada ali executa nada: tudo vira pedido no gateway, assinado com a chave do agen
 Pedidos aguardando (com o texto exato), **Revisar e aprovar** (folha com o script ou os dados do instalador, uma passkey), **Negar** (sem passkey),
 **Executar agora** (sem pedido) e **O que foi executado** (com a saída).
 
+## Conferência e análise por IA das instalações
+
+Código de saída 0 não prova que instalou (o Wireshark deu 0 sem o Npcap, com a saída vazia; o 7-Zip falhou só no download). Por isso, em duas camadas:
+
+1. **Conferência local, sem IA.** O agente compara os programas instalados (registro de desinstalação) antes e depois. Programa novo ou versão nova = **conferido**.
+   Código bom sem nada novo = **não confirmou** (talvez já existisse). Falha = **falhou**. Isso aparece no resultado, na tela do PC e no site.
+2. **Análise por IA (opcional, OpenRouter).** Só roda quando falhou ou não confirmou, só para **instalações** (nunca para scripts de comando admin), uma por execução e com teto diário.
+   O gateway monta a pergunta, a IA devolve diagnóstico e até 3 ações, e o resultado vai ao solicitante (NotToday PC, aba Pedidos) e ao guardião-mor/mestre (tela PC).
+
+Como foi desenhada para não virar um risco:
+- **A chave fica só no gateway** (`deploy/gateway.env`, que só o root lê), nunca no PC nem no site. Sem chave, tudo continua igual e nada sai do Pi.
+- **O que vai à IA é limpo**: nome de usuário nos caminhos (`C:\Users\<usuario>`), IPs, hashes, e-mails, segredos e o nome do PC saem; do arquivo local vai só o nome do arquivo, do link só o domínio;
+  no máximo 3 KB do **final** da saída. Scripts nunca saem.
+- **A IA só aconselha.** A saída do instalador é texto não confiável e pode tentar enganá-la: a resposta é validada (ações de uma lista fechada: argumentos, domínio a liberar, "precisa do administrador", outra;
+  argumentos só com caracteres de linha de comando e até 200; domínios validados; 3 ações no máximo) e mostrada como texto. "Pedir de novo com isto" e "Pedir liberação" criam um **pedido novo**, que o guardião aprova com a passkey.
+- **Limites**: `AI_DAILY_MAX` consultas por dia (padrão 30; passou do teto, o resultado segue sem análise), tempo curto, e qualquer falha da IA fica contida (mostra "análise indisponível", sem detalhes).
+
+Ligar: crie uma chave em openrouter.ai (com limite de gasto) e, **no Pi, direto no arquivo** (a chave não passa por chat):
+```
+sudo nano /opt/guardian/deploy/gateway.env     # acrescente OPENROUTER_API_KEY=..., OPENROUTER_MODEL=... e AI_DAILY_MAX=30
+cd /opt/guardian && sudo docker compose --env-file deploy/gateway.env -f deploy/docker-compose.yml up -d gateway
+```
+O nome do modelo (`OPENROUTER_MODEL`, padrão `anthropic/claude-haiku-4.5`) precisa existir no OpenRouter; se não existir, a análise mostra "indisponível (HTTPError)".
+
 ## Operação e solução de problemas
 
 - O PC fica "Sem sinal" no site se o agente parar (alerta existente): é o aviso de que alguém mexeu.

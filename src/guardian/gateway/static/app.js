@@ -970,6 +970,7 @@ async function pcView() {
   me = await api('GET', '/v1/me');
   const { devices, now, pcReqs } = await loadAll();
   renderNav('pc');
+  const ai = new Map(((await api('GET', '/v1/analyses').catch(() => ({ items: [] }))).items || []).map((x) => [`${x.dev}|${x.ctr}`, x]));   // análises por IA (só leitura)
   const pcs = devices.filter((d) => d.kind === 'device' && d.report && d.report.platform === 'windows');
   const nameOf = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const approve = (q) => act(async () => {
@@ -994,7 +995,17 @@ async function pcView() {
     h('div', { class: 'row', style: 'align-items:flex-start;gap:12px' }, insignia('device', 40), h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${nameOf(q.dev)} · ${ago(q.ts, now)}`))),
     h('pre', { class: 'detail inline' }, winDetail(q.payload)),
     h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn dangero', type: 'button', onclick: deny(q) }, 'Negar'), h('button', { class: 'btn pri grow', type: 'button', onclick: approve(q) }, 'Revisar e aprovar')));
-  const runs = pcs.flatMap((d) => ((d.report || {}).runs || []).map((r) => ({ ...r, pc: d.name }))).sort((a, b) => b.ts - a.ts).slice(0, 12);
+  const runs = pcs.flatMap((d) => ((d.report || {}).runs || []).map((r) => ({ ...r, pc: d.name, dev: d.id }))).sort((a, b) => b.ts - a.ts).slice(0, 12);
+  const ACT = { retry_with_args: 'Argumentos para tentar', release_domain: 'Domínio para liberar', admin_manual: 'Precisa da conta de administrador', other: 'Sugestão' };
+  const aiBlock = (r) => {
+    const a = r.needs_help ? ai.get(`${r.dev}|${r.ctr}`) : null;
+    if (!a) return null;
+    const res = a.result || {};
+    return h('div', { class: 'note', style: 'margin:10px 0 0' }, h('strong', {}, 'Análise por IA (não verificada)'), a.status === 'pending' ? ' · analisando…' : '',
+      res.summary ? h('p', { style: 'margin:6px 0 0' }, res.summary) : null, res.cause && a.status === 'done' ? h('p', { class: 'muted', style: 'margin:4px 0 0' }, `Causa provável: ${res.cause}`) : null,
+      (res.actions || []).map((x) => h('div', { class: 'muted', style: 'margin-top:4px' }, `${ACT[x.kind] || 'Sugestão'}: `, h('span', { class: 'mono' }, x.args || (x.domains || []).join(', ') || x.text || x.why || ''))),
+      h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'O solicitante recebe a mesma análise. Qualquer ação sugerida vira um pedido novo que você aprova.'));
+  };
 
   show(top('PC'), h('div', { class: 'wrap' },
     h('div', { class: 'sec royal' }, `Pedidos do computador · ${pcReqs.length}`),
@@ -1019,7 +1030,9 @@ async function pcView() {
         }) }, 'Revisar e assinar'))),
       h('div', { class: 'sec' }, 'O que foi executado'),
       runs.length ? runs.map((r) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'),
-        h('span', { class: 'muted' }, ` ${r.pc} · ${ago(r.ts, now)} · ${gname(r.by)}`)), h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`))) :
+        h('span', { class: 'muted' }, ` ${r.pc} · ${ago(r.ts, now)} · ${gname(r.by)}`), r.verified === true ? [' ', chip('conferido', 'ok')] : r.verified === false && r.ok ? [' ', chip('não confirmou', 'warn')] : null),
+        r.installed && r.installed.length ? h('div', { class: 'muted', style: 'margin-top:8px' }, `Apareceu: ${r.installed.join(', ')}`) : null,
+        h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`), aiBlock(r))) :
         h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado ainda.'))] : null));
   timer = setTimeout(autoRefresh, 20000);
 }

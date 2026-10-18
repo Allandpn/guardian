@@ -51,6 +51,10 @@ class FakeSys(actions.Sys):
     def file_info(self, path):
         return {"size": 98000000, "sha256": self.hash, "status": "Valid", "signer": "Wireshark Foundation"}
 
+    def installed_programs(self):
+        snaps = getattr(self, "snaps", None)
+        return dict(snaps.pop(0)) if snaps else {}
+
     def winget(self):
         return "winget.exe"
 
@@ -252,6 +256,47 @@ class AgentEndToEnd(unittest.TestCase):
             gate.set()
             self.sys.run = orig
             self.ag.async_exec = False
+
+    URL_INSTALL = {"name": "Prog", "source": "url", "url": "https://exemplo.com/p.exe", "sha256": SHA, "kind": "exe", "args": "/S"}
+
+    def test_05g_install_is_verified_by_what_appeared_in_the_installed_programs(self):
+        self.sys.snaps = [{"Antigo": "1"}, {"Antigo": "1", "Prog": "2.0"}]
+        self.send(cmds.T_WIN_INSTALL, self.URL_INSTALL)
+        self.ag.step(wait_s=0)
+        run = self.ag.runs[-1]
+        self.assertTrue(self.last()["ok"])
+        self.assertEqual((run["verified"], run["installed"], run["needs_help"]), (True, ["Prog 2.0"], False))
+        self.assertIn("Conferido: Prog 2.0", self.last()["msg"])
+        self.assertEqual(run["req"]["url"], self.URL_INSTALL["url"])        # o pedido original acompanha, para pedir de novo com outros argumentos
+        self.assertNotIn("not_after", run["req"])
+
+    def test_05h_exit_code_zero_without_anything_new_is_flagged(self):
+        self.sys.snaps = [{"Antigo": "1"}, {"Antigo": "1"}]                  # nada mudou (o caso do Wireshark sem o Npcap seria outro: o programa apareceu)
+        self.send(cmds.T_WIN_INSTALL, self.URL_INSTALL)
+        self.ag.step(wait_s=0)
+        run = self.ag.runs[-1]
+        self.assertTrue(self.last()["ok"])                                    # o código foi bom...
+        self.assertEqual((run["verified"], run["needs_help"]), (False, True))   # ...mas ninguém confirmou: dispara a análise
+        self.assertIn("não achei programa novo", self.last()["msg"])
+
+    def test_05i_version_change_counts_and_failures_need_help(self):
+        self.sys.snaps = [{"Prog": "1.0"}, {"Prog": "2.0"}]
+        self.send(cmds.T_WIN_INSTALL, self.URL_INSTALL)
+        self.ag.step(wait_s=0)
+        self.assertEqual(self.ag.runs[-1]["installed"], ["Prog 1.0 -> 2.0"])
+        self.sys.snaps = [{"X": "1"}, {"X": "1"}]                           # com o registro legível, falha = verificado False
+        self.sys.replies.append((1603, "erro fatal"))
+        self.send(cmds.T_WIN_INSTALL, self.URL_INSTALL)
+        self.ag.step(wait_s=0)
+        run = self.ag.runs[-1]
+        self.assertFalse(self.last()["ok"])
+        self.assertEqual((run["verified"], run["needs_help"], run["rc"]), (False, True, 1603))
+
+    def test_05j_scripts_are_never_flagged_for_analysis(self):
+        self.send(cmds.T_WIN_RUN, {"script": "Write-Output oi"})
+        self.ag.step(wait_s=0)
+        self.assertNotIn("needs_help", self.ag.runs[-1])
+        self.assertNotIn("req", self.ag.runs[-1])                             # o texto do script não vai no registro que o gateway pode analisar
 
     def test_06_exe_installer_and_reboot_code(self):
         self.sys.replies.append((3010, "reiniciar"))
