@@ -35,7 +35,9 @@ instalar um programa ou rodar algo como administrador, a pessoa **pede** e um gu
    ```
    powershell -ExecutionPolicy Bypass -File src\guardian\agent\windows\install.ps1 -Pairing "<string>" -Tray
    ```
-   Precisa de Python 3.11+ instalado. O script copia o agente para `C:\Program Files\GuardianAgent`, cria o estado em `C:\ProgramData\GuardianAgent`
+   Precisa de **Python 3.11+ instalado para todos os usuários** (em `C:\Program Files`): `winget install --id Python.Python.3.12 --scope machine`, ainda como administrador.
+   O instalador recusa um Python dentro de `C:\Users\...` e o atalho da Microsoft Store: o agente roda como SYSTEM e uma conta comum poderia trocar o `python.exe` dela.
+   O script copia o agente para `C:\Program Files\GuardianAgent`, cria o estado em `C:\ProgramData\GuardianAgent`
    (só SYSTEM e administradores), pareia, cria a tarefa `GuardianAgent` (SYSTEM, sobe na inicialização, reinicia se cair) e o atalho **Guardian** na área de trabalho.
 3. Confira o **fingerprint** que o script mostra, por voz, com o guardião.
 4. No site, o PC aparece em **Dispositivos** (chip "Windows") e na tela **PC**.
