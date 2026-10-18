@@ -956,12 +956,12 @@ function phonesFilter(phones, current, onPick) {
 const winArgs = (p, hours = 24) => ({ ...p, not_after: Math.floor(Date.now() / 1000) + hours * 3600 });   // o comando deixa de valer sozinho
 const winType = (kind) => (kind === 'install' ? 'win_install' : 'win_run');
 const isRun = (p) => p.script !== undefined;
-const winDetail = (p) => (isRun(p) ? p.script : p.source === 'url' ? `Endereço: ${p.url}\nSHA-256: ${p.sha256}\nTipo: ${p.kind}${p.args ? `\nArgumentos: ${p.args}` : ''}` :
+const winDetail = (p) => (isRun(p) ? p.script : p.source === 'file' ? `Arquivo no computador: ${p.path}\nSHA-256: ${p.sha256}\nAssinatura digital exigida: ${p.publisher || '(nenhuma: só o hash vale)'}\nTipo: ${p.kind}${p.args ? `\nArgumentos: ${p.args}` : ''}` : p.source === 'url' ? `Endereço: ${p.url}\nSHA-256: ${p.sha256}\nTipo: ${p.kind}${p.args ? `\nArgumentos: ${p.args}` : ''}` :
   `winget install --id ${p.id}${p.version ? ` --version ${p.version}` : ''} --exact --silent`);
 function winSpec(pcName, p) {
   return { title: isRun(p) ? `Rodar este script em ${pcName}?` : `Instalar ${p.name} em ${pcName}?`,
     rows: [['Computador', pcName], ['Ação', isRun(p) ? 'Rodar como administrador' : 'Instalar como administrador'],
-      isRun(p) ? ['Tempo limite', `${p.timeout_s || 600} s`] : ['Origem', p.source === 'winget' ? 'winget' : 'instalador por link']],
+      isRun(p) ? ['Tempo limite', `${p.timeout_s || 600} s`] : ['Origem', p.source === 'winget' ? 'winget' : p.source === 'file' ? 'arquivo já baixado no computador' : 'instalador por link']],
     effect: 'vale por 24 h', effectKind: 'warn', detail: winDetail(p), confirm: 'Assinar e aprovar', danger: true,
     note: 'Roda como administrador no computador, uma vez. Leia o texto acima por inteiro: o que você assina é exatamente isto.' };
 }

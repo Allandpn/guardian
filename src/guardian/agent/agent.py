@@ -5,6 +5,7 @@ só com assinatura de guardião-mor ou mestre. O agente roda como SYSTEM e a pas
 quem usa o computador, numa conta comum, não alcança a chave nem o estado. Veja docs/AGENTE.md.
 """
 import os
+import re
 import socket
 import sys
 import threading
@@ -137,6 +138,17 @@ class Agent:
         except GatewayError as e:
             out["gateway_ok"], out["error"] = False, str(e)[:200]
         return out
+
+    def ui_inspect(self, path) -> dict:
+        """Confere um instalador que a pessoa já baixou (tamanho, SHA-256, assinatura) para ela pedir a instalação. Só leitura, só em C:\\Users."""
+        if not isinstance(path, str) or not re.match(r"^[A-Za-z]:\\Users\\[^<>\"|?*]+\.(exe|msi)$", path, re.I) or ".." in path.split("\\"):
+            raise ValueError("informe o caminho completo de um .exe ou .msi dentro de C:\\Users")
+        if not os.path.isfile(path):
+            raise ValueError("arquivo não encontrado")
+        info = self.system.file_info(path)
+        ext = path.lower().rsplit(".", 1)[-1]
+        stem = path.replace("/", "\\").rsplit("\\", 1)[-1].rsplit(".", 1)[0]
+        return {**info, "path": path, "kind": ext, "name": stem[:80]}
 
     def ui_request(self, body: dict) -> dict:
         return self.gw.call("POST", f"/v1/devices/{self.dev}/requests", body)

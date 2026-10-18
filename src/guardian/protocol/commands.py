@@ -53,6 +53,7 @@ WIN_MAX_ARGS = 200
 _WINGET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{1,100}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_WIN_PATH = re.compile(r"^[A-Za-z]:\\[^<>\"|?*]+$")
 _HOST = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
 
 
@@ -87,6 +88,20 @@ def check_win_request(type_: str, args: dict) -> None:
             if args.get("kind") not in ("msi", "exe"):
                 raise CommandError("tipo do instalador deve ser msi ou exe")
             _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+        elif source == "file":
+            # Um instalador que já está no computador (baixado antes). O agente o copia para uma pasta protegida ANTES de conferir o hash,
+            # então trocar o arquivo depois da aprovação não adianta. `publisher` (opcional) exige assinatura digital válida desse nome.
+            path = _win_text(args, "path", 4, 400)
+            if not _WIN_PATH.match(path) or ".." in path.replace("/", "\\").split("\\"):
+                raise CommandError("caminho inválido (use um caminho completo com letra de unidade, como C:\\Users\\...)")
+            ext = path.lower().rsplit(".", 1)[-1]
+            if ext not in ("msi", "exe") or args.get("kind") != ext:
+                raise CommandError("o arquivo precisa ser .msi ou .exe e o tipo tem de combinar com a extensão")
+            if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
+                raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
+            _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+            if args.get("publisher") is not None:
+                _win_text(args, "publisher", 1, 120)
         else:
             raise CommandError("origem do programa inválida")
     elif type_ == T_WIN_RUN:

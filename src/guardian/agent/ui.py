@@ -97,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._guard():
             return
-        if self.path != "/api/request":
+        if self.path not in ("/api/request", "/api/inspect"):
             return self._json(404, {"error": "não encontrado"})
         try:
             n = int(self.headers.get("Content-Length", "0"))
@@ -109,6 +109,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n))
         except ValueError:
             return self._json(400, {"error": "JSON inválido"})
+        if self.path == "/api/inspect":
+            try:
+                return self._json(200, self.server.agent.ui_inspect(body.get("path") if isinstance(body, dict) else None))
+            except (ValueError, OSError) as e:
+                return self._json(400, {"error": str(e)[:200]})
         if not isinstance(body, dict) or body.get("kind") not in REQUEST_KINDS:
             return self._json(400, {"error": "tipo de pedido inválido"})
         allowed = {"kind", "domains"} if body["kind"] == "unblock" else {"kind", "payload"}

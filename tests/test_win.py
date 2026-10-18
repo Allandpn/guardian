@@ -152,6 +152,19 @@ class WinGateway(unittest.TestCase):
             if x["kind"] not in ("install", "command"):
                 self.assertNotIn("payload", x)
 
+    def test_06b_install_request_from_a_local_file(self):
+        body = {"name": "Wireshark", "source": "file", "path": "C:\\Users\\allan\\Downloads\\Wireshark-4.6.9-x64.exe", "sha256": SHA, "kind": "exe", "args": "/S", "publisher": "Wireshark Foundation"}
+        st, r, _ = self.signed(self.pckey, self.pc, "POST", "/requests", {"kind": "install", "payload": body})
+        self.assertEqual(st, 200, r)
+        q = next(x for x in self.c.call("GET", "/v1/requests")[1]["items"] if x["kind"] == "install" and x["payload"].get("source") == "file")
+        self.assertIn("Instalar Wireshark (arquivo Wireshark-4.6.9-x64.exe)", q["text"])
+        self.assertEqual(q["payload"]["publisher"], "Wireshark Foundation")
+        for bad in ({**body, "path": "\\\\srv\\pasta\\a.exe"}, {**body, "kind": "msi"}, {**body, "sha256": "x"}):
+            self.assertEqual(self.signed(self.pckey, self.pc, "POST", "/requests", {"kind": "install", "payload": bad})[0], 400)
+        (st, r2, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.pc, cmds.T_WIN_INSTALL, {**body, "not_after": NOW + 600})
+        self.assertEqual(st, 200, r2)
+        self.assertEqual(self.c.call("POST", f"/v1/requests/{q['id']}/resolve", {"cmd": r2["id"]})[0], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

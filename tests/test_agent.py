@@ -28,7 +28,7 @@ class FakeSys(actions.Sys):
         self.calls, self.downloads, self.replies, self.hash = [], [], [], SHA
         self.ips = ["100.64.0.9", "192.168.1.5"]
 
-    def run(self, cmd, timeout):
+    def run(self, cmd, timeout, env=None):
         self.calls.append((cmd, timeout))
         if isinstance(cmd, list) and cmd and str(cmd[0]).endswith("powershell.exe"):
             self.script = open(cmd[-1], encoding="utf-8-sig").read()  # o arquivo existe enquanto o script roda
@@ -38,6 +38,18 @@ class FakeSys(actions.Sys):
         self.downloads.append(url)
         open(dest, "wb").write(b"x")
         return self.hash
+
+    def copy_hashed(self, src, dst, max_bytes=0):
+        self.copies = getattr(self, "copies", []) + [(src, dst)]
+        open(dst, "wb").write(b"x")
+        return self.hash
+
+    def signature(self, path):
+        self.sig_checked = getattr(self, "sig_checked", []) + [path]
+        return getattr(self, "sig", ("Valid", "Wireshark Foundation"))
+
+    def file_info(self, path):
+        return {"size": 98000000, "sha256": self.hash, "status": "Valid", "signer": "Wireshark Foundation"}
 
     def winget(self):
         return "winget.exe"
@@ -148,6 +160,47 @@ class AgentEndToEnd(unittest.TestCase):
         self.assertEqual(len(self.sys.calls), n)                          # nada foi executado
         self.sys.hash = SHA
 
+    FILE = {"name": "Wireshark", "source": "file", "path": "C:\\Users\\allan\\Downloads\\Wireshark-4.6.9-x64.exe", "sha256": SHA,
+            "kind": "exe", "args": "/S", "publisher": "Wireshark Foundation"}
+
+    def test_05b_local_file_is_copied_then_checked_then_run(self):
+        self.sys.sig = ("Valid", "Wireshark Foundation")
+        n = len(self.sys.calls)
+        self.send(cmds.T_WIN_INSTALL, self.FILE)
+        self.ag.step(wait_s=0)
+        self.assertTrue(self.last()["ok"], self.last())
+        src, dst = self.sys.copies[-1]
+        self.assertEqual(src, self.FILE["path"])
+        self.assertTrue(dst.endswith("setup.exe"))                         # o que roda é a CÓPIA na pasta protegida, não o original
+        self.assertEqual(self.sys.sig_checked[-1], dst)                    # a assinatura foi conferida na cópia
+        self.assertEqual(len(self.sys.calls), n + 1)
+        self.assertTrue(self.sys.calls[-1][0].endswith('setup.exe" /S'))
+        self.assertNotIn("Downloads", self.sys.calls[-1][0])
+
+    def test_05c_local_file_refused_when_hash_or_signature_do_not_match(self):
+        n = len(self.sys.calls)
+        self.sys.hash = "d" * 64                                           # o arquivo mudou depois da aprovação (ou é outro)
+        self.send(cmds.T_WIN_INSTALL, self.FILE)
+        self.ag.step(wait_s=0)
+        self.assertFalse(self.last()["ok"])
+        self.assertIn("SHA-256 do arquivo", self.last()["msg"])
+        self.sys.hash = SHA
+        for sig in (("NotSigned", ""), ("Valid", "Outra Empresa"), ("HashMismatch", "Wireshark Foundation")):
+            self.sys.sig = sig
+            self.send(cmds.T_WIN_INSTALL, self.FILE)
+            self.ag.step(wait_s=0)
+            self.assertFalse(self.last()["ok"], sig)
+            self.assertIn("assinatura digital recusada", self.last()["msg"])
+        self.sys.sig = ("Valid", "Wireshark Foundation")
+        self.assertEqual(len(self.sys.calls), n)                           # nada foi executado em nenhum dos casos
+
+    def test_05d_local_file_without_publisher_only_checks_the_hash(self):
+        self.sys.sig = ("NotSigned", "")
+        self.send(cmds.T_WIN_INSTALL, {k: v for k, v in self.FILE.items() if k != "publisher"})
+        self.ag.step(wait_s=0)
+        self.assertTrue(self.last()["ok"], self.last())
+        self.sys.sig = ("Valid", "Wireshark Foundation")
+
     def test_06_exe_installer_and_reboot_code(self):
         self.sys.replies.append((3010, "reiniciar"))
         self.send(cmds.T_WIN_INSTALL, {"name": "Prog", "source": "url", "url": "https://exemplo.com/p.exe", "sha256": SHA, "kind": "exe", "args": "/S"})
@@ -220,6 +273,16 @@ class AgentEndToEnd(unittest.TestCase):
             self.assertEqual(call("POST", "/api/request", {"kind": "install", "payload": {}}, **{"origin": "http://evil.example", "extra": {"X-Guardian-Agent": "1"}})[0], 403)
             self.assertEqual(call("POST", "/api/request", {"kind": "install", "payload": {}}, origin=f"http://localhost:{port}")[0], 403)   # sem o cabeçalho
             self.assertEqual(call("POST", "/api/request", {"kind": "outro"}, **ok_post)[0], 400)
+            # conferir um instalador que a pessoa já baixou: só .exe/.msi dentro de C:\\Users, nunca rede nem pastas do sistema
+            from unittest import mock
+            with mock.patch("os.path.isfile", return_value=True):
+                st, r = call("POST", "/api/inspect", {"path": self.FILE["path"]}, **ok_post)
+                self.assertEqual(st, 200, r)
+                self.assertEqual((r["sha256"], r["status"], r["signer"], r["kind"], r["name"]), (SHA, "Valid", "Wireshark Foundation", "exe", "Wireshark-4.6.9-x64"))
+                for bad in ("\\\\servidor\\pasta\\a.exe", "C:\\Windows\\System32\\cmd.exe", "C:\\Users\\..\\Windows\\a.exe", "C:\\Users\\allan\\a.bat", "relativo.exe", 5, None):
+                    self.assertEqual(call("POST", "/api/inspect", {"path": bad}, **ok_post)[0], 400, bad)
+            self.assertEqual(call("POST", "/api/inspect", {"path": self.FILE["path"]}, host="evil.example")[0], 403)
+            self.assertEqual(call("POST", "/api/inspect", {"path": self.FILE["path"]})[0], 403)                  # sem origem nem cabeçalho
             st, r = call("POST", "/api/request", {"kind": "install", "payload": {"name": "x", "source": "winget", "id": "a;b"}}, **ok_post)
             self.assertEqual(st, 400, r)
             self.assertIn("winget", r["error"])

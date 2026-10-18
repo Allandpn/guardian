@@ -59,9 +59,11 @@ class Sys:
     def cleanup(self, d: str) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
-    def run(self, cmd, timeout: int) -> tuple[int, str]:
+    def run(self, cmd, timeout: int, env: dict | None = None) -> tuple[int, str]:
         """Roda e devolve (código, saída). Estourou o tempo: mata a árvore de processos e devolve código -1."""
         kw = {"creationflags": _NOWIN} if sys.platform == "win32" else {}
+        if env:
+            kw["env"] = {**os.environ, **env}
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
         try:
             out, _ = p.communicate(timeout=timeout)
@@ -90,6 +92,41 @@ class Sys:
                 h.update(chunk)
                 f.write(chunk)
         return h.hexdigest()
+
+    def copy_hashed(self, src: str, dst: str, max_bytes: int = DOWNLOAD_MAX) -> str:
+        """Copia um arquivo para a pasta protegida lendo UMA vez e devolve o SHA-256 do que foi copiado. O que se confere e se executa é a cópia:
+        a pessoa não consegue trocar o original depois (TOCTOU)."""
+        h = hashlib.sha256()
+        total = 0
+        with open(src, "rb") as r, open(dst, "wb") as f:
+            while True:
+                chunk = r.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("instalador grande demais")
+                h.update(chunk)
+                f.write(chunk)
+        return h.hexdigest()
+
+    def signature(self, path: str) -> tuple[str, str]:
+        """(estado, nome do assinante) da assinatura digital do arquivo. Estado "Valid" é o único bom. O caminho vai por variável de ambiente (sem aspas)."""
+        script = ("$s = Get-AuthenticodeSignature -LiteralPath $env:GA_PATH; $n = ''; "
+                  "if ($s.SignerCertificate) { $n = $s.SignerCertificate.GetNameInfo('SimpleName', $false) }; Write-Output ($s.Status.ToString() + '|' + $n)")
+        rc, out = self.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 90, env={"GA_PATH": path})
+        lines = out.strip().splitlines()
+        status, _, signer = (lines[-1] if lines else "").partition("|")
+        return status.strip() or "Desconhecido", signer.strip()
+
+    def file_info(self, path: str) -> dict:
+        """Tamanho, SHA-256 e assinatura de um arquivo, só para mostrar a quem vai pedir a instalação."""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        status, signer = self.signature(path)
+        return {"size": os.path.getsize(path), "sha256": h.hexdigest(), "status": status, "signer": signer}
 
     def winget(self) -> str:
         """O winget como SYSTEM não está no PATH: ele fica na pasta do App Installer."""
@@ -138,12 +175,18 @@ def install(system: Sys, a: dict) -> Result:
     d = system.workdir()
     try:
         path = os.path.join(d, "setup." + a["kind"])
+        local = a["source"] == "file"
         try:
-            got = system.download(a["url"], path)
+            got = system.copy_hashed(a["path"], path) if local else system.download(a["url"], path)
         except (OSError, ValueError, urllib.error.URLError) as e:
-            return Result(False, None, "", f"download falhou: {e}"[:300])
+            return Result(False, None, "", f"{'leitura do arquivo' if local else 'download'} falhou: {e}"[:300])
         if got != a["sha256"]:
-            return Result(False, None, "", f"o SHA-256 do arquivo baixado ({got[:12]}…) não é o aprovado ({a['sha256'][:12]}…): nada foi executado")
+            what = "do arquivo" if local else "do arquivo baixado"
+            return Result(False, None, "", f"o SHA-256 {what} ({got[:12]}…) não é o aprovado ({a['sha256'][:12]}…): nada foi executado")
+        if a.get("publisher"):  # exigido pelo guardião: assinatura digital válida desse nome, conferida na cópia protegida
+            status, signer = system.signature(path)
+            if status != "Valid" or signer.lower() != a["publisher"].lower():
+                return Result(False, None, "", f"assinatura digital recusada (estado {status}, assinante '{signer}'; o aprovado era '{a['publisher']}'): nada foi executado")
         extra = f" {a['args']}" if a.get("args") else ""
         cmd = f'msiexec /i "{path}" /qn /norestart{extra}' if a["kind"] == "msi" else f'"{path}"{extra}'
         rc, out = system.run(cmd, INSTALL_TIMEOUT_S)

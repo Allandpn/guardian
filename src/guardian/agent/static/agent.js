@@ -36,6 +36,7 @@ const f = {
   uName: input('Nome do programa'), uUrl: input('https://…/instalador.msi'), uSha: input('SHA-256 do arquivo (64 caracteres)'),
   uKind: h('select', { class: 'sel' }, h('option', { value: 'msi' }, 'Instalador .msi'), h('option', { value: 'exe' }, 'Instalador .exe')),
   uArgs: input('Argumentos silenciosos (ex.: /S), se precisar'),
+  fPath: input('C:\\Users\\allan\\Downloads\\programa-x64.exe'), fName: input('Nome do programa'), fArgs: input('/S', { value: '/S' }),
   cName: input('O que o comando faz, em poucas palavras'),
   cScript: h('textarea', { class: 'ta', rows: '8', placeholder: 'Write-Output "olá"', spellcheck: 'false', 'aria-label': 'Script do PowerShell' }),
   cCount: h('div', { class: 'muted', style: 'margin-top:4px' }),
@@ -114,7 +115,24 @@ function blockedTab() {
 }
 
 // ---- programas ----
+let inspected = null;      // o que a conferência do arquivo devolveu (tamanho, SHA-256, assinatura)
 const fill = (map) => { for (const [el, v] of Object.entries(map)) f[el].value = v; draw(); };
+
+const inspectFile = act(async () => {
+  const path = f.fPath.value.trim();
+  if (!path) throw new Error('Cole o caminho do arquivo.');
+  inspected = await api('POST', '/api/inspect', { path });
+  if (!f.fName.value.trim()) f.fName.value = inspected.name;
+  toast('Arquivo conferido.');
+  draw();
+});
+const fileRequest = act(async () => {
+  if (!inspected || inspected.path !== f.fPath.value.trim()) throw new Error('Confira o arquivo de novo: o caminho mudou.');
+  const p = { name: f.fName.value.trim(), source: 'file', path: inspected.path, sha256: inspected.sha256, kind: inspected.kind };
+  if (f.fArgs.value.trim()) p.args = f.fArgs.value.trim();
+  if (inspected.status === 'Valid' && inspected.signer) p.publisher = inspected.signer;   // o agente só instala se a assinatura for válida e deste nome
+  await send({ kind: 'install', payload: p }, 'Pedido de instalação enviado.');
+});
 
 function programsTab() {
   const w = act(async () => {
@@ -139,7 +157,18 @@ function programsTab() {
       h('div', { style: 'margin-top:10px' }, small('Usar o exemplo (7-Zip)', () => fill({ wName: '7-Zip', wId: '7zip.7zip', wVer: '' }))),
       field('Nome', f.wName), field('Id do winget', f.wId), field('Versão (opcional)', f.wVer),
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: w }, 'Pedir instalação'))),
-    h('div', { class: 'sec' }, 'Opção 2: instalador por link'),
+    h('div', { class: 'sec' }, 'Opção 2: arquivo que eu já baixei'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Cole o caminho completo do .exe ou .msi (em C:\\Users). A tela confere o tamanho, o SHA-256 e a assinatura digital; o guardião aprova exatamente esse arquivo. O agente copia o arquivo para uma pasta protegida antes de instalar, então trocá-lo depois não adianta.'),
+      field('Caminho do arquivo', f.fPath),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn grow', type: 'button', onclick: inspectFile }, 'Conferir arquivo')),
+      inspected ? h('div', { class: 'kvbox', style: 'margin-top:12px' },
+        h('div', { class: 'kv' }, h('span', {}, 'Tamanho'), h('span', {}, `${(inspected.size / 1048576).toFixed(1)} MB`)),
+        h('div', { class: 'kv' }, h('span', {}, 'Assinatura digital'), chip(inspected.status === 'Valid' ? `válida · ${inspected.signer}` : `sem assinatura válida (${inspected.status})`, inspected.status === 'Valid' ? 'ok' : 'bad')),
+        h('div', { class: 'kv' }, h('span', {}, 'SHA-256'), h('span', { class: 'mono', style: 'font-size:11px;word-break:break-all' }, inspected.sha256))) : null,
+      inspected && inspected.status !== 'Valid' ? h('div', { class: 'note bad' }, 'Este arquivo não tem assinatura digital válida. O guardião vai aprovar só pelo hash: confira de onde ele veio.') : null,
+      inspected ? [field('Nome', f.fName), field('Argumentos silenciosos (sem isto o instalador espera uma janela que ninguém vê)', f.fArgs),
+        h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: fileRequest }, 'Pedir instalação'))] : null),
+    h('div', { class: 'sec' }, 'Opção 3: instalador por link'),
     h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Para programas que não estão no winget. Baixe o instalador uma vez, rode no PowerShell: Get-FileHash arquivo.msi (e copie o campo Hash). O agente só instala se o arquivo baixado for idêntico a esse hash. Só endereços https.'),
       field('Nome', f.uName), field('Endereço do instalador', f.uUrl), field('SHA-256', f.uSha), field('Tipo', f.uKind), field('Argumentos silenciosos', f.uArgs),
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: u }, 'Pedir instalação'))),

@@ -1077,7 +1077,8 @@ class Gateway:
         if self.store.admin_requests_open(dev) >= ADMIN_REQUESTS_MAX_PER_DEV:
             raise HttpError(429, "pedidos demais em aberto")
         if type_ == cmds.T_WIN_INSTALL:
-            what = (payload["id"] + (f" {payload['version']}" if payload.get("version") else "")) if payload["source"] == "winget" else payload["url"]
+            what = ((payload["id"] + (f" {payload['version']}" if payload.get("version") else "")) if payload["source"] == "winget"
+                    else payload["url"] if payload["source"] == "url" else "arquivo " + payload["path"].replace("/", "\\").rsplit("\\", 1)[-1])
             text = f"Instalar {payload['name']} ({what})"
         else:
             text = "Rodar comando: " + (payload.get("name") or payload["script"].strip().splitlines()[0])[:120]
