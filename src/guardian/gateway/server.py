@@ -187,6 +187,8 @@ class Gateway:
             return 64 * 1024
         if path.endswith("/commands") or path.endswith("/cosign"):
             return 16 * 1024
+        if path.endswith("/requests"):
+            return 12 * 1024  # pedido de comando do computador leva o script (até 6 KB)
         return 4 * 1024
 
     def dispatch(self, req: Req):

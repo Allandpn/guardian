@@ -1,0 +1,161 @@
+"""Agente do Windows: puxa os comandos assinados dos guardiões, confere, executa como administrador e se reporta.
+
+O computador é um aparelho como o celular (chave própria, relatório, pedidos). A diferença é o que ele sabe fazer: instalar programa e rodar script,
+só com assinatura de guardião-mor ou mestre. O agente roda como SYSTEM e a pasta de estado só abre para SYSTEM e administradores:
+quem usa o computador, numa conta comum, não alcança a chave nem o estado. Veja docs/AGENTE.md.
+"""
+import os
+import socket
+import sys
+import threading
+import time
+from dataclasses import dataclass
+
+from ..executor.runner import GatewayClient, GatewayError, State, load_or_create_key, parse_pairing
+from ..protocol import b64, commands as cmds, devauth, tailnet
+from . import actions
+
+VERSION = "0.1.0"
+REPORT_EVERY_S = 60
+RUNS_KEEP = 6
+RUN_OUT_REPORT = 3000
+UI_BLOCKED_MAX = 150
+
+
+@dataclass
+class AgentConfig:
+    state_dir: str
+    ui_port: int = 47657
+
+
+def default_state_dir() -> str:
+    base = os.environ.get("ProgramData") or os.path.expanduser("~")
+    return os.path.join(base, "GuardianAgent")
+
+
+def pair(cfg: AgentConfig, pairing: str, name: str | None = None) -> str:
+    """Registra o computador no gateway e fixa os guardiões do pareamento. Devolve o fingerprint (confira por voz com o guardião)."""
+    p = parse_pairing(pairing)
+    os.makedirs(cfg.state_dir, mode=0o700, exist_ok=True)
+    key = load_or_create_key(os.path.join(cfg.state_dir, "agent.pem"))
+    spki = devauth.spki_of(key)
+    dev = devauth.device_id(spki)
+    gw = GatewayClient(p["url"], key)
+    gw.call("POST", "/v1/devices/register", {"pairing": p["token"], "pubkey": b64.enc(spki), "name": (name or socket.gethostname())[:64], "kind": "device"})
+    st = State(os.path.join(cfg.state_dir, "state.json"))
+    trust = cmds.Trust(p["rp"], p["url"], {g: cmds.Guardian(v["name"], dict(v["creds"]), v.get("role", cmds.ROLE_ADMIN)) for g, v in p["guardians"].items()})
+    st.data.update(gateway=p["url"], consumer=cmds.Consumer(dev, trust).to_json(), after=0, runs=[])
+    st.save()
+    return devauth.fingerprint(spki)
+
+
+class Agent:
+    def __init__(self, cfg: AgentConfig, system: actions.Sys | None = None, now=time.time):
+        self.cfg, self.now = cfg, now
+        self.key = load_or_create_key(os.path.join(cfg.state_dir, "agent.pem"))
+        self.state = State(os.path.join(cfg.state_dir, "state.json"))
+        if not self.state.data["consumer"]:
+            raise RuntimeError("agente não pareado: rode 'pair' primeiro")
+        self.consumer = cmds.Consumer.from_json(self.state.data["consumer"])
+        self.dev = devauth.device_id(devauth.spki_of(self.key))
+        self.gw = GatewayClient(self.state.data["gateway"], self.key)
+        self.system = system or actions.Sys(os.path.join(cfg.state_dir, "work"))
+        self.executed: list[dict] = []   # o que falta contar ao gateway (esvazia a cada relatório)
+        self.last_executed: dict = {}    # o último resultado, para a tela e os testes
+        self.runs: list[dict] = list(self.state.data.get("runs") or [])
+        self.last_report = 0.0
+        self.last_error = ""
+        self.busy = threading.Lock()  # uma instalação ou script por vez
+
+    # --- execução ---------------------------------------------------------------
+    def apply(self, cmd: dict) -> str:
+        t, a = cmd["type"], cmd["args"]
+        if t in cmds.TRUST_TYPES:
+            self.consumer.apply_trust(cmd)
+            return "confiança atualizada"
+        if t in cmds.WIN_TYPES:
+            cmds.check_win_args(t, a, now=self.now(), creating=False)  # o agente confere de novo: não confia no gateway
+            with self.busy:
+                res = actions.install(self.system, a) if t == cmds.T_WIN_INSTALL else actions.run_script(self.system, a)
+            self.runs.append({"ctr": cmd["ctr"], "type": t, "name": (a.get("name") or "")[:80], "ok": res.ok, "rc": res.rc,
+                              "out": res.out, "by": cmd["guardian"], "ts": int(self.now())})
+            self.runs = self.runs[-RUNS_KEEP:]
+            self.state.data["runs"] = self.runs
+            if not res.ok:
+                raise ValueError(res.msg)
+            return res.msg
+        raise ValueError(f"comando não suportado neste computador: {t}")
+
+    def handle(self, env: dict) -> None:
+        try:
+            v = self.consumer.accept(env, now=self.now())  # assinatura, papel, janela de horário, destino e contador
+        except cmds.CommandError as e:
+            self._note({"type": "?", "ok": False, "msg": f"recusado: {e}"})
+            return
+        self.state.data["consumer"] = self.consumer.to_json()
+        self.state.save()  # o contador é gasto ANTES de executar: se o agente cair no meio de uma instalação, o comando não roda de novo
+        try:
+            msg = self.apply(v.cmd)
+            self._note({"type": v.cmd["type"], "ok": True, "msg": msg})
+        except (ValueError, cmds.CommandError, OSError) as e:
+            self._note({"type": v.cmd["type"], "ok": False, "msg": str(e)})
+        self.state.data["consumer"] = self.consumer.to_json()
+        self.state.save()
+
+    def _note(self, entry: dict) -> None:
+        self.executed.append(entry)
+        self.last_executed = entry
+
+    # --- relatório ---------------------------------------------------------------
+    def report(self) -> None:
+        ips = tailnet.valid_ips(self.system.tailscale_ips())
+        r = {"kind": "device", "platform": "windows", "ts": int(self.now()), "version": VERSION, "tailscale": bool(ips), "tsIps": ips,
+             "host": socket.gethostname()[:64], "ctrs": self.consumer.last_ctr,
+             "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
+             "roles": {g: v.role for g, v in self.consumer.trust.guardians.items()},
+             "runs": [{**x, "out": x["out"][-RUN_OUT_REPORT:]} for x in self.runs[-RUNS_KEEP:]], "executed": self.executed[-50:]}
+        self.gw.call("POST", f"/v1/devices/{self.dev}/report", r)
+        self.executed.clear()
+        self.last_report = time.monotonic()
+
+    # --- o que a tela local mostra e pede (sempre pelo gateway, com a chave do agente) ----------
+    def ui_state(self) -> dict:
+        out = {"dev": self.dev, "host": socket.gethostname(), "version": VERSION, "blocked": [], "requests": [], "admin": [],
+               "runs": [{k: v for k, v in r.items() if k != "by"} for r in self.runs[-RUNS_KEEP:]], "gateway_ok": True, "error": self.last_error}
+        try:
+            b = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked?src=own")
+            out["blocked"] = [{k: i[k] for k in ("domain", "count", "last")} for i in b.get("items", [])][:UI_BLOCKED_MAX]
+            q = self.gw.call("GET", f"/v1/devices/{self.dev}/requests")
+            out["requests"], out["admin"] = q.get("requests", []), q.get("admin", [])
+        except GatewayError as e:
+            out["gateway_ok"], out["error"] = False, str(e)[:200]
+        return out
+
+    def ui_request(self, body: dict) -> dict:
+        return self.gw.call("POST", f"/v1/devices/{self.dev}/requests", body)
+
+    # --- laço --------------------------------------------------------------------
+    def step(self, wait_s: int = 25) -> int:
+        got = self.gw.call("GET", f"/v1/devices/{self.dev}/commands?after={self.state.data['after']}&wait={wait_s}", wait_s=wait_s)
+        n = 0
+        for c in got.get("commands", []):
+            self.handle(c["envelope"])
+            self.state.data["after"] = max(self.state.data["after"], c["seq"])
+            self.state.save()
+            n += 1
+        if n or time.monotonic() - self.last_report >= REPORT_EVERY_S:
+            self.report()
+        return n
+
+    def run(self, stop: threading.Event) -> None:
+        delay = 2
+        while not stop.is_set():
+            try:
+                self.step()
+                self.last_error = ""
+                delay = 2
+            except GatewayError as e:
+                self.last_error = str(e)[:200]
+                print("erro:", e, file=sys.stderr)
+                stop.wait(delay)
+                delay = min(delay * 2, 60)
