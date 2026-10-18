@@ -36,6 +36,14 @@ def default_state_dir() -> str:
 def pair(cfg: AgentConfig, pairing: str, name: str | None = None) -> str:
     """Registra o computador no gateway e fixa os guardiões do pareamento. Devolve o fingerprint (confira por voz com o guardião)."""
     p = parse_pairing(pairing)
+    # O papel, a regra de passkey e a janela de horário de cada guardião vêm do pareamento. Sem o papel, o agente não pareia:
+    # assumir "guardião-mor" para quem não declarou papel daria a um guardião comum o poder de mandar comandos como administrador.
+    if any(not isinstance(v, dict) or "role" not in v for v in p["guardians"].values()):
+        raise ValueError("string de pareamento antiga (sem os papéis dos guardiões): gere uma nova no site")
+    try:
+        trust = cmds.Trust.from_json({"rp_id": p["rp"], "origin": p["url"], "guardians": p["guardians"]})
+    except (cmds.CommandError, KeyError, TypeError) as e:
+        raise ValueError(f"string de pareamento inválida: {e}") from e
     os.makedirs(cfg.state_dir, mode=0o700, exist_ok=True)
     key = load_or_create_key(os.path.join(cfg.state_dir, "agent.pem"))
     spki = devauth.spki_of(key)
@@ -43,7 +51,6 @@ def pair(cfg: AgentConfig, pairing: str, name: str | None = None) -> str:
     gw = GatewayClient(p["url"], key)
     gw.call("POST", "/v1/devices/register", {"pairing": p["token"], "pubkey": b64.enc(spki), "name": (name or socket.gethostname())[:64], "kind": "device"})
     st = State(os.path.join(cfg.state_dir, "state.json"))
-    trust = cmds.Trust(p["rp"], p["url"], {g: cmds.Guardian(v["name"], dict(v["creds"]), v.get("role", cmds.ROLE_ADMIN)) for g, v in p["guardians"].items()})
     st.data.update(gateway=p["url"], consumer=cmds.Consumer(dev, trust).to_json(), after=0, runs=[])
     st.save()
     return devauth.fingerprint(spki)
@@ -63,7 +70,7 @@ class Agent:
         self.executed: list[dict] = []   # o que falta contar ao gateway (esvazia a cada relatório)
         self.last_executed: dict = {}    # o último resultado, para a tela e os testes
         self.runs: list[dict] = list(self.state.data.get("runs") or [])
-        self.last_report = 0.0
+        self.last_report = -1e9
         self.last_error = ""
         self.busy = threading.Lock()  # uma instalação ou script por vez
 
@@ -151,6 +158,8 @@ class Agent:
         delay = 2
         while not stop.is_set():
             try:
+                if self.last_report < 0:
+                    self.report()  # logo ao subir: é o relatório que declara o computador (o gateway só aceita comandos do Windows depois dele)
                 self.step()
                 self.last_error = ""
                 delay = 2

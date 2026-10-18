@@ -79,6 +79,18 @@ class AgentEndToEnd(unittest.TestCase):
     def audit(self):
         return [i["text"] for i in self.c.call("GET", "/v1/audit")[1]["items"] if i["kind"] == "executed"]
 
+    def test_00_pairing_pins_roles_and_refuses_strings_without_them(self):
+        t = self.ag.consumer.trust.guardians
+        self.assertEqual((t[self.gid].role, t[self.dgid].role), ("admin", "domains"))      # o guardião comum NÃO vira guardião-mor
+        st, p, _ = self.c.call("POST", "/v1/pairings", {"kind": "device"})
+        old = json.loads(__import__("guardian.protocol.b64", fromlist=["dec"]).dec(pairing_string(self.env, self.c, p["token"])))
+        for g in old["guardians"].values():
+            g.pop("role")
+        from guardian.protocol import b64
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(ValueError):
+            pair(AgentConfig(d), b64.enc(json.dumps(old).encode()))
+        self.assertEqual(os.listdir(d) if os.path.isdir(d) else [], [])                    # nem a chave ficou, e o gateway não registrou
+
     def test_01_report_declares_the_pc(self):
         d = next(x for x in self.c.call("GET", "/v1/devices")[1]["devices"] if x["id"] == self.dev)
         self.assertEqual(d["report"]["platform"], "windows")

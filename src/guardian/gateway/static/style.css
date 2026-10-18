@@ -273,3 +273,9 @@ a.gcard:hover { border-color: var(--role); }
 .who .wn { max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 14px var(--serif); }
 .who .wr { font: 600 10px var(--serif); letter-spacing: .12em; text-transform: uppercase; color: var(--role); white-space: nowrap; }
 @media (min-width: 600px) { .who .wn { max-width: 220px; } .who .insignia { width: 28px; } }
+
+/* ---- texto exato que vai ser executado (folha de confirmação) e pedidos do computador ---- */
+.detail { font: 12.5px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; margin: 10px 0; padding: 10px 12px; max-height: 38vh; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; user-select: text; }
+.sheet .detail { margin-top: 12px; }
+pre.detail.inline { max-height: 240px; margin: 8px 0 0; }

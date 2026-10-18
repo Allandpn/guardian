@@ -7,7 +7,7 @@ const nav = document.getElementById('nav');
 const SILENT_S = 300;
 let me = null;               // { guardian, trust, rp_id, origin }
 let timer = null;
-let counts = { apps: 0, reqs: 0, cosign: 0 };
+let counts = { apps: 0, reqs: 0, cosign: 0, pc: 0 };
 const drafts = new Map();    // aparelho -> { chave: novoValor } (regras ainda não assinadas)
 const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regras abertos
 let selected = null;         // aparelho aberto no painel (computador)
@@ -84,7 +84,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site',
+  remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -161,8 +161,10 @@ async function loadAll() {
     }
   }
   const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).length, 0);
-  counts = { apps, reqs: r.items.length, cosign: a.commands.filter((c) => c.can_cosign).length };
-  return { devices: d.devices, now: d.now, reqs: r.items, aw: a.commands };
+  const pcReqs = r.items.filter((q) => q.kind === 'install' || q.kind === 'command');   // pedidos do computador: tela PC
+  const reqs = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command');
+  counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length };
+  return { devices: d.devices, now: d.now, reqs, pcReqs, aw: a.commands };
 }
 
 function statusOf(d, now) {
@@ -173,6 +175,7 @@ function statusOf(d, now) {
     if (r.pihole_ok === false) return { word: 'Atenção', kind: 'warn', detail: 'Pi-hole inacessível' };
     return { word: 'Ok', kind: 'ok', detail: `${Object.keys(r.allow_by || {}).length} liberados pelo Guardian · ${(r.temp || []).length} temporários · ${Object.keys(r.deny_by || {}).length} bloqueados pelo Guardian` };
   }
+  if (r.platform === 'windows') return { word: 'Ok', kind: 'ok', detail: `agente ${r.version || ''} · visto ${ago(d.last_seen, now)}${r.tailscale ? '' : ' · sem Tailscale'}` };
   const apps = (r.pendingApps || []).length;
   const pend = (r.pending || []).length;
   if (r.filterActive === false) return { word: 'Atenção', kind: 'warn', detail: 'filtro não confirmado' + (r.filterReason ? `: ${r.filterReason}` : '') };
@@ -203,7 +206,7 @@ function renderNav(active) {
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/apps', 'Apps', 'grid', 'apps', counts.apps), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
-    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/history', 'Histórico', 'clock', 'history', 0)] :
+    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'grid', 'pc', counts.pc), item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
@@ -288,7 +291,7 @@ function deviceCard(d, now, { sel, href, onclick } = {}) {
   const st = statusOf(d, now);
   return h('a', { class: 'card gcard r-' + deviceKey(d) + (sel ? ' sel' : '') + (st.kind === 'bad' ? ' badb' : st.kind === 'warn' ? ' warnb' : ''), href: href || `#/device/${d.id}`, onclick },
     h('div', { class: 'row', style: 'gap:12px' }, insignia(deviceKey(d), 40), h('strong', {}, d.name),
-      d.kind === 'executor' ? chip('Pi-hole') : null, h('span', { class: 'sp' }), chip(st.word, st.kind)),
+      d.kind === 'executor' ? chip('Pi-hole') : (d.report || {}).platform === 'windows' ? chip('Windows') : null, h('span', { class: 'sp' }), chip(st.word, st.kind)),
     h('div', { class: 'muted', style: 'margin-top:8px' }, st.detail));
 }
 
@@ -945,6 +948,78 @@ function phonesFilter(phones, current, onPick) {
   return [h('div', { class: 'sec' }, 'Aparelho'), pillGroup('Filtrar por aparelho', [['', 'Todos'], ...phones.map((x) => [x.id, x.name])], current, onPick)];
 }
 
+// ---------- computador (agente do Windows) ----------
+const winArgs = (p, hours = 24) => ({ ...p, not_after: Math.floor(Date.now() / 1000) + hours * 3600 });   // o comando deixa de valer sozinho
+const winType = (kind) => (kind === 'install' ? 'win_install' : 'win_run');
+const isRun = (p) => p.script !== undefined;
+const winDetail = (p) => (isRun(p) ? p.script : p.source === 'url' ? `Endereço: ${p.url}\nSHA-256: ${p.sha256}\nTipo: ${p.kind}${p.args ? `\nArgumentos: ${p.args}` : ''}` :
+  `winget install --id ${p.id}${p.version ? ` --version ${p.version}` : ''} --exact --silent`);
+function winSpec(pcName, p) {
+  return { title: isRun(p) ? `Rodar este script em ${pcName}?` : `Instalar ${p.name} em ${pcName}?`,
+    rows: [['Computador', pcName], ['Ação', isRun(p) ? 'Rodar como administrador' : 'Instalar como administrador'],
+      isRun(p) ? ['Tempo limite', `${p.timeout_s || 600} s`] : ['Origem', p.source === 'winget' ? 'winget' : 'instalador por link']],
+    effect: 'vale por 24 h', effectKind: 'warn', detail: winDetail(p), confirm: 'Assinar e aprovar', danger: true,
+    note: 'Roda como administrador no computador, uma vez. Leia o texto acima por inteiro: o que você assina é exatamente isto.' };
+}
+
+async function pcView() {
+  me = await api('GET', '/v1/me');
+  const { devices, now, pcReqs } = await loadAll();
+  renderNav('pc');
+  const pcs = devices.filter((d) => d.kind === 'device' && d.report && d.report.platform === 'windows');
+  const nameOf = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
+  const approve = (q) => act(async () => {
+    if (!(await sheet(winSpec(nameOf(q.dev), q.payload)))) return;
+    const res = await sendCommand(q.dev, winType(q.kind), winArgs(q.payload));   // o gateway confere que o comando assinado é exatamente o pedido
+    await api('POST', `/v1/requests/${q.id}/resolve`, { cmd: res.id });
+    toast('Aprovado. O computador executa em instantes.');
+    route();
+  });
+  const deny = (q) => act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); toast('Pedido negado.'); route(); });
+  const direct = (dev, p) => act(async () => {
+    if (!dev) throw new Error('Escolha o computador.');
+    if (!(await sheet(winSpec(nameOf(dev), p)))) return;
+    await sendCommand(dev, isRun(p) ? 'win_run' : 'win_install', winArgs(p));
+    route();
+  });
+  const mk = (ph, label) => h('input', { class: 'inp', type: 'text', placeholder: ph, 'aria-label': label, autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false' });
+  const sel = h('select', { class: 'sel', 'aria-label': 'Computador' }, pcs.map((d) => h('option', { value: d.id }, d.name)));
+  const wName = mk('Nome (ex.: Git)', 'Nome do programa'), wId = mk('Id do winget (ex.: Git.Git)', 'Id do winget'), wVer = mk('Versão (opcional)', 'Versão');
+  const sName = mk('O que o script faz', 'Descrição'), sBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'Write-Output "olá"', spellcheck: 'false', 'aria-label': 'Script do PowerShell' });
+  const reqCard = (q) => h('div', { class: 'card warnb' },
+    h('div', { class: 'row', style: 'align-items:flex-start;gap:12px' }, insignia('device', 40), h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${nameOf(q.dev)} · ${ago(q.ts, now)}`))),
+    h('pre', { class: 'detail inline' }, winDetail(q.payload)),
+    h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn dangero', type: 'button', onclick: deny(q) }, 'Negar'), h('button', { class: 'btn pri grow', type: 'button', onclick: approve(q) }, 'Revisar e aprovar')));
+  const runs = pcs.flatMap((d) => ((d.report || {}).runs || []).map((r) => ({ ...r, pc: d.name }))).sort((a, b) => b.ts - a.ts).slice(0, 12);
+
+  show(top('PC'), h('div', { class: 'wrap' },
+    h('div', { class: 'sec royal' }, `Pedidos do computador · ${pcReqs.length}`),
+    pcReqs.length ? pcReqs.map(reqCard) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, pcs.length ? 'Nenhum pedido aguardando.' :
+      'Nenhum computador com o agente ainda. Instale o agente no Windows (docs/AGENTE.md) e pareie em Dispositivos.')),
+    pcs.length ? [
+      h('div', { class: 'sec' }, 'Computadores'),
+      h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, pcs.map((d) => { const st = statusOf(d, now); return h('div', { class: 'li' }, insignia('device', 34), h('div', { class: 'sp' }, h('strong', {}, d.name), h('div', { class: 'muted' }, st.detail)), chip(st.word, st.kind)); })),
+      h('div', { class: 'sec' }, 'Executar agora'),
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sem pedido: você mesmo manda, com a sua passkey.'), sel,
+        h('div', { class: 'sec', style: 'padding-left:0' }, 'Instalar pelo winget'), wName, h('div', { style: 'height:8px' }), wId, h('div', { style: 'height:8px' }), wVer,
+        h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+          const p = { name: wName.value.trim(), source: 'winget', id: wId.value.trim() };
+          if (wVer.value.trim()) p.version = wVer.value.trim();
+          await direct(sel.value, p)();
+        }) }, 'Revisar e assinar')),
+        h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script'), sName, h('div', { style: 'height:8px' }), sBody,
+        h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+          const p = { shell: 'powershell', script: sBody.value, timeout_s: 600 };
+          if (sName.value.trim()) p.name = sName.value.trim();
+          await direct(sel.value, p)();
+        }) }, 'Revisar e assinar'))),
+      h('div', { class: 'sec' }, 'O que foi executado'),
+      runs.length ? runs.map((r) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'),
+        h('span', { class: 'muted' }, ` ${r.pc} · ${ago(r.ts, now)} · ${gname(r.by)}`)), h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`))) :
+        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado ainda.'))] : null));
+  timer = setTimeout(autoRefresh, 20000);
+}
+
 // ---------- pessoas ----------
 function pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
 
@@ -1380,6 +1455,7 @@ async function route() {
     else if (hash === '#/guardians' && isAdmin()) await guardiansView();
     else if (hash === '#/guardians/novo' && isAdmin()) await guardianInviteView();
     else if (hash === '#/devices' && isAdmin()) await devicesView();
+    else if (hash === '#/pc' && isAdmin()) await pcView();
     else if (his) await (isAdmin() || canSee('history') ? historyView(his[1]) : domainsView());
     else if (hash === '#/pair' && isAdmin()) await pairView();
     else if (ap) await appsView(ap[1]);

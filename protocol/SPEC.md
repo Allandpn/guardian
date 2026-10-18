@@ -62,6 +62,8 @@ Aparelho: `set_config {patch:{chave:valor}}` (passa por `Gate.split`) · `confir
 Executor: `pihole_allow {domain, ttl_s?}` · `pihole_deny {domain, ttl_s?}` · `pihole_remove {list:"allow"|"deny", domain}`.
 `pihole_batch {items:[{domain, ttl_s?}]}` (1 a 50 itens, só libera): usado para aprovar um pedido de liberação com um único toque.
 
+Agente do Windows: `win_install {name, source:"winget"|"url", id, version?, url, sha256, kind:"msi"|"exe", args?, not_after}` e `win_run {name?, shell:"powershell", script, timeout_s?, not_after}`. Só guardião-mor ou mestre (uma assinatura); o destino precisa ter declarado `platform:"windows"` no relatório; `not_after` (epoch s) é obrigatório e no máximo 7 dias à frente na criação; o agente confere de novo e recusa o vencido. Pedidos do computador: `POST /v1/devices/{dev}/requests` com `kind:"install"|"command"` e `payload` (os mesmos campos, sem `not_after`); aprovar é enviar o comando assinado e `POST /v1/requests/{id}/resolve {cmd}`, e o gateway exige que o comando assinado seja idêntico ao pedido.
+
 Veto: o executor recusa `pihole_allow` e `pihole_batch` de domínio que está nas listas de conteúdo adulto do Pi-hole (o domínio, um pai dele ou, com `ALLOW_MODE=regex`, um pai que cobriria um domínio listado) e de site vetado pelo mestre. `pihole_parent_block {action:"add"|"remove", domains:[...]}` (1 a 80 sites; `domain` isolado também vale): só o mestre, uma assinatura; veta o site (o domínio e tudo abaixo dele). Domínios vetados também não viram pedido de liberação (o executor não os envia ao gateway e o gateway apaga os já guardados).
 Só domínio **exato** (ASCII, sem curinga/IP); `ttl_s` entre 60 e 2 592 000; o canário configurado é intocável.
 

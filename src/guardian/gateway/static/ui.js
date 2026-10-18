@@ -90,7 +90,7 @@ export function toast(msg) {
 }
 
 /** Folha de confirmação: mostra em português o que será assinado e o efeito. Resolve true se o guardião confirmar. */
-export function sheet({ title, rows = [], effect, effectKind = 'ok', note, noteKind = 'warn', confirm = 'Assinar com passkey', danger = false }) {
+export function sheet({ title, rows = [], effect, effectKind = 'ok', note, noteKind = 'warn', confirm = 'Assinar com passkey', danger = false, detail }) {
   return new Promise((resolve) => {
     const prev = document.activeElement;
     let overlay;
@@ -117,6 +117,7 @@ export function sheet({ title, rows = [], effect, effectKind = 'ok', note, noteK
         rows.length || effect ? h('div', { class: 'kvbox' },
           rows.map(([k, v]) => h('div', { class: 'kv' }, h('span', {}, k), h('span', {}, v))),
           effect ? h('div', { class: 'kv' }, h('span', {}, 'Efeito'), chip(effect, effectKind)) : null) : null,
+        detail ? h('pre', { class: 'detail', tabindex: '0', 'aria-label': 'O que será executado' }, detail) : null,
         note ? h('div', { class: 'note ' + noteKind }, note) : null,
         h('div', { class: 'row gap' }, h('button', { class: 'btn', type: 'button', onclick: () => close(false) }, 'Cancelar'), ok)));
     document.body.append(overlay);
