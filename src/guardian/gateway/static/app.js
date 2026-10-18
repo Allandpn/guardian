@@ -953,7 +953,27 @@ function phonesFilter(phones, current, onPick) {
 }
 
 // ---------- computador (agente do Windows) ----------
-const winArgs = (p, hours = 24) => ({ ...p, not_after: Math.floor(Date.now() / 1000) + hours * 3600 });   // o comando deixa de valer sozinho
+// Padrões das aprovações do computador: ficam neste navegador (só o aprovador usa) e o que vale é o que vai assinado no comando.
+const WIN_DEFAULTS = { hours: 24, install_s: 600, idle_s: 120, run_s: 600 };
+const WIN_CHOICES = {
+  hours: ['Vale por', [[1, '1 h'], [6, '6 h'], [24, '24 h'], [72, '3 dias'], [168, '7 dias']]],
+  install_s: ['Tempo limite da instalação', [[300, '5 min'], [600, '10 min'], [1200, '20 min'], [1800, '30 min'], [3600, '1 h']]],
+  idle_s: ['Desistir se parar', [[60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [0, 'nunca']]],
+  run_s: ['Tempo limite de scripts', [[60, '1 min'], [300, '5 min'], [600, '10 min'], [1800, '30 min'], [3600, '1 h']]],
+};
+const winCfg = () => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('winCfg') || '{}'); } catch (e) { /* sem armazenamento: usa os padrões */ }
+  return Object.fromEntries(Object.keys(WIN_DEFAULTS).map((k) => [k, WIN_CHOICES[k][1].some((c) => c[0] === saved[k]) ? saved[k] : WIN_DEFAULTS[k]]));
+};
+const setWinCfg = (k, v) => { try { localStorage.setItem('winCfg', JSON.stringify({ ...winCfg(), [k]: v })); } catch (e) { /* sem armazenamento */ } };
+const hoursLabel = (hrs) => (hrs % 24 === 0 && hrs >= 48 ? `${hrs / 24} dias` : `${hrs} h`);
+// o que o pedido não traz, o aprovador completa com os padrões; o gateway só exige que o comando assinado contenha o pedido
+function winArgs(p) {
+  const c = winCfg();
+  const extra = isRun(p) ? { timeout_s: p.timeout_s || c.run_s } : { timeout_s: p.timeout_s || c.install_s, ...(p.source !== 'winget' && p.kind !== 'msi' ? { idle_s: p.idle_s ?? c.idle_s } : {}) };
+  return { ...p, ...extra, not_after: Math.floor(Date.now() / 1000) + c.hours * 3600 };   // o comando deixa de valer sozinho
+}
 const winType = (kind) => (kind === 'install' ? 'win_install' : 'win_run');
 const isRun = (p) => p.script !== undefined;
 const winDetail = (p) => (isRun(p) ? p.script : p.source === 'file' ? `Arquivo no computador: ${p.path}\nSHA-256: ${p.sha256}\nAssinatura digital exigida: ${p.publisher || '(nenhuma: só o hash vale)'}\nTipo: ${p.kind}${p.args ? `\nArgumentos: ${p.args}` : ''}` : p.source === 'url' ? `Endereço: ${p.url}\nSHA-256: ${p.sha256}\nTipo: ${p.kind}${p.args ? `\nArgumentos: ${p.args}` : ''}` :
@@ -961,8 +981,10 @@ const winDetail = (p) => (isRun(p) ? p.script : p.source === 'file' ? `Arquivo n
 function winSpec(pcName, p) {
   return { title: isRun(p) ? `Rodar este script em ${pcName}?` : `Instalar ${p.name} em ${pcName}?`,
     rows: [['Computador', pcName], ['Ação', isRun(p) ? 'Rodar como administrador' : 'Instalar como administrador'],
-      isRun(p) ? ['Tempo limite', `${p.timeout_s || 600} s`] : ['Origem', p.source === 'winget' ? 'winget' : p.source === 'file' ? 'arquivo já baixado no computador' : 'instalador por link']],
-    effect: 'vale por 24 h', effectKind: 'warn', detail: winDetail(p), confirm: 'Assinar e aprovar', danger: true,
+      ['Tempo limite', `${winArgs(p).timeout_s / 60} min`],
+      ...(isRun(p) ? [] : [['Origem', p.source === 'winget' ? 'winget' : p.source === 'file' ? 'arquivo já baixado no computador' : 'instalador por link']]),
+      ...(winArgs(p).idle_s !== undefined ? [['Desiste se parar', winArgs(p).idle_s ? `${winArgs(p).idle_s / 60} min` : 'nunca']] : [])],
+    effect: `executa em até ${hoursLabel(winCfg().hours)}, senão vence`, effectKind: 'warn', detail: winDetail(p), confirm: 'Assinar e aprovar', danger: true,
     note: 'Roda como administrador no computador, uma vez. Leia o texto acima por inteiro: o que você assina é exatamente isto.' };
 }
 
@@ -1014,6 +1036,10 @@ async function pcView() {
     pcs.length ? [
       h('div', { class: 'sec' }, 'Computadores'),
       h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, pcs.map((d) => { const st = statusOf(d, now); return h('div', { class: 'li' }, insignia('device', 34), h('div', { class: 'sp' }, h('strong', {}, d.name), h('div', { class: 'muted' }, st.detail)), chip(st.word, st.kind)); })),
+      h('div', { class: 'sec' }, 'Padrões das aprovações'),
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Se o computador estiver desligado, o comando aprovado espera no servidor e roda quando ele ligar, dentro do prazo "Vale por". Depois disso vence e precisa ser aprovado de novo. Vale para as próximas aprovações, neste navegador.'),
+        Object.keys(WIN_CHOICES).map((k) => [h('div', { class: 'sec', style: 'padding-left:0' }, WIN_CHOICES[k][0]),
+          pillGroup(WIN_CHOICES[k][0], WIN_CHOICES[k][1], winCfg()[k], (v) => { setWinCfg(k, v); route(); })])),
       h('div', { class: 'sec' }, 'Executar agora'),
       h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sem pedido: você mesmo manda, com a sua passkey.'), sel,
         h('div', { class: 'sec', style: 'padding-left:0' }, 'Instalar pelo winget'), wName, h('div', { style: 'height:8px' }), wId, h('div', { style: 'height:8px' }), wVer,
@@ -1024,7 +1050,7 @@ async function pcView() {
         }) }, 'Revisar e assinar')),
         h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script'), sName, h('div', { style: 'height:8px' }), sBody,
         h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
-          const p = { shell: 'powershell', script: sBody.value, timeout_s: 600 };
+          const p = { shell: 'powershell', script: sBody.value };
           if (sName.value.trim()) p.name = sName.value.trim();
           await direct(sel.value, p)();
         }) }, 'Revisar e assinar'))),

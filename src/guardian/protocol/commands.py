@@ -75,6 +75,9 @@ def check_win_request(type_: str, args: dict) -> None:
         ti = args.get("timeout_s")
         if ti is not None and (not isinstance(ti, int) or isinstance(ti, bool) or not 60 <= ti <= 3600):
             raise CommandError("tempo limite da instalação de 60 s a 1 h")
+        idle = args.get("idle_s")   # desistir se o instalador ficar parado (sem CPU nem disco) por tanto tempo; 0 desliga
+        if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or not (idle == 0 or 30 <= idle <= 1800)):
+            raise CommandError("tempo parado de 30 s a 30 min, ou 0 para desligar")
         source = args.get("source")
         if source == "winget":
             if not _WINGET_ID.match(_win_text(args, "id", 3, 101)):

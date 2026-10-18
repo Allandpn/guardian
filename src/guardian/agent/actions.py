@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,10 +17,29 @@ import uuid
 from dataclasses import dataclass, field
 
 OUT_MAX = 4000
-DOWNLOAD_MAX = 2 * 1024 ** 3
-INSTALL_TIMEOUT_S = 600   # padrão; o pedido pode trazer timeout_s (60 a 3600)
-DOWNLOAD_TIMEOUT_S = 600
+def _env_int(name: str, default: int) -> int:
+    """Ajuste local do agente por variável de ambiente (tarefa do agente); valor ruim cai no padrão."""
+    try:
+        v = int(os.environ.get(name, ""))
+        return v if v >= 0 else default
+    except ValueError:
+        return default
+
+
+DOWNLOAD_MAX = _env_int("GUARDIAN_AGENT_DOWNLOAD_MAX", 2 * 1024 ** 3)
+INSTALL_TIMEOUT_S = _env_int("GUARDIAN_AGENT_INSTALL_TIMEOUT_S", 600)   # padrão; o pedido pode trazer timeout_s (60 a 3600)
+DOWNLOAD_TIMEOUT_S = _env_int("GUARDIAN_AGENT_DOWNLOAD_TIMEOUT_S", 600)
+IDLE_S = _env_int("GUARDIAN_AGENT_IDLE_S", 120)   # padrão quando o pedido não traz idle_s: sem CPU nem disco por tanto tempo = esperando uma janela
+IDLE_POLL_S = _env_int("GUARDIAN_AGENT_IDLE_POLL_S", 15)
+IDLE_CPU_100NS = _env_int("GUARDIAN_AGENT_IDLE_CPU_100NS", 3_000_000)   # 0,3 s de CPU na janela
+IDLE_IO_BYTES = _env_int("GUARDIAN_AGENT_IDLE_IO_BYTES", 512 * 1024)
+INSPECT_MAX = _env_int("GUARDIAN_AGENT_INSPECT_MAX", 400 * 1024 ** 2)
 _NOWIN = 0x08000000  # CREATE_NO_WINDOW
+_INSTALLER_MARKS = {   # marcas que cada gerador de instalador deixa no arquivo
+    b"Inno Setup Setup Data": "inno", b"InnoSetupLdrWindow": "inno",
+    b"Nullsoft Install System": "nsis", b"NullsoftInst": "nsis",
+    b".wixburn": "burn",
+}
 
 
 @dataclass
@@ -61,12 +82,15 @@ class Sys:
     def cleanup(self, d: str) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
-    def run(self, cmd, timeout: int, env: dict | None = None) -> tuple[int, str]:
-        """Roda e devolve (código, saída). Estourou o tempo: mata a árvore de processos e devolve código -1."""
+    def run(self, cmd, timeout: int, env: dict | None = None, idle_s: int | None = None) -> tuple[int, str]:
+        """Roda e devolve (código, saída). Estourou o tempo: mata a árvore de processos e devolve código -1.
+        Com idle_s, também mata se a árvore de processos ficar parada (sem CPU nem disco) por esse tempo: instalador esperando uma janela."""
         kw = {"creationflags": _NOWIN} if sys.platform == "win32" else {}
         if env:
             kw["env"] = {**os.environ, **env}
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
+        if idle_s:
+            return self._watch(p, timeout, idle_s)
         try:
             out, _ = p.communicate(timeout=timeout)
             return p.returncode, out.decode("utf-8", "replace")
@@ -77,6 +101,71 @@ class Sys:
                 p.kill()
             out, _ = p.communicate()
             return -1, out.decode("utf-8", "replace") + "\n[tempo limite estourado]"
+
+    def _kill(self, p) -> None:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+        else:
+            p.kill()
+
+    def _watch(self, p, timeout: int, idle_s: int) -> tuple[int, str]:
+        chunks: list[bytes] = []
+        reader = threading.Thread(target=lambda: chunks.append(p.stdout.read()), daemon=True)
+        reader.start()
+        start = time.monotonic()
+        base, moved_at, why = self.activity(p.pid), start, ""
+        while p.poll() is None:
+            time.sleep(IDLE_POLL_S)
+            now = time.monotonic()
+            if now - start > timeout:
+                why = "[tempo limite estourado]"
+            else:
+                cur = self.activity(p.pid)
+                if cur is None or base is None or cur[0] - base[0] > IDLE_CPU_100NS or cur[1] - base[1] > IDLE_IO_BYTES:
+                    base, moved_at = cur, now   # mexeu (ou não dá para medir): recomeça a contar
+                elif now - moved_at >= idle_s:
+                    why = f"[parado: sem atividade por {idle_s // 60} min; parece esperar uma janela]"
+            if why:
+                self._kill(p)
+                break
+        reader.join(10)
+        out = (chunks[0] if chunks else b"").decode("utf-8", "replace")
+        if why:
+            return -1, out + "\n" + why
+        return p.returncode, out
+
+    def activity(self, pid: int):
+        """(tempo de CPU em 100 ns, bytes de E/S) somados na árvore do processo e nos msiexec (o serviço do Windows Installer trabalha por fora). None se não der para medir."""
+        if sys.platform != "win32":
+            return None
+        script = ("$a = Get-CimInstance Win32_Process; $ids = @{}; $ids[[string]$env:GA_PID] = 1; do { $n = 0; "
+                  "foreach ($p in $a) { if ($ids.ContainsKey([string]$p.ParentProcessId) -and -not $ids.ContainsKey([string]$p.ProcessId)) { $ids[[string]$p.ProcessId] = 1; $n++ } } } while ($n -gt 0); "
+                  "$c = [int64]0; $io = [int64]0; foreach ($p in $a) { if ($ids.ContainsKey([string]$p.ProcessId) -or $p.Name -eq 'msiexec.exe') { "
+                  "$c += [int64]$p.UserModeTime + [int64]$p.KernelModeTime; $io += [int64]$p.ReadTransferCount + [int64]$p.WriteTransferCount } }; Write-Output \"$c $io\"")
+        try:
+            r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                               capture_output=True, timeout=60, env={**os.environ, "GA_PID": str(pid)}, creationflags=_NOWIN)
+            c, io = r.stdout.decode().split()[-2:]
+            return int(c), int(io)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
+
+    def installer_type(self, path: str) -> str:
+        """Que tipo de instalador é (pelas marcas dentro do arquivo): inno, nsis, burn (WiX) ou ''. Só leitura."""
+        keep, seen = max(len(m) for m in _INSTALLER_MARKS), 0
+        tail = b""
+        with open(path, "rb") as f:
+            while seen < INSPECT_MAX:
+                chunk = f.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                seen += len(chunk)
+                data = tail + chunk
+                hits = [(data.find(m), t) for m, t in _INSTALLER_MARKS.items() if m in data]
+                if hits:
+                    return min(hits)[1]
+                tail = data[-keep:]
+        return ""
 
     def download(self, url: str, dest: str, max_bytes: int = DOWNLOAD_MAX) -> str:
         """Baixa por https e devolve o SHA-256 do que veio."""
@@ -128,7 +217,7 @@ class Sys:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 h.update(chunk)
         status, signer = self.signature(path)
-        return {"size": os.path.getsize(path), "sha256": h.hexdigest(), "status": status, "signer": signer}
+        return {"size": os.path.getsize(path), "sha256": h.hexdigest(), "status": status, "signer": signer, "installer": self.installer_type(path)}
 
     def installed_programs(self) -> dict[str, str]:
         """Programas instalados para todos os usuários (registro de desinstalação do Windows): {nome: versão}. Vazio fora do Windows."""
@@ -195,8 +284,8 @@ KNOWN_EXIT_HINTS = {
 
 def _timed_out(rc, out: str) -> str:
     """Instalador que estoura o tempo quase sempre espera uma janela que o SYSTEM não mostra (sem modo silencioso)."""
-    if rc == -1 and "tempo limite" in out:
-        return " Não terminou no tempo: provavelmente espera uma janela (esse instalador não tem modo silencioso). Peça à pessoa de confiança para instalar com a conta de administrador."
+    if rc == -1 and ("tempo limite" in out or "[parado:" in out):
+        return " Não terminou: provavelmente espera uma janela (argumentos silenciosos errados ou instalador sem modo silencioso; Inno Setup usa /VERYSILENT, NSIS usa /S). Peça de novo com os argumentos certos ou à pessoa de confiança para instalar com a conta de administrador."
     return KNOWN_EXIT_HINTS.get(rc, "")
 
 
@@ -257,7 +346,7 @@ def _install(system: Sys, a: dict) -> Result:
                 return Result(False, None, "", f"assinatura digital recusada (estado {status}, assinante '{signer}'; o aprovado era '{a['publisher']}'): nada foi executado")
         extra = f" {a['args']}" if a.get("args") else ""
         cmd = f'msiexec /i "{path}" /qn /norestart{extra}' if a["kind"] == "msi" else f'"{path}"{extra}'
-        rc, out = system.run(cmd, limit)
+        rc, out = system.run(cmd, limit, idle_s=None if a["kind"] == "msi" else (a.get("idle_s", IDLE_S) or None))
         ok = rc in (0, 3010)  # 3010: instalou, precisa reiniciar
         return Result(ok, rc, clip(out), f"instalador {a['name']}: código {rc}" + (" (reiniciar)" if rc == 3010 else "") + _timed_out(rc, out))
     finally:

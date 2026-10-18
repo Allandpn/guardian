@@ -28,7 +28,7 @@ class FakeSys(actions.Sys):
         self.calls, self.downloads, self.replies, self.hash = [], [], [], SHA
         self.ips = ["100.64.0.9", "192.168.1.5"]
 
-    def run(self, cmd, timeout, env=None):
+    def run(self, cmd, timeout, env=None, idle_s=None):
         self.calls.append((cmd, timeout))
         if isinstance(cmd, list) and cmd and str(cmd[0]).endswith("powershell.exe"):
             self.script = open(cmd[-1], encoding="utf-8-sig").read()  # o arquivo existe enquanto o script roda
@@ -226,7 +226,7 @@ class AgentEndToEnd(unittest.TestCase):
         gate, started = threading.Event(), threading.Event()
         orig = self.sys.run
 
-        def slow(cmd, timeout, env=None):
+        def slow(cmd, timeout, env=None, idle_s=None):
             if isinstance(cmd, str) and "setup.exe" in cmd:
                 started.set()
                 gate.wait(20)                                              # o instalador espera uma janela que ninguém vê
@@ -450,3 +450,49 @@ class ActionsUnit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallerHeuristics(unittest.TestCase):
+    def test_tipo_do_instalador_e_argumentos(self):
+        from guardian.agent.agent import suggest_args
+        d = tempfile.mkdtemp()
+        sysx = actions.Sys(d)
+        for name, body, kind in (("a.exe", b"MZ" + b"x" * 5000 + b"Inno Setup Setup Data (6.2)", "inno"),
+                                 ("b.exe", b"MZ" + b"Nullsoft Install System v3" + b"x" * 100, "nsis"),
+                                 ("c.exe", b"MZ" + b"y" * 9000, "")):
+            p = os.path.join(d, name)
+            open(p, "wb").write(body)
+            self.assertEqual(sysx.installer_type(p), kind)
+        self.assertIn("/VERYSILENT", suggest_args("exe", "Tien Do Nam", "inno"))
+        self.assertEqual(suggest_args("exe", "Acme", "nsis"), "/S")
+        self.assertEqual(suggest_args("exe", "Acme", ""), "/S")
+        self.assertEqual(suggest_args("exe", "DBeaver Corp", "nsis"), "/S /allusers")
+
+    def test_marca_na_fronteira_dos_blocos(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "f.exe")
+        open(p, "wb").write(b"z" * (4 * 1024 * 1024 - 5) + b"InnoSetupLdrWindow")
+        self.assertEqual(actions.Sys(d).installer_type(p), "inno")
+
+    def test_processo_parado_e_morto_e_ativo_nao(self):
+        class Quieto(actions.Sys):
+            def activity(self, pid):
+                return (0, 0)
+        class Ocupado(actions.Sys):
+            n = 0
+            def activity(self, pid):
+                self.n += 1
+                return (self.n * 10_000_000, 0)
+        old = actions.IDLE_POLL_S
+        actions.IDLE_POLL_S = 0.2
+        try:
+            dorme = [sys.executable, "-c", "import time; time.sleep(30)"]
+            t0 = time.time()
+            rc, out = Quieto(tempfile.mkdtemp()).run(dorme, 60, idle_s=1)
+            self.assertEqual(rc, -1)
+            self.assertIn("[parado:", out)
+            self.assertLess(time.time() - t0, 15)
+            rc, out = Ocupado(tempfile.mkdtemp()).run([sys.executable, "-c", "import time; time.sleep(2); print('feito')"], 60, idle_s=1)
+            self.assertEqual((rc, out.strip()), (0, "feito"))
+        finally:
+            actions.IDLE_POLL_S = old

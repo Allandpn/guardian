@@ -19,7 +19,7 @@ from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import actions
 
 VERSION = "0.2.0"
-REPORT_EVERY_S = 60
+REPORT_EVERY_S = actions._env_int("GUARDIAN_AGENT_REPORT_EVERY_S", 60)
 RUNS_KEEP = 6
 RUN_OUT_REPORT = 3000
 UI_BLOCKED_MAX = 150
@@ -60,14 +60,18 @@ def pair(cfg: AgentConfig, pairing: str, name: str | None = None) -> str:
 
 
 # Argumentos silenciosos que cada fabricante documenta. Só uma sugestão: o que vale é o que o guardião lê e aprova.
-SILENT_ARGS = (("dbeaver", "/S /allusers"),)   # o instalador do DBeaver recusa o /S sozinho (código 666660)
+SILENT_ARGS = (
+    ("dbeaver", "/S /allusers"),   # o instalador do DBeaver recusa o /S sozinho (código 666660)
+)
+# pelo tipo de instalador (marcas no arquivo): Inno Setup ignora o /S e abre janela (LocalSend travou assim)
+TYPE_ARGS = {"inno": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS", "burn": "/quiet /norestart", "nsis": "/S"}
 
 
-def suggest_args(kind: str, signer: str) -> str:
+def suggest_args(kind: str, signer: str, installer: str = "") -> str:
     if kind == "msi":
         return ""   # o msiexec já roda com /qn
     s = (signer or "").lower()
-    return next((a for k, a in SILENT_ARGS if k in s), "/S")
+    return next((a for k, a in SILENT_ARGS if k in s), TYPE_ARGS.get(installer, "/S"))
 
 
 class Agent:
@@ -218,7 +222,7 @@ class Agent:
         info = self.system.file_info(path)
         ext = path.lower().rsplit(".", 1)[-1]
         stem = path.replace("/", "\\").rsplit("\\", 1)[-1].rsplit(".", 1)[0]
-        return {**info, "path": path, "kind": ext, "name": stem[:80], "suggested_args": suggest_args(ext, info.get("signer", ""))}
+        return {**info, "path": path, "kind": ext, "name": stem[:80], "suggested_args": suggest_args(ext, info.get("signer", ""), info.get("installer", ""))}
 
     def ui_request(self, body: dict) -> dict:
         return self.gw.call("POST", f"/v1/devices/{self.dev}/requests", body)

@@ -168,3 +168,13 @@ class WinGateway(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IdleArgs(unittest.TestCase):
+    def test_idle_s_validado(self):
+        base = {"name": "x", "source": "winget", "id": "Git.Git"}
+        cmds.check_win_request(cmds.T_WIN_INSTALL, {**base, "idle_s": 0})
+        cmds.check_win_request(cmds.T_WIN_INSTALL, {**base, "idle_s": 120})
+        for bad in (10, 1801, "2", True, -1):
+            with self.assertRaises(cmds.CommandError):
+                cmds.check_win_request(cmds.T_WIN_INSTALL, {**base, "idle_s": bad})

@@ -30,6 +30,13 @@ instalar um programa ou rodar algo como administrador, a pessoa **pede** e um gu
   O contador é gasto **antes** de executar, então uma queda no meio de uma instalação não repete o comando.
 - Resultado e saída (até 3000 caracteres) voltam no relatório e aparecem na tela **PC** do site e na tela local.
 
+## O que se ajusta
+
+- **Na aprovação (site, tela PC, "Padrões das aprovações")**, vai assinado no comando: **Vale por** (1 h a 7 dias; padrão 24 h), **tempo limite da instalação** (padrão 10 min), **desistir se parar** (`idle_s`, padrão 2 min, "nunca" desliga) e **tempo limite de scripts** (padrão 10 min).
+  Ficam salvos no navegador do aprovador. Se o pedido já traz o valor, ele vale.
+- **No agente (variáveis de ambiente da tarefa)**: `GUARDIAN_AGENT_IDLE_S`, `_IDLE_POLL_S`, `_IDLE_CPU_100NS`, `_IDLE_IO_BYTES`, `_INSTALL_TIMEOUT_S`, `_DOWNLOAD_TIMEOUT_S`, `_DOWNLOAD_MAX`, `_REPORT_EVERY_S`, `_INSPECT_MAX`.
+- **No gateway**: `AI_DAILY_MAX`, `OPENROUTER_MODEL`.
+
 ## Instalação (uma vez, com a pessoa de confiança)
 
 1. No site: **Dispositivos > Parear aparelho** e copie a string de pareamento (vale por pouco tempo).
