@@ -175,6 +175,21 @@ class ExecutorVeto(unittest.TestCase):
         self.ex.apply(self.cmd("pihole_allow", {"domain": "old.reddit.com"}))
         self.assertIn("old.reddit.com", self.rx_allowed())
 
+    def test_04b_many_sites_in_one_command(self):
+        out = self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "add", "domains": ["Discord.com", "x.com", "WWW.t.me", "com", "x.com"]}))
+        self.assertIn("vetados: discord.com, x.com, t.me", out)
+        self.assertIn("já estavam vetados: x.com", out)               # repetido na mesma lista
+        self.assertIn("falharam: com", out)
+        self.assertEqual(self.ex.veto.parents, ["discord.com", "x.com", "t.me"])
+        for bad in ({"action": "add", "domains": []}, {"action": "add", "domains": "x.com"}, {"action": "add", "domains": ["a.com"] * 81},
+                    {"action": "add", "domains": ["com", "net"]}):
+            with self.assertRaises(ValueError, msg=str(bad)[:40]):
+                self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, bad))
+        out = self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "remove", "domains": ["discord.com", "x.com", "t.me", "nao-vetado.com"]}))
+        self.assertIn("vetos removidos: discord.com, x.com, t.me", out)
+        self.assertIn("não estavam vetados: nao-vetado.com", out)
+        self.assertEqual(self.ex.veto.parents, [])
+
     def test_05_audit_lists_allowances_the_lists_would_veto_today(self):
         self.fake.lists["allow"]["cdn.pornhub.com"] = ""                   # liberada antes de a lista conhecer o domínio
         rep = self.ex._veto_report(self.ex._entries("allow"))

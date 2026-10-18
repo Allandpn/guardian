@@ -17,6 +17,7 @@ MIN_TTL_S, MAX_TTL_S = 60, 30 * 24 * 3600
 REPORT_EVERY_S = 60
 LIST_CAP = 500
 BATCH_MAX = 50
+PARENTS_BATCH_MAX = 80
 BLOCKS_EVERY_S = 10
 BLOCKS_CHUNK = 150
 BLOCKS_BACKFILL_S = 3600
@@ -234,13 +235,25 @@ class Executor:
             action = a.get("action")
             if action not in ("add", "remove"):
                 raise ValueError("ação inválida")
-            changed = self.veto.add_parent(a.get("domain")) if action == "add" else self.veto.remove_parent(a.get("domain"))
+            items = a.get("domains") if "domains" in a else [a.get("domain")]  # vários numa assinatura só
+            if not isinstance(items, list) or not 1 <= len(items) <= PARENTS_BATCH_MAX:
+                raise ValueError("lista de sites inválida")
+            done, same, bad = [], [], []
+            for raw in items:
+                try:
+                    d = domains.rule_domain(raw)
+                    changed = self.veto.add_parent(raw) if action == "add" else self.veto.remove_parent(raw)
+                except ValueError as e:
+                    bad.append(f"{str(raw)[:60]}: {e}")
+                    continue
+                (done if changed else same).append(d)
             self.state.data["veto_parents"] = list(self.veto.parents)
             self.state.save()
-            d = domains.rule_domain(a.get("domain"))
-            if action == "add":
-                return f"site vetado: {d}" if changed else f"{d} já estava vetado"
-            return f"veto removido: {d}" if changed else f"{d} não estava vetado"
+            if bad and not done and not same:
+                raise ValueError("; ".join(bad))
+            verb, past = ("vetados", "já estavam vetados") if action == "add" else ("vetos removidos", "não estavam vetados")
+            parts = [f"{verb}: {', '.join(done)}" if done else "", f"{past}: {', '.join(same)}" if same else "", f"falharam: {'; '.join(bad)}" if bad else ""]
+            return " | ".join(p for p in parts if p)
         if t == "pihole_remove":
             if a.get("list") not in ("allow", "deny"):
                 raise ValueError("lista inválida")

@@ -876,20 +876,26 @@ async function domainsView(tab) {
         h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
   } else if (tab === 'vetos') {
     const parents = veto.parents || [], audit = veto.audit || [], master = isMaster();
-    const pdom = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'reddit.com', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Site para vetar' });
-    const parentSpec = (add, p) => ({ title: add ? `Vetar ${p}?` : `Tirar o veto de ${p}?`, rows: [['Site', p], ['Ação', add ? 'Vetar o site' : 'Tirar o veto']], effect: 'vale na hora', effectKind: add ? 'warn' : 'ok',
-      note: add ? `Ninguém libera ${p} nem o que está abaixo dele (como www.${p} e outros subdomínios). Liberações que já existem continuam até você bloquear de novo.` : `Os guardiões voltam a poder liberar ${p}.` });
+    const pdom = h('textarea', { class: 'ta', rows: '3', placeholder: 'reddit.com, x.com, discord.com (um ou vários, separados por espaço, vírgula ou linha)', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Sites para vetar' });
+    const parentSpec = (add, list) => {
+      const one = list.length === 1 ? list[0] : '';
+      return { title: add ? (one ? `Vetar ${one}?` : `Vetar ${list.length} sites?`) : (one ? `Tirar o veto de ${one}?` : `Tirar o veto de ${list.length} sites?`),
+        rows: list.length > 6 ? [['Sites', String(list.length)], ['Primeiros', list.slice(0, 6).join(', ') + '…'], ['Ação', add ? 'Vetar os sites' : 'Tirar o veto']] : [...list.map((p) => ['Site', p]), ['Ação', add ? 'Vetar os sites' : 'Tirar o veto']],
+        effect: 'vale na hora', effectKind: add ? 'warn' : 'ok',
+        note: add ? 'Ninguém libera estes sites nem o que está abaixo deles (como www. e outros subdomínios). Liberações que já existem continuam até você bloquear de novo.' : 'Os guardiões voltam a poder liberar.' };
+    };
     body = [
       veto.on === false ? h('div', { class: 'note bad' }, 'O veto das listas de conteúdo adulto está desligado: o executor não lê o gravity.db do Pi-hole.') : null,
       h('div', { class: 'sec' }, `Sites vetados · ${parents.length}`),
       h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sites grandes e abertos, como reddit.com, x.com e tumblr.com, que ninguém pode liberar nem pelo pai nem por subdomínio. Vale para todos os guardiões.'),
         parents.length ? parents.map((p) => h('div', { class: 'li' }, h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, p)),
-          master ? h('button', { class: 'btn', type: 'button', onclick: send('pihole_parent_block', { action: 'remove', domain: p }, parentSpec(false, p)) }, 'Tirar veto') : null)) : h('p', { class: 'muted', style: 'margin:6px 0' }, 'Nenhum site vetado.'),
+          master ? h('button', { class: 'btn', type: 'button', onclick: send('pihole_parent_block', { action: 'remove', domains: [p] }, parentSpec(false, [p])) }, 'Tirar veto') : null)) : h('p', { class: 'muted', style: 'margin:6px 0' }, 'Nenhum site vetado.'),
         master ? [pdom, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
-          const p = pdom.value.trim().toLowerCase();
-          if (!p) throw new Error('Digite o site.');
-          if (await confirmSend(ex.id, 'pihole_parent_block', { action: 'add', domain: p }, parentSpec(true, p))) route();
-        }) }, 'Vetar site'))] : h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Só o guardião-mestre veta ou tira o veto de um site.')),
+          const list = [...new Set(pdom.value.toLowerCase().split(/[\s,;]+/).filter(Boolean))];
+          if (!list.length) throw new Error('Digite o site.');
+          if (list.length > 80) throw new Error('No máximo 80 sites por vez.');
+          if (await confirmSend(ex.id, 'pihole_parent_block', { action: 'add', domains: list }, parentSpec(true, list))) route();
+        }) }, 'Vetar'))] : h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Só o guardião-mestre veta ou tira o veto de um site.')),
       h('div', { class: 'sec' }, `Liberações vetadas hoje · ${veto.audit_total || 0}`),
       audit.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, audit.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, x.why, x.by ? ` · liberado por ${gname(x.by)}` : '')),
