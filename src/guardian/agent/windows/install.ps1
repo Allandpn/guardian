@@ -98,12 +98,14 @@ Write-Host "3/6 Trancando as pastas"
 $SYS = "*S-1-5-18"; $ADM = "*S-1-5-32-544"; $USR = "*S-1-5-32-545"
 & icacls $App /reset /T /C | Out-Null       # herda do Program Files: só administradores escrevem (ver acima)
 if ($LASTEXITCODE) { throw "Falhou ajustar $App." }
-$writable = (Get-Acl $App).Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq "S-1-5-32-545" -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -and $_.AccessControlType -eq "Allow" }
+$SidType = [Security.Principal.SecurityIdentifier]
+# GetAccessRules já devolve SIDs (sem traduzir nomes, que falha com contas que o Windows em português não resolve).
+$writable = (Get-Acl $App).GetAccessRules($true, $true, $SidType) | Where-Object { $_.IdentityReference.Value -eq "S-1-5-32-545" -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -and $_.AccessControlType -eq "Allow" }
 if ($writable) { throw "A pasta $App é gravável por usuários comuns. Não vou continuar." }
 & icacls $State /inheritance:r /grant:r "${SYS}:(OI)(CI)F" "${ADM}:(OI)(CI)F" /T /C | Out-Null
 if ($LASTEXITCODE) { throw "Falhou trancar $State." }
 # A pasta de estado guarda a chave do agente: nada de usuário comum, "Todos" ou "Usuários autenticados" nela.
-$bad = (Get-Acl $State).Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -in @("S-1-5-32-545", "S-1-1-0", "S-1-5-11") }
+$bad = (Get-Acl $State).GetAccessRules($true, $true, $SidType) | Where-Object { $_.IdentityReference.Value -in @("S-1-5-32-545", "S-1-1-0", "S-1-5-11") }
 if ($bad) { throw "A pasta $State ainda é acessível a usuários comuns. Não vou continuar." }
 
 Write-Host "4/6 Pareando com o Guardian"
