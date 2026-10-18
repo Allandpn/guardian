@@ -355,6 +355,12 @@ class Store:
                 self.db.execute("ROLLBACK")
                 raise
 
+    def drop_blocked(self, dev: str, domains: list[str]) -> None:
+        """Apaga bloqueios guardados (o executor vetou estes domínios: não podem ser liberados, então não viram pedido)."""
+        if domains:
+            with self.lock:
+                self.db.executemany("DELETE FROM blocked WHERE dev=? AND domain=?", [(dev, d) for d in domains])
+
     def blocked_list(self, dev: str | None = None, src: str | None = None, limit: int = 500):
         sql, args = "SELECT * FROM blocked WHERE last>=?", [int(time.time()) - BLOCKED_KEEP_S]
         if dev:

@@ -37,6 +37,9 @@ DOMAIN_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"}
 # Aprovar app novo e revogar app (o que ele mesmo aprovou, pela tela) também são do guardião comum (decisão de 2026-10-16);
 # regras, PIN, janelas, pessoas etc. continuam só do guardião-mor.
 GUARDIAN_TYPES = DOMAIN_TYPES | {"approve_app", "revoke_app"}
+# Vetar (ou desvetar) um site pai: nenhum guardião pode liberar o domínio nem o que está abaixo dele. Só o mestre, sozinho.
+T_PARENT_BLOCK = "pihole_parent_block"
+MASTER_TYPES = {T_PARENT_BLOCK}
 
 
 class CommandError(ValueError):
@@ -189,6 +192,8 @@ def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
         return author  # qualquer guardião inclui passkey para si mesmo
     if author.role not in ADMINISH:
         raise CommandError("o guardião não pode mandar este comando")
+    if t in MASTER_TYPES and author.role != ROLE_MASTER:
+        raise CommandError("só o guardião-mestre veta sites")
     if t in TRUST_TYPES and author.role != ROLE_MASTER:
         tg = trust.guardians.get(cmd["args"].get("id"))
         target = tg.role if tg else None

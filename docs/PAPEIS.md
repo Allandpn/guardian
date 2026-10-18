@@ -48,7 +48,8 @@ Objetivo: o **guardião-mor** controla tudo; os demais **guardiões** só cuidam
 | Regras, PIN, janelas, ativar, revogar app, pedidos do aparelho | sim | não |
 | `approve_app` (aprovar app novo) e `revoke_app` (revogar app) | sim | **sim** (decisão de 2026-10-16; a assinatura do guardião basta; a tela só oferece revogar o que ele mesmo aprovou) |
 | Recusar app pendente (some da lista; o app continua suspenso) | sim | sim (sem passkey, só no gateway) |
-| `pihole_allow`, `pihole_deny`, `pihole_remove`, `pihole_batch` | sim | sim |
+| `pihole_allow`, `pihole_deny`, `pihole_remove`, `pihole_batch` (o veto das listas adultas vale para todos) | sim | sim |
+| `pihole_parent_block` (vetar ou tirar o veto de um site) | **só o mestre**, sozinho (o guardião-mor não) | não |
 | Responder pedidos de liberação, ver o log de bloqueios | sim | sim |
 | Convidar guardião, parear aparelho ou executor, esquecer aparelho | sim | não |
 | `add_guardian`, `remove_guardian` | sim | não |

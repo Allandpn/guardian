@@ -23,7 +23,7 @@ from .limits import Limiter, NonceCache
 
 DEVICE_TYPES = {"set_config", "confirm", "cancel", "approve_app", "revoke_app", "request_maintenance",
                 "set_dev_policy", "set_pin", "set_dev_pin", "activate"} | cmds.TRUST_TYPES
-EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.TRUST_TYPES
+EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.MASTER_TYPES | cmds.TRUST_TYPES
 SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião ver
 STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet"}
 RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows", "pkgNames"}
@@ -935,6 +935,13 @@ class Gateway:
                 items.append({"domain": dom, "src": src, "list": lst[:120], "cname": 1 if it.get("cname") else 0,
                               "count": cnt, "first": first, "last": last})
         self.store.merge_blocked(target, items)
+        veto = []  # domínios que o executor vetou (listas de conteúdo adulto, site vetado pelo mestre): somem do que já estava guardado
+        for x in (d.get("veto") if isinstance(d.get("veto"), list) else [])[:500]:
+            try:
+                veto.append(normalize_domain(x))
+            except ValueError:
+                continue
+        self.store.drop_blocked(target, veto)
         return 200, {"ok": True, "accepted": len(items)}, {}
 
     def _canary(self, dev: str) -> str:

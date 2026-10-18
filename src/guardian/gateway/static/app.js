@@ -84,7 +84,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios',
+  remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -760,7 +760,7 @@ async function domainsView(tab) {
   const unb = reqs.filter((q) => q.kind === 'unblock');
   const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
   tab = tab === 'pedidos' ? 'solicitacoes' : tab === 'meus' ? 'liberados' : tab;  // endereços antigos
-  if (!(admin ? ['solicitacoes', 'bloqueios', 'liberados'] : ['solicitacoes', 'liberados', 'recusados']).includes(tab)) tab = admin && !reqs.length ? 'bloqueios' : 'solicitacoes';
+  if (!(admin ? ['solicitacoes', 'bloqueios', 'liberados', 'vetos'] : ['solicitacoes', 'liberados', 'recusados']).includes(tab)) tab = admin && !reqs.length ? 'bloqueios' : 'solicitacoes';
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const protectedDevs = devices.filter((x) => x.kind === 'device');
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
@@ -772,7 +772,9 @@ async function domainsView(tab) {
     pillGroup('Filtrar por guardião', [['', 'Todos'], ...Object.entries(me.trust).map(([id, g]) => [id, g.name])], domGuardian, (k) => { domGuardian = k; route(); })] : null;
   if (domGuardian && !(me.trust || {})[domGuardian]) domGuardian = '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
-  const tabs = admin ? [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados']] :
+  const veto = r.veto || {};
+  const tabs = admin ? [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados'],
+    ['#/domains/vetos', veto.audit_total ? `Vetos · ${veto.audit_total}` : 'Vetos', 'vetos']] :
     [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/liberados', 'Liberados', 'liberados'], ['#/domains/recusados', 'Recusados', 'recusados']];
   const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
     x.cname ? chip('via CNAME') : null];
@@ -872,6 +874,28 @@ async function domainsView(tab) {
       denied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, denied.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, `${devName(x.dev)} · ${ago(x.ts, now)}`)),
         h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
+  } else if (tab === 'vetos') {
+    const parents = veto.parents || [], audit = veto.audit || [], master = isMaster();
+    const pdom = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'reddit.com', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Site para vetar' });
+    const parentSpec = (add, p) => ({ title: add ? `Vetar ${p}?` : `Tirar o veto de ${p}?`, rows: [['Site', p], ['Ação', add ? 'Vetar o site' : 'Tirar o veto']], effect: 'vale na hora', effectKind: add ? 'warn' : 'ok',
+      note: add ? `Ninguém libera ${p} nem o que está abaixo dele (como www.${p} e outros subdomínios). Liberações que já existem continuam até você bloquear de novo.` : `Os guardiões voltam a poder liberar ${p}.` });
+    body = [
+      veto.on === false ? h('div', { class: 'note bad' }, 'O veto das listas de conteúdo adulto está desligado: o executor não lê o gravity.db do Pi-hole.') : null,
+      h('div', { class: 'sec' }, `Sites vetados · ${parents.length}`),
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sites grandes e abertos, como reddit.com, x.com e tumblr.com, que ninguém pode liberar nem pelo pai nem por subdomínio. Vale para todos os guardiões.'),
+        parents.length ? parents.map((p) => h('div', { class: 'li' }, h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, p)),
+          master ? h('button', { class: 'btn', type: 'button', onclick: send('pihole_parent_block', { action: 'remove', domain: p }, parentSpec(false, p)) }, 'Tirar veto') : null)) : h('p', { class: 'muted', style: 'margin:6px 0' }, 'Nenhum site vetado.'),
+        master ? [pdom, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+          const p = pdom.value.trim().toLowerCase();
+          if (!p) throw new Error('Digite o site.');
+          if (await confirmSend(ex.id, 'pihole_parent_block', { action: 'add', domain: p }, parentSpec(true, p))) route();
+        }) }, 'Vetar site'))] : h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Só o guardião-mestre veta ou tira o veto de um site.')),
+      h('div', { class: 'sec' }, `Liberações vetadas hoje · ${veto.audit_total || 0}`),
+      audit.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, audit.map((x) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, x.why, x.by ? ` · liberado por ${gname(x.by)}` : '')),
+        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x.domain }, removeSpec('allow', x.domain)) }, 'Bloquear de novo')))) :
+        empty('Nenhuma liberação em conflito com as listas de conteúdo adulto.'),
+      h('p', { class: 'muted', style: 'margin:8px 14px 0' }, `As listas de conteúdo adulto têm ${veto.listed || 0} domínios. Uma liberação que passa a cair nelas (a lista muda todo dia) aparece aqui e continua valendo até você bloquear de novo. Regras escritas à mão no Pi-hole não entram nesta conferência.`)];
   } else {
     const by = r.allow_by || {};
     const mine = (r.allow || []).filter((d) => by[d] !== undefined && (!domGuardian || by[d] === domGuardian));

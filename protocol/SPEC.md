@@ -61,6 +61,8 @@ Aparelho: `set_config {patch:{chave:valor}}` (passa por `Gate.split`) · `confir
 
 Executor: `pihole_allow {domain, ttl_s?}` · `pihole_deny {domain, ttl_s?}` · `pihole_remove {list:"allow"|"deny", domain}`.
 `pihole_batch {items:[{domain, ttl_s?}]}` (1 a 50 itens, só libera): usado para aprovar um pedido de liberação com um único toque.
+
+Veto: o executor recusa `pihole_allow` e `pihole_batch` de domínio que está nas listas de conteúdo adulto do Pi-hole (o domínio, um pai dele ou, com `ALLOW_MODE=regex`, um pai que cobriria um domínio listado) e de site vetado pelo mestre. `pihole_parent_block {action:"add"|"remove", domain}`: só o mestre, uma assinatura; veta o site (o domínio e tudo abaixo dele). Domínios vetados também não viram pedido de liberação (o executor não os envia ao gateway e o gateway apaga os já guardados).
 Só domínio **exato** (ASCII, sem curinga/IP); `ttl_s` entre 60 e 2 592 000; o canário configurado é intocável.
 
 ## Caixa do PIN (`set_pin`, `set_dev_pin`)

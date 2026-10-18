@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import domains
 from .pihole import Pihole, PiholeError
+from .veto import Veto
 
 MIN_TTL_S, MAX_TTL_S = 60, 30 * 24 * 3600
 REPORT_EVERY_S = 60
@@ -19,6 +20,7 @@ BATCH_MAX = 50
 BLOCKS_EVERY_S = 10
 BLOCKS_CHUNK = 150
 BLOCKS_BACKFILL_S = 3600
+BLOCKS_VETO_MAX = 400
 OWN_STATUSES = {"REGEX", "DENYLIST", "REGEX_CNAME", "DENYLIST_CNAME"}
 LIST_STATUSES = {"GRAVITY", "GRAVITY_CNAME"}
 
@@ -32,6 +34,7 @@ class ExecConfig:
     pihole_ca: str | None = None
     clients: dict | None = None       # {IP do aparelho na Tailscale: id do aparelho protegido}
     allow_mode: str = "exact"         # "regex": grava domínio + subdomínios como regex no Pi-hole (o guardião só vê o domínio)
+    gravity_db: str | None = None     # gravity.db do Pi-hole: o que está nas listas dele (conteúdo adulto) não pode ser liberado; None desliga
 
 
 def _fmt_ttl(s: int) -> str:
@@ -142,6 +145,7 @@ class Executor:
         self.last_report = 0.0
         self._lists: dict | None = None
         self._lists_ts = 0.0
+        self.veto = Veto(cfg.gravity_db, self.state.data.get("veto_parents"))
 
     # --- execução ---------------------------------------------------------------
     def _guard(self, domain, allow: bool = False) -> str:
@@ -151,6 +155,10 @@ class Executor:
             raise ValueError("o domínio-canário não pode ser alterado")
         if allow and canary and self.cfg.allow_mode == "regex" and canary.endswith("." + domains.rule_domain(d)):
             raise ValueError("a liberação cobriria o domínio-canário")  # a regex inclui os subdomínios
+        if allow:
+            why = self.veto.reason(d, self.cfg.allow_mode == "regex")
+            if why:
+                raise ValueError(f"vetado: {why}")
         return d
 
     def _put(self, list_: str, d: str, who: str) -> None:
@@ -171,7 +179,7 @@ class Executor:
         for e in self.pihole.list_entries(list_, kind="regex"):
             d = domains.from_regex(e["domain"])
             if d:
-                out.setdefault(d, {"domain": d, "comment": e["comment"]})
+                out.setdefault(d, {"domain": d, "comment": e["comment"], "rx": True})  # rx: a regra cobre também os subdomínios
         return list(out.values())
 
     @staticmethod
@@ -222,6 +230,17 @@ class Executor:
             if bad and not ok:
                 raise ValueError("; ".join(bad))
             return "liberados: " + ", ".join(ok) + (f" | falharam: {'; '.join(bad)}" if bad else "")
+        if t == cmds.T_PARENT_BLOCK:
+            action = a.get("action")
+            if action not in ("add", "remove"):
+                raise ValueError("ação inválida")
+            changed = self.veto.add_parent(a.get("domain")) if action == "add" else self.veto.remove_parent(a.get("domain"))
+            self.state.data["veto_parents"] = list(self.veto.parents)
+            self.state.save()
+            d = domains.rule_domain(a.get("domain"))
+            if action == "add":
+                return f"site vetado: {d}" if changed else f"{d} já estava vetado"
+            return f"veto removido: {d}" if changed else f"{d} não estava vetado"
         if t == "pihole_remove":
             if a.get("list") not in ("allow", "deny"):
                 raise ValueError("lista inválida")
@@ -277,11 +296,24 @@ class Executor:
                 r[name + "_total"] = len(entries)
                 r[name + "_by"] = {e["domain"]: e["comment"][9:] for e in entries if e["comment"].startswith("guardian:")}
             r["pihole_ok"] = True
+            r["veto"] = self._veto_report(allow)
         except PiholeError as e:
             r["pihole_ok"], r["pihole_error"] = False, str(e)[:200]
         self.gw.call("POST", f"/v1/devices/{self.dev}/report", r)
         self.executed.clear()
         self.last_report = time.monotonic()
+
+    def _veto_report(self, allow: list[dict]) -> dict:
+        """Os sites vetados pelo mestre e a auditoria: liberações que o veto não deixaria passar hoje (a lista muda todo dia)."""
+        self.veto.refresh()
+        bad = []
+        for e in allow:
+            why = self.veto.reason(e["domain"], bool(e.get("rx")))  # exata só cobre ela mesma; a regex cobre os subdomínios
+            if why:
+                bad.append({"domain": e["domain"], "why": why, "by": e["comment"][9:] if e["comment"].startswith("guardian:") else ""})
+        bad.sort(key=lambda x: x["domain"])
+        return {"on": self.veto.enabled, "parents": sorted(self.veto.parents), "listed": len(self.veto.listed),
+                "audit": bad[:100], "audit_total": len(bad)}
 
     # --- bloqueios ---------------------------------------------------------------
     def _list_name(self, list_id) -> str:
@@ -312,6 +344,7 @@ class Executor:
         newest = since
         canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
         per_dev: dict[str, dict] = {}
+        vetoed: dict[str, set] = {}
         for ip, dev in clients.items():
             for q in self.pihole.queries(since, ip):
                 status, t = q.get("status"), q.get("time")
@@ -327,6 +360,9 @@ class Executor:
                     continue
                 if d == canary:  # o canário é o teste de saúde do aparelho: bloqueado de propósito, não é pedido de ninguém
                     continue
+                if self.veto.reason(d, self.cfg.allow_mode == "regex"):  # não pode ser liberado: não vira pedido (e some do que já estava guardado)
+                    vetoed.setdefault(dev, set()).add(d)
+                    continue
                 e = per_dev.setdefault(dev, {}).setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t),
                                                                "src": kind, "list": "", "cname": cname})
                 e["count"] += 1
@@ -334,10 +370,14 @@ class Executor:
                 if kind == "list" and not e["list"]:
                     e["list"] = self._list_name(q.get("list_id"))
         total = 0
-        for dev, ents in per_dev.items():
-            items = sorted(ents.values(), key=lambda x: x["last"], reverse=True)
-            for i in range(0, len(items), BLOCKS_CHUNK):
-                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": dev, "items": items[i:i + BLOCKS_CHUNK]})
+        for dev in sorted(set(per_dev) | set(vetoed)):
+            items = sorted(per_dev.get(dev, {}).values(), key=lambda x: x["last"], reverse=True)
+            drop = sorted(vetoed.get(dev, ()))[:BLOCKS_VETO_MAX]
+            for i in range(0, max(len(items), 1), BLOCKS_CHUNK):
+                body = {"dev": dev, "items": items[i:i + BLOCKS_CHUNK]}
+                if i == 0 and drop:
+                    body["veto"] = drop  # o gateway apaga o que já tinha guardado destes domínios
+                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", body)
             total += len(items)
         if newest > since:
             self.state.data["blocked_since"] = newest + 0.000001

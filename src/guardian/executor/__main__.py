@@ -7,6 +7,8 @@ Configuração por variáveis de ambiente:
   PIHOLE_CA             CA para HTTPS do Pi-hole (opcional)
   CANARY                domínio-canário que nunca pode ser alterado
   ALLOW_MODE            "regex" (padrão): liberar grava o domínio e seus subdomínios como regex; "exact": só o domínio exato
+  GRAVITY_DB            gravity.db do Pi-hole (padrão /etc/pihole/gravity.db, se existir): o que as listas de conteúdo adulto cobrem não pode
+                        ser liberado, e se o arquivo não puder ser lido nenhuma liberação passa; vazio desliga o veto
   CLIENTS               aparelhos protegidos: "IP=id,IP=id" (IP do aparelho na Tailscale, v4 e v6, e o id do aparelho no site)
 """
 import argparse
@@ -29,9 +31,11 @@ def cfg_from_env() -> ExecConfig:
         if "=" in part:
             ip, dev = part.strip().split("=", 1)
             clients[ip.strip()] = dev.strip()
+    default_gravity = "/etc/pihole/gravity.db" if os.path.exists("/etc/pihole/gravity.db") else ""
     return ExecConfig(e.get("EXECUTOR_STATE", "/var/lib/guardian-executor"), e.get("PIHOLE_URL", "http://127.0.0.1:8080"),
                       pw, e.get("CANARY", ""), e.get("PIHOLE_CA"), clients,
-                      "exact" if e.get("ALLOW_MODE", "regex").strip().lower() == "exact" else "regex")
+                      "exact" if e.get("ALLOW_MODE", "regex").strip().lower() == "exact" else "regex",
+                      e.get("GRAVITY_DB", default_gravity).strip() or None)
 
 
 def main(argv=None) -> int:
