@@ -5,11 +5,13 @@ só com assinatura de guardião-mor ou mestre. O agente roda como SYSTEM e a pas
 quem usa o computador, numa conta comum, não alcança a chave nem o estado. Veja docs/AGENTE.md.
 """
 import os
+import queue
 import re
 import socket
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 
 from ..executor.runner import GatewayClient, GatewayError, State, load_or_create_key, parse_pairing
@@ -73,7 +75,11 @@ class Agent:
         self.runs: list[dict] = list(self.state.data.get("runs") or [])
         self.last_report = -1e9
         self.last_error = ""
+        self.lock = threading.RLock()
         self.busy = threading.Lock()  # uma instalação ou script por vez
+        self.current: dict | None = None   # o que está rodando agora (nome, desde quando): vai no relatório e na tela
+        self.async_exec = False            # em produção (run) os comandos do Windows rodam numa fila própria; os testes rodam na hora
+        self._q: queue.Queue = queue.Queue()
 
     # --- execução ---------------------------------------------------------------
     def apply(self, cmd: dict) -> str:
@@ -85,10 +91,11 @@ class Agent:
             cmds.check_win_args(t, a, now=self.now(), creating=False)  # o agente confere de novo: não confia no gateway
             with self.busy:
                 res = actions.install(self.system, a) if t == cmds.T_WIN_INSTALL else actions.run_script(self.system, a)
-            self.runs.append({"ctr": cmd["ctr"], "type": t, "name": (a.get("name") or "")[:80], "ok": res.ok, "rc": res.rc,
-                              "out": res.out, "by": cmd["guardian"], "ts": int(self.now())})
-            self.runs = self.runs[-RUNS_KEEP:]
-            self.state.data["runs"] = self.runs
+            with self.lock:
+                self.runs.append({"ctr": cmd["ctr"], "type": t, "name": (a.get("name") or "")[:80], "ok": res.ok, "rc": res.rc,
+                                  "out": res.out, "by": cmd["guardian"], "ts": int(self.now())})
+                self.runs = self.runs[-RUNS_KEEP:]
+                self.state.data["runs"] = self.runs
             if not res.ok:
                 raise ValueError(res.msg)
             return res.msg
@@ -100,19 +107,57 @@ class Agent:
         except cmds.CommandError as e:
             self._note({"type": "?", "ok": False, "msg": f"recusado: {e}"})
             return
-        self.state.data["consumer"] = self.consumer.to_json()
-        self.state.save()  # o contador é gasto ANTES de executar: se o agente cair no meio de uma instalação, o comando não roda de novo
+        with self.lock:
+            self.state.data["consumer"] = self.consumer.to_json()
+            self.state.save()  # o contador é gasto ANTES de executar: se o agente cair no meio de uma instalação, o comando não roda de novo
+        if self.async_exec and v.cmd["type"] in cmds.WIN_TYPES:
+            self._q.put(v.cmd)  # instalar ou rodar script demora e pode travar: não pode prender a conversa com o gateway
+        else:
+            self._execute(v.cmd)
+
+    def _execute(self, cmd: dict) -> None:
+        a = cmd.get("args") or {}
+        if cmd["type"] in cmds.WIN_TYPES:
+            with self.lock:
+                self.current = {"type": cmd["type"], "name": str(a.get("name") or "")[:80], "since": int(self.now())}
         try:
-            msg = self.apply(v.cmd)
-            self._note({"type": v.cmd["type"], "ok": True, "msg": msg})
+            msg = self.apply(cmd)
+            self._note({"type": cmd["type"], "ok": True, "msg": msg})
         except (ValueError, cmds.CommandError, OSError) as e:
-            self._note({"type": v.cmd["type"], "ok": False, "msg": str(e)})
-        self.state.data["consumer"] = self.consumer.to_json()
-        self.state.save()
+            self._note({"type": cmd["type"], "ok": False, "msg": str(e)})
+        except Exception as e:  # nada inesperado derruba o agente: vira "falhou" (o contador já foi gasto, então não roda de novo)
+            traceback.print_exc()
+            self._note({"type": cmd["type"], "ok": False, "msg": f"erro inesperado: {type(e).__name__}: {e}"[:300]})
+        finally:
+            with self.lock:
+                self.current = None
+                self.state.data["consumer"] = self.consumer.to_json()
+                self.state.save()
 
     def _note(self, entry: dict) -> None:
-        self.executed.append(entry)
-        self.last_executed = entry
+        with self.lock:
+            self.executed.append(entry)
+            self.last_executed = entry
+
+    def start_worker(self, stop: threading.Event) -> threading.Thread:
+        """A fila de execução: um comando do Windows por vez, fora do laço que fala com o gateway."""
+        self.async_exec = True
+
+        def loop():
+            while not stop.is_set():
+                try:
+                    cmd = self._q.get(timeout=1)
+                except queue.Empty:
+                    continue
+                self._execute(cmd)
+                try:
+                    self.report()  # resultado logo, sem esperar o próximo ciclo
+                except GatewayError as e:
+                    print("relatório:", e, file=sys.stderr)
+
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+        return t
 
     # --- relatório ---------------------------------------------------------------
     def report(self) -> None:
@@ -121,15 +166,22 @@ class Agent:
              "host": socket.gethostname()[:64], "ctrs": self.consumer.last_ctr,
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
              "roles": {g: v.role for g, v in self.consumer.trust.guardians.items()},
-             "runs": [{**x, "out": x["out"][-RUN_OUT_REPORT:]} for x in self.runs[-RUNS_KEEP:]], "executed": self.executed[-50:]}
+             "busy": None}
+        with self.lock:
+            r["runs"] = [{**x, "out": x["out"][-RUN_OUT_REPORT:]} for x in self.runs[-RUNS_KEEP:]]
+            sent = list(self.executed[-50:])
+            r["executed"], r["busy"] = sent, (dict(self.current) if self.current else None)
+            n_sent = len(self.executed)
         self.gw.call("POST", f"/v1/devices/{self.dev}/report", r)
-        self.executed.clear()
+        with self.lock:
+            del self.executed[:n_sent]   # só o que foi enviado (o que chegou durante o envio fica para o próximo)
         self.last_report = time.monotonic()
 
     # --- o que a tela local mostra e pede (sempre pelo gateway, com a chave do agente) ----------
     def ui_state(self) -> dict:
         out = {"dev": self.dev, "host": socket.gethostname(), "version": VERSION, "blocked": [], "requests": [], "admin": [],
-               "runs": [{k: v for k, v in r.items() if k != "by"} for r in self.runs[-RUNS_KEEP:]], "gateway_ok": True, "error": self.last_error}
+               "runs": [{k: v for k, v in r.items() if k != "by"} for r in self.runs[-RUNS_KEEP:]], "gateway_ok": True, "error": self.last_error,
+               "busy": dict(self.current) if self.current else None}
         try:
             b = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked?src=own")
             out["blocked"] = [{k: i[k] for k in ("domain", "count", "last")} for i in b.get("items", [])][:UI_BLOCKED_MAX]
@@ -168,6 +220,7 @@ class Agent:
 
     def run(self, stop: threading.Event) -> None:
         delay = 2
+        self.start_worker(stop)
         while not stop.is_set():
             try:
                 if self.last_report < 0:

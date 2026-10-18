@@ -201,6 +201,58 @@ class AgentEndToEnd(unittest.TestCase):
         self.assertTrue(self.last()["ok"], self.last())
         self.sys.sig = ("Valid", "Wireshark Foundation")
 
+    def test_05e_unexpected_error_becomes_a_failure_not_a_crash(self):
+        class Boom(RuntimeError):
+            pass
+        orig = self.sys.run
+        self.sys.run = lambda *a, **k: (_ for _ in ()).throw(Boom("disco cheio"))
+        try:
+            self.send(cmds.T_WIN_RUN, {"script": "x"})
+            self.ag.step(wait_s=0)                                         # não levanta: o agente continua vivo
+        finally:
+            self.sys.run = orig
+        self.assertFalse(self.last()["ok"])
+        self.assertIn("erro inesperado: Boom", self.last()["msg"])
+        self.send(cmds.T_WIN_RUN, {"script": "depois"})                    # e o próximo comando roda normalmente
+        self.ag.step(wait_s=0)
+        self.assertTrue(self.last()["ok"], self.last())
+
+    def test_05f_a_stuck_installer_does_not_block_the_agent(self):
+        import threading
+        gate, started = threading.Event(), threading.Event()
+        orig = self.sys.run
+
+        def slow(cmd, timeout, env=None):
+            if isinstance(cmd, str) and "setup.exe" in cmd:
+                started.set()
+                gate.wait(20)                                              # o instalador espera uma janela que ninguém vê
+            return orig(cmd, timeout, env)
+
+        self.sys.run = slow
+        stop = threading.Event()
+        self.ag.start_worker(stop)
+        try:
+            self.send(cmds.T_WIN_INSTALL, {"name": "Preso", "source": "url", "url": "https://exemplo.com/p.exe", "sha256": SHA, "kind": "exe"})
+            self.assertEqual(self.ag.step(wait_s=0), 1)                    # o agente aceitou e voltou na hora
+            self.assertTrue(started.wait(10))
+            self.assertEqual(self.ag.current["name"], "Preso")             # e sabe dizer o que está rodando
+            self.ag.report()
+            d = next(x for x in self.c.call("GET", "/v1/devices")[1]["devices"] if x["id"] == self.dev)
+            self.assertEqual(d["report"]["busy"]["name"], "Preso")         # o guardião também vê "executando Preso"
+            self.assertEqual(self.ag.step(wait_s=0), 0)                    # continua conversando com o gateway enquanto isso
+            gate.set()
+            for _ in range(100):
+                if self.ag.current is None and self.ag.last_executed.get("type") == cmds.T_WIN_INSTALL:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(self.ag.last_executed["ok"], self.ag.last_executed)
+            self.assertIsNone(self.ag.current)
+        finally:
+            stop.set()
+            gate.set()
+            self.sys.run = orig
+            self.ag.async_exec = False
+
     def test_06_exe_installer_and_reboot_code(self):
         self.sys.replies.append((3010, "reiniciar"))
         self.send(cmds.T_WIN_INSTALL, {"name": "Prog", "source": "url", "url": "https://exemplo.com/p.exe", "sha256": SHA, "kind": "exe", "args": "/S"})
@@ -301,6 +353,17 @@ class AgentEndToEnd(unittest.TestCase):
 
 
 class ActionsUnit(unittest.TestCase):
+    def test_timeout_message_explains_the_interactive_installer(self):
+        fake = FakeSys()
+        fake.replies.append((-1, "x\n[tempo limite estourado]"))
+        res = actions.install(fake, {"name": "Npcap", "source": "url", "url": "https://exemplo.com/n.exe", "sha256": SHA, "kind": "exe", "timeout_s": 120})
+        self.assertFalse(res.ok)
+        self.assertIn("provavelmente espera uma janela", res.msg)
+        self.assertEqual(fake.calls[-1][1], 120)                           # usou o tempo limite do pedido
+        fake.replies.append((1603, "falhou"))
+        self.assertNotIn("janela", actions.install(fake, {"name": "A", "source": "url", "url": "https://exemplo.com/a.exe", "sha256": SHA, "kind": "exe"}).msg)
+        self.assertEqual(fake.calls[-1][1], actions.INSTALL_TIMEOUT_S)     # sem timeout_s: o padrão
+
     def test_winget_download_failure_names_the_blocked_domain(self):
         out = "Found 7-Zip [7zip.7zip] Version 26.04\nDownloading https://www.7-zip.org/a/7z2604-x64.exe\nInternetOpenUrl() failed.\n0x80072ee7 : unknown error"
         self.assertEqual(actions.download_blocked_host(out), "www.7-zip.org")

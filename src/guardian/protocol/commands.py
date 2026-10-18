@@ -72,6 +72,9 @@ def check_win_request(type_: str, args: dict) -> None:
         raise CommandError("argumentos inválidos")
     if type_ == T_WIN_INSTALL:
         _win_text(args, "name", 1, 80)
+        ti = args.get("timeout_s")
+        if ti is not None and (not isinstance(ti, int) or isinstance(ti, bool) or not 60 <= ti <= 3600):
+            raise CommandError("tempo limite da instalação de 60 s a 1 h")
         source = args.get("source")
         if source == "winget":
             if not _WINGET_ID.match(_win_text(args, "id", 3, 101)):

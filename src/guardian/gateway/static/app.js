@@ -175,7 +175,7 @@ function statusOf(d, now) {
     if (r.pihole_ok === false) return { word: 'Atenção', kind: 'warn', detail: 'Pi-hole inacessível' };
     return { word: 'Ok', kind: 'ok', detail: `${Object.keys(r.allow_by || {}).length} liberados pelo Guardian · ${(r.temp || []).length} temporários · ${Object.keys(r.deny_by || {}).length} bloqueados pelo Guardian` };
   }
-  if (r.platform === 'windows') return { word: 'Ok', kind: 'ok', detail: `agente ${r.version || ''} · visto ${ago(d.last_seen, now)}${r.tailscale ? '' : ' · sem Tailscale'}` };
+  if (r.platform === 'windows') return { word: 'Ok', kind: 'ok', detail: (r.busy ? `executando ${r.busy.name || (r.busy.type === 'win_install' ? 'uma instalação' : 'um comando')} há ${dur((now - r.busy.since) * 1000)} · ` : '') + `agente ${r.version || ''} · visto ${ago(d.last_seen, now)}${r.tailscale ? '' : ' · sem Tailscale'}` };
   const apps = (r.pendingApps || []).length;
   const pend = (r.pending || []).length;
   if (r.filterActive === false) return { word: 'Atenção', kind: 'warn', detail: 'filtro não confirmado' + (r.filterReason ? `: ${r.filterReason}` : '') };

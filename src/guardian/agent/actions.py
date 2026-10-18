@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 OUT_MAX = 4000
 DOWNLOAD_MAX = 2 * 1024 ** 3
-INSTALL_TIMEOUT_S = 1800
+INSTALL_TIMEOUT_S = 600   # padrão; o pedido pode trazer timeout_s (60 a 3600)
 DOWNLOAD_TIMEOUT_S = 600
 _NOWIN = 0x08000000  # CREATE_NO_WINDOW
 
@@ -159,14 +159,22 @@ def download_blocked_host(out: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+def _timed_out(rc, out: str) -> str:
+    """Instalador que estoura o tempo quase sempre espera uma janela que o SYSTEM não mostra (sem modo silencioso)."""
+    if rc == -1 and "tempo limite" in out:
+        return " Não terminou no tempo: provavelmente espera uma janela (esse instalador não tem modo silencioso). Peça à pessoa de confiança para instalar com a conta de administrador."
+    return ""
+
+
 def install(system: Sys, a: dict) -> Result:
+    limit = a.get("timeout_s", INSTALL_TIMEOUT_S)
     if a["source"] == "winget":
         argv = [system.winget(), "install", "--id", a["id"], "--exact", "--silent", "--source", "winget",
                 "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]
         if a.get("version"):
             argv += ["--version", a["version"]]
-        rc, out = system.run(argv, INSTALL_TIMEOUT_S)
-        msg = f"winget {a['id']}: código {rc}"
+        rc, out = system.run(argv, limit)
+        msg = f"winget {a['id']}: código {rc}" + _timed_out(rc, out)
         if rc != 0:
             host = download_blocked_host(out)
             if host:
@@ -189,9 +197,9 @@ def install(system: Sys, a: dict) -> Result:
                 return Result(False, None, "", f"assinatura digital recusada (estado {status}, assinante '{signer}'; o aprovado era '{a['publisher']}'): nada foi executado")
         extra = f" {a['args']}" if a.get("args") else ""
         cmd = f'msiexec /i "{path}" /qn /norestart{extra}' if a["kind"] == "msi" else f'"{path}"{extra}'
-        rc, out = system.run(cmd, INSTALL_TIMEOUT_S)
+        rc, out = system.run(cmd, limit)
         ok = rc in (0, 3010)  # 3010: instalou, precisa reiniciar
-        return Result(ok, rc, clip(out), f"instalador {a['name']}: código {rc}" + (" (reiniciar)" if rc == 3010 else ""))
+        return Result(ok, rc, clip(out), f"instalador {a['name']}: código {rc}" + (" (reiniciar)" if rc == 3010 else "") + _timed_out(rc, out))
     finally:
         system.cleanup(d)
 

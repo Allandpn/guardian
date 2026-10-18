@@ -121,8 +121,10 @@ const fill = (map) => { for (const [el, v] of Object.entries(map)) f[el].value =
 const inspectFile = act(async () => {
   const path = f.fPath.value.trim();
   if (!path) throw new Error('Cole o caminho do arquivo.');
+  const before = inspected ? inspected.name : '';
   inspected = await api('POST', '/api/inspect', { path });
-  if (!f.fName.value.trim()) f.fName.value = inspected.name;
+  // o nome acompanha o arquivo: troca se estiver vazio ou ainda for o nome automático do arquivo anterior (não o que a pessoa digitou)
+  if (!f.fName.value.trim() || f.fName.value.trim() === before) f.fName.value = inspected.name;
   toast('Arquivo conferido.');
   draw();
 });
@@ -236,7 +238,7 @@ function draw() {
   const body = tab === 'bloqueados' ? blockedTab() : tab === 'programas' ? programsTab() : tab === 'comando' ? commandTab() : reqNodes;
   main.replaceChildren(
     h('header', { class: 'top' }, h('div', { style: 'margin-left:8px;display:flex;align-items:center;gap:10px' }, insignia('device', 28), h('h1', { style: 'padding-left:0' }, `NotToday PC · ${st.host}`)),
-      h('span', { class: 'sp' }), chip(st.gateway_ok ? 'conectado' : 'sem conexão', st.gateway_ok ? 'ok' : 'bad'),
+      h('span', { class: 'sp' }), st.busy ? chip(`executando ${st.busy.name || (st.busy.type === 'win_install' ? 'instalação' : 'comando')}`, 'warn') : null, chip(st.gateway_ok ? 'conectado' : 'sem conexão', st.gateway_ok ? 'ok' : 'bad'),
       h('button', { class: 'ib', type: 'button', 'aria-label': 'Atualizar', title: 'Atualizar', onclick: act(async () => { await refresh(); toast('Atualizado.'); }) }, icon('sync'))),
     h('div', { class: 'wrap' },
       h('nav', { class: 'seg', 'aria-label': 'Seções' }, TABS.map(([k, label]) => h('a', { href: `#${k}`, class: k === tab ? 'on' : '', 'aria-current': k === tab ? 'page' : null }, k === 'pedidos' && open ? `${label} · ${open}` : label))),
