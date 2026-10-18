@@ -279,3 +279,4 @@ a.gcard:hover { border-color: var(--role); }
   background: var(--bg); border: 1px solid var(--line); border-radius: 8px; user-select: text; }
 .sheet .detail { margin-top: 12px; }
 pre.detail.inline { max-height: 240px; margin: 8px 0 0; }
+.btn[aria-pressed="true"] { border-color: var(--green); color: var(--green); background: var(--s2); }

@@ -4,8 +4,18 @@ import { h, icon, chip, toast, insignia } from '/ui.js';
 const main = document.getElementById('main');
 let st = null;                 // último estado vindo do agente
 let tab = 'bloqueados';
-const picked = new Set();      // domínios marcados
-let filter = '';
+const picked = new Set();      // domínios marcados (o nome de base, como veio do Pi-hole)
+const cut = {};                // quantos rótulos da esquerda foram cortados de cada domínio (« e »)
+let sortBy = 'recent';
+let showHidden = false;
+
+// ---- o que fica guardado neste navegador (só preferências de tela: esconder, limpar histórico) ----
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('guardian.' + k); return v === null ? d : JSON.parse(v); } catch (_) { return d; } },
+  set(k, v) { try { localStorage.setItem('guardian.' + k, JSON.stringify(v)); } catch (_) { /* sem armazenamento: a tela só não lembra */ } },
+};
+const hidden = new Set(store.get('hidden', []));
+let clearedAt = Number(store.get('cleared', 0)) || 0;
 
 async function api(method, path, body) {
   const r = await fetch(path, { method, headers: method === 'POST' ? { 'Content-Type': 'application/json', 'X-Guardian-Agent': '1' } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -17,10 +27,12 @@ const fail = (e) => toast(String(e.message || e));
 const act = (fn) => async () => { try { await fn(); } catch (e) { fail(e); } };
 const field = (label, el) => h('label', { style: 'display:block;margin:10px 0 0' }, h('span', { class: 'muted', style: 'display:block;margin-bottom:4px' }, label), el);
 const input = (ph, extra = {}) => h('input', { class: 'inp', type: 'text', placeholder: ph, autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', ...extra });
+const small = (label, onclick, extra = {}) => h('button', { class: 'btn', type: 'button', style: 'min-height:38px;padding:0 12px;font-size:13px', onclick, ...extra }, label);
 
-// Formulários que sobrevivem ao redesenho (a pessoa pode estar digitando quando a lista atualiza).
+// Campos que sobrevivem ao redesenho (a pessoa pode estar digitando quando a lista atualiza).
 const f = {
-  wName: input('Nome do programa (ex.: Git)'), wId: input('Id do winget (ex.: Git.Git)'), wVer: input('Versão (opcional)'),
+  search: input('Buscar domínio', { 'aria-label': 'Buscar domínio' }),
+  wName: input('Nome do programa (ex.: 7-Zip)'), wId: input('Id do winget (ex.: 7zip.7zip)'), wVer: input('Versão (opcional, ex.: 24.09)'),
   uName: input('Nome do programa'), uUrl: input('https://…/instalador.msi'), uSha: input('SHA-256 do arquivo (64 caracteres)'),
   uKind: h('select', { class: 'sel' }, h('option', { value: 'msi' }, 'Instalador .msi'), h('option', { value: 'exe' }, 'Instalador .exe')),
   uArgs: input('Argumentos silenciosos (ex.: /S), se precisar'),
@@ -28,10 +40,8 @@ const f = {
   cScript: h('textarea', { class: 'ta', rows: '8', placeholder: 'Write-Output "olá"', spellcheck: 'false', 'aria-label': 'Script do PowerShell' }),
   cCount: h('div', { class: 'muted', style: 'margin-top:4px' }),
 };
-f.cScript.addEventListener('input', () => {
-  const n = new TextEncoder().encode(f.cScript.value).length;
-  f.cCount.textContent = `${n} de 6000 bytes`;
-});
+f.search.addEventListener('input', () => draw());
+f.cScript.addEventListener('input', () => { f.cCount.textContent = `${new TextEncoder().encode(f.cScript.value).length} de 6000 bytes`; });
 
 const STATE = { open: ['aguardando o guardião', 'warn'], approved: ['aprovado', 'ok'], denied: ['negado', 'bad'], done: ['resolvido', 'ok'] };
 const ago = (ts) => { const s = Math.max(0, Math.floor(Date.now() / 1000) - ts); return s < 90 ? 'agora' : s < 5400 ? `há ${Math.round(s / 60)} min` : s < 129600 ? `há ${Math.round(s / 3600)} h` : `há ${Math.round(s / 86400)} d`; };
@@ -42,21 +52,62 @@ async function send(body, ok) {
   await refresh();
 }
 
+// ---- domínios: o domínio que será pedido é o de base com N rótulos cortados à esquerda (advertise.exemplo.com -> exemplo.com) ----
+const parts = (d) => d.split('.');
+const maxCut = (d) => Math.max(0, parts(d).length - 2);
+const eff = (d) => parts(d).slice(Math.min(cut[d] || 0, maxCut(d))).join('.');
+const openDomains = () => new Set((st.requests || []).flatMap((q) => (q.items || []).filter((i) => i.state === 'open').map((i) => i.domain)));
+
 function blockedTab() {
-  const rows = (st.blocked || []).filter((b) => !filter || b.domain.includes(filter));
-  const q = input('Buscar', { 'aria-label': 'Buscar domínio', value: filter });
-  q.addEventListener('input', () => { filter = q.value.trim().toLowerCase(); draw(false); const n = main.querySelector('input[aria-label="Buscar domínio"]'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } });
+  const all = st.blocked || [];
+  const open = openDomains();
+  const q = f.search.value.trim().toLowerCase();
+  const nHidden = all.filter((b) => hidden.has(b.domain)).length;
+  let rows = all.filter((b) => (showHidden || !hidden.has(b.domain)) && (!q || b.domain.includes(q)));
+  rows = [...rows].sort((a, b) => (sortBy === 'count' ? b.count - a.count || b.last - a.last : b.last - a.last));
+  const sel = [...picked].filter((d) => all.some((b) => b.domain === d));
+
+  const request = act(async () => {
+    const d = [...new Set(sel.map(eff))].slice(0, 20);
+    if (!d.length) throw new Error('Marque ao menos um domínio.');
+    await send({ kind: 'unblock', domains: d }, d.length > 1 ? `${d.length} domínios pedidos ao guardião.` : 'Pedido enviado ao guardião.');
+    sel.forEach((x) => picked.delete(x));
+    draw();
+  });
+  const hideSelected = () => { sel.forEach((d) => { hidden.add(d); picked.delete(d); }); store.set('hidden', [...hidden]); draw(); };
+
   return [
-    h('div', { class: 'sec' }, `Bloqueado agora · ${(st.blocked || []).length}`),
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Marque o que você precisa e peça a liberação. O guardião decide.'), q,
-      rows.length ? rows.map((b) => h('label', { class: 'li', style: 'cursor:pointer' },
-        h('input', { type: 'checkbox', checked: picked.has(b.domain), 'aria-label': b.domain, onchange: (e) => { e.target.checked ? picked.add(b.domain) : picked.delete(b.domain); draw(false); } }),
-        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, b.domain), h('div', { class: 'muted' }, `${b.count}× · ${ago(b.last)}`)))) :
-        h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Nada bloqueado nas últimas 24 horas.'),
-      h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', disabled: !picked.size,
-        onclick: act(async () => { const d = [...picked].slice(0, 20); await send({ kind: 'unblock', domains: d }, 'Pedido enviado ao guardião.'); d.forEach((x) => picked.delete(x)); }) }, picked.size ? `Pedir liberação (${picked.size})` : 'Pedir liberação'))),
+    h('div', { class: 'sec' }, `Bloqueado agora · ${all.length - nHidden}`),
+    h('div', { class: 'card' },
+      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Marque o que você precisa e peça a liberação; o guardião decide. Use « e » para pedir o domínio inteiro (exemplo.com) em vez de só um subdomínio.'),
+      f.search,
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' },
+        small('Mais recentes', () => { sortBy = 'recent'; draw(); }, { 'aria-pressed': String(sortBy === 'recent') }),
+        small('Mais bloqueados', () => { sortBy = 'count'; draw(); }, { 'aria-pressed': String(sortBy === 'count') }),
+        small('Marcar todos', () => { rows.forEach((b) => { if (!open.has(eff(b.domain))) picked.add(b.domain); }); draw(); }),
+        small('Esconder marcados', hideSelected, { disabled: !sel.length }),
+        nHidden ? small(showHidden ? 'Ocultar escondidos' : `Mostrar escondidos (${nHidden})`, () => { showHidden = !showHidden; draw(); }) : null),
+      rows.length ? rows.map((b) => {
+        const e = eff(b.domain), isOpen = open.has(e);
+        return h('div', { class: 'li', style: hidden.has(b.domain) ? 'opacity:.6' : '' },
+          h('input', { type: 'checkbox', checked: picked.has(b.domain), disabled: isOpen, 'aria-label': e, style: 'width:22px;height:22px;flex:none',
+            onchange: (ev) => { ev.target.checked ? picked.add(b.domain) : picked.delete(b.domain); draw(); } }),
+          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, e), isOpen ? [' ', chip('aguardando', 'warn')] : null,
+            h('div', { class: 'muted' }, `${b.count}× · ${ago(b.last)}${e !== b.domain ? ` · de ${b.domain}` : ''}${hidden.has(b.domain) ? ' · escondido' : ''}`)),
+          maxCut(b.domain) ? [
+            small('«', () => { cut[b.domain] = Math.min((cut[b.domain] || 0) + 1, maxCut(b.domain)); draw(); }, { 'aria-label': 'Encurtar: pedir o domínio pai', disabled: (cut[b.domain] || 0) >= maxCut(b.domain), style: 'min-height:38px;min-width:38px;padding:0' }),
+            small('»', () => { cut[b.domain] = Math.max((cut[b.domain] || 0) - 1, 0); draw(); }, { 'aria-label': 'Ampliar: voltar ao domínio de baixo', disabled: !(cut[b.domain] > 0), style: 'min-height:38px;min-width:38px;padding:0' })] : null);
+      }) : h('p', { class: 'muted', style: 'margin:12px 0 0' }, all.length ? 'Nada com esse filtro.' : 'Nada bloqueado nas últimas 24 horas.')),
+    h('div', { style: 'height:84px' }),   // espaço para a barra fixa de baixo não cobrir o fim da lista
+    sel.length ? h('div', { class: 'sticky', style: 'bottom:0;left:0' },
+      h('div', { class: 'sp' }, h('strong', {}, `${sel.length} selecionado${sel.length > 1 ? 's' : ''}`)),
+      h('button', { class: 'btn', type: 'button', onclick: () => { picked.clear(); draw(); } }, 'Limpar seleção'),
+      h('button', { class: 'btn pri', type: 'button', onclick: request }, 'Pedir liberação')) : null,
   ];
 }
+
+// ---- programas ----
+const fill = (map) => { for (const [el, v] of Object.entries(map)) f[el].value = v; draw(); };
 
 function programsTab() {
   const w = act(async () => {
@@ -69,16 +120,32 @@ function programsTab() {
     if (f.uArgs.value.trim()) p.args = f.uArgs.value.trim();
     await send({ kind: 'install', payload: p }, 'Pedido de instalação enviado.');
   });
+  const step = (n, text) => h('div', { class: 'li', style: 'min-height:44px' }, h('span', { class: 'st cur' }, String(n)), h('div', { class: 'sp' }, text));
   return [
-    h('div', { class: 'sec' }, 'Instalar pelo winget'),
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Procure o id no PowerShell com "winget search nome". O guardião aprova e o agente instala como administrador.'),
-      field('Nome', f.wName), field('Id', f.wId), field('Versão', f.wVer), h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: w }, 'Pedir instalação'))),
-    h('div', { class: 'sec' }, 'Instalar por link'),
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Só https. Baixe o arquivo uma vez, rode "Get-FileHash arquivo" e cole o SHA-256 aqui: o agente só instala se o arquivo for idêntico.'),
-      field('Nome', f.uName), field('Endereço', f.uUrl), field('SHA-256', f.uSha), field('Tipo', f.uKind), field('Argumentos silenciosos', f.uArgs),
+    h('div', { class: 'sec' }, 'Como funciona'),
+    h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' },
+      step(1, 'Você diz qual programa quer instalar (abaixo).'),
+      step(2, 'O guardião-mor ou o mestre lê o pedido e aprova com a passkey.'),
+      step(3, 'O agente instala sozinho, como administrador, sem você digitar senha. O resultado aparece na aba Pedidos.')),
+    h('div', { class: 'sec' }, 'Opção 1: pelo winget (a mais simples)'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O winget é a loja de programas do Windows. Para achar o id de um programa, abra o PowerShell e rode: winget search nome. O id tem a forma Fabricante.Programa.'),
+      h('div', { style: 'margin-top:10px' }, small('Usar o exemplo (7-Zip)', () => fill({ wName: '7-Zip', wId: '7zip.7zip', wVer: '' }))),
+      field('Nome', f.wName), field('Id do winget', f.wId), field('Versão (opcional)', f.wVer),
+      h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: w }, 'Pedir instalação'))),
+    h('div', { class: 'sec' }, 'Opção 2: instalador por link'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Para programas que não estão no winget. Baixe o instalador uma vez, rode no PowerShell: Get-FileHash arquivo.msi (e copie o campo Hash). O agente só instala se o arquivo baixado for idêntico a esse hash. Só endereços https.'),
+      field('Nome', f.uName), field('Endereço do instalador', f.uUrl), field('SHA-256', f.uSha), field('Tipo', f.uKind), field('Argumentos silenciosos', f.uArgs),
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: u }, 'Pedir instalação'))),
   ];
 }
+
+// ---- comando ----
+const EXAMPLES = [
+  ['Quem sou eu', 'Quem executa o comando', 'whoami\nhostname\nGet-Date'],
+  ['Versão do Windows', 'Versão do Windows', '(Get-CimInstance Win32_OperatingSystem).Caption\n(Get-CimInstance Win32_OperatingSystem).Version'],
+  ['Testar o winget', 'Testar o winget', 'winget --version\nwinget source list'],
+  ['Espaço em disco', 'Espaço livre nos discos', 'Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n="LivreGB";e={[math]::Round($_.Free/1GB,1)}}, @{n="UsadoGB";e={[math]::Round($_.Used/1GB,1)}}'],
+];
 
 function commandTab() {
   f.cScript.dispatchEvent(new Event('input'));
@@ -89,44 +156,57 @@ function commandTab() {
   });
   return [
     h('div', { class: 'sec' }, 'Comando como administrador'),
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O guardião lê o script inteiro antes de aprovar e ele roda uma vez, como administrador, com limite de 10 minutos.'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Escreva um script do PowerShell. O guardião lê o texto inteiro antes de aprovar e ele roda uma vez, como administrador (SYSTEM), com limite de 10 minutos. A saída volta na aba Pedidos.'),
+      h('div', { class: 'sec', style: 'padding-left:0' }, 'Exemplos para testar'),
+      h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, EXAMPLES.map(([label, name, script]) => small(label, () => fill({ cName: name, cScript: script })))),
       field('O que faz', f.cName), field('Script do PowerShell', f.cScript), f.cCount,
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: c }, 'Pedir execução'))),
   ];
 }
 
+// ---- pedidos e o que foi executado ----
 function requestsTab() {
+  const keep = (ts, open) => open || ts > clearedAt;       // "limpar histórico" esconde o que já foi resolvido até agora; o que está aberto continua
+  const admin = (st.admin || []).filter((a) => keep(a.ts, a.status === 'open'));
+  const doms = (st.requests || []).filter((q) => (q.items || []).some((i) => i.state === 'open') || q.ts > clearedAt);
+  const runs = [...(st.runs || [])].reverse().filter((r) => r.ts > clearedAt);
   const open = (st.admin || []).filter((a) => a.status === 'open').length;
   const blocks = [];
-  blocks.push(h('div', { class: 'sec' }, `Programas e comandos · ${(st.admin || []).length}`));
-  blocks.push((st.admin || []).length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, st.admin.map((a) => {
+  blocks.push(h('div', { class: 'row', style: 'padding:14px 14px 0;gap:8px;flex-wrap:wrap' },
+    small('Limpar histórico', act(async () => { clearedAt = Math.floor(Date.now() / 1000); store.set('cleared', clearedAt); draw(); toast('Histórico limpo nesta tela. Pedidos abertos continuam.'); })),
+    clearedAt ? small('Mostrar tudo de novo', () => { clearedAt = 0; store.set('cleared', 0); draw(); }) : null));
+  blocks.push(h('div', { class: 'sec' }, `Programas e comandos · ${admin.length}`));
+  blocks.push(admin.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, admin.map((a) => {
     const [label, kind] = STATE[a.status] || [a.status, ''];
     return h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, a.text), h('div', { class: 'muted' }, ago(a.ts))), chip(label, kind));
-  })) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido ainda.')));
+  })) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido.')));
   blocks.push(h('div', { class: 'sec' }, 'Liberações de domínio'));
-  blocks.push((st.requests || []).length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, st.requests.map((q) => h('div', { class: 'li' },
+  blocks.push(doms.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, doms.map((q) => h('div', { class: 'li' },
     h('div', { class: 'sp' }, (q.items || []).map((i) => h('div', {}, h('span', { class: 'mono' }, i.domain), ' ', chip(i.state === 'allowed' ? (i.ttl_s ? 'liberado por tempo' : 'liberado') : i.state === 'denied' ? 'negado' : 'aguardando', i.state === 'allowed' ? 'ok' : i.state === 'denied' ? 'bad' : 'warn'))),
-      h('div', { class: 'muted' }, ago(q.ts)))))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido ainda.')));
+      h('div', { class: 'muted' }, ago(q.ts)))))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum pedido.')));
   blocks.push(h('div', { class: 'sec' }, 'O que o agente executou'));
-  blocks.push((st.runs || []).length ? [...st.runs].reverse().map((r) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'), ` ${ago(r.ts)}`),
-    h('pre', { class: 'mono', style: 'white-space:pre-wrap;word-break:break-word;margin:10px 0 0;font-size:12px' }, `código ${r.rc ?? '-'}\n${r.out || ''}`))) :
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado ainda.')));
+  blocks.push(runs.length ? runs.map((r) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'), ` ${ago(r.ts)}`),
+    h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`))) :
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado.')));
   return [blocks, open];
 }
 
 const TABS = [['bloqueados', 'Bloqueados'], ['programas', 'Programas'], ['comando', 'Comando'], ['pedidos', 'Pedidos']];
 
-function draw(full = true) {
+function draw() {
   if (!st) return;
+  const searching = document.activeElement === f.search;
   const [reqNodes, open] = requestsTab();
   const body = tab === 'bloqueados' ? blockedTab() : tab === 'programas' ? programsTab() : tab === 'comando' ? commandTab() : reqNodes;
   main.replaceChildren(
     h('header', { class: 'top' }, h('div', { style: 'margin-left:8px;display:flex;align-items:center;gap:10px' }, insignia('device', 28), h('h1', { style: 'padding-left:0' }, `Guardian · ${st.host}`)),
-      h('span', { class: 'sp' }), chip(st.gateway_ok ? 'conectado' : 'sem conexão', st.gateway_ok ? 'ok' : 'bad')),
+      h('span', { class: 'sp' }), chip(st.gateway_ok ? 'conectado' : 'sem conexão', st.gateway_ok ? 'ok' : 'bad'),
+      h('button', { class: 'ib', type: 'button', 'aria-label': 'Atualizar', title: 'Atualizar', onclick: act(async () => { await refresh(); toast('Atualizado.'); }) }, icon('sync'))),
     h('div', { class: 'wrap' },
       h('nav', { class: 'seg', 'aria-label': 'Seções' }, TABS.map(([k, label]) => h('a', { href: `#${k}`, class: k === tab ? 'on' : '', 'aria-current': k === tab ? 'page' : null }, k === 'pedidos' && open ? `${label} · ${open}` : label))),
       st.gateway_ok ? null : h('div', { class: 'note bad' }, `Sem conexão com o Guardian: ${st.error}`),
       body));
+  if (searching) { f.search.focus(); f.search.setSelectionRange(f.search.value.length, f.search.value.length); }
 }
 
 async function refresh() {
