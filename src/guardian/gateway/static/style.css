@@ -211,3 +211,56 @@ form.f { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin:
   .grid2 > .card { margin-left: 14px; margin-right: 14px; }
 }
 @media (min-width: 1100px) { .grid2 > .card:only-child { grid-column: 1 / -1; } }  /* um pedido só ocupa a linha inteira */
+
+/* ---- guardiões: heráldica. Brasão por papel; metadado é inscrição (texto), nunca pílula ou botão ---- */
+:root { --gold: #E2B659; --steel: #8DBFD0; --sage: #B3C18F; --serif: "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; }
+.gcard { --role: var(--steel); position: relative; padding: 16px 16px 14px; border-radius: 6px; border-color: color-mix(in srgb, var(--role) 45%, var(--line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--role) 9%, var(--s)), var(--s) 70%); }
+.gcard::before { content: ''; position: absolute; inset: 5px; border: 1px solid color-mix(in srgb, var(--role) 28%, transparent); border-radius: 3px; pointer-events: none; }
+.gcard.r-master { --role: var(--gold); } .gcard.r-admin { --role: var(--steel); } .gcard.r-domains { --role: var(--sage); }
+a.gcard:hover { border-color: var(--role); }
+.insignia { flex: none; color: var(--role); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35)); }
+.insignia .shield { fill: color-mix(in srgb, var(--role) 16%, var(--s2)); stroke: currentColor; stroke-width: 2.2; stroke-linejoin: round; }
+.insignia .emblem { fill: color-mix(in srgb, currentColor 30%, transparent); stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.gname { font: 700 19px/1.2 var(--serif); letter-spacing: .01em; overflow-wrap: anywhere; }
+.gname small { font: italic 400 13px var(--serif); color: var(--muted); }
+.gtitle { margin-top: 3px; font: 600 12px var(--serif); letter-spacing: .12em; text-transform: uppercase; color: var(--role); }
+.insc { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed color-mix(in srgb, var(--role) 30%, var(--line)); }
+.insc-i { display: inline-flex; align-items: center; gap: 6px; font: italic 400 13.5px var(--serif); color: var(--muted); cursor: default; user-select: text; }
+.insc-i svg { opacity: .8; }
+.insc-i.warn { color: var(--orange); }
+.sec.royal { display: flex; align-items: center; gap: 12px; font-family: var(--serif); letter-spacing: .16em; color: var(--gold); }
+.sec.royal::before, .sec.royal::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--gold) 55%, transparent)); }
+.sec.royal::after { transform: scaleX(-1); }
+@supports not (background: color-mix(in srgb, red 10%, white)) {
+  .gcard { background: var(--s); } .gcard::before { border-color: var(--line); } .insignia .shield { fill: var(--s2); } .insignia .emblem { fill: none; }
+}
+
+/* ---- tema medieval em todo o site: tipografia, moldura de pedra, inscrições no lugar de pílulas ---- */
+:root { --stone: #C3CFD1; --lilac: #B9A3DB; }
+.gcard.r-device { --role: var(--stone); } .gcard.r-executor { --role: var(--lilac); }
+.top h1, .panehead h2, .login h1, .sheet h2, .brand, .day, .card strong, .li strong, .todo strong, .banner strong, .group .gh { font-family: var(--serif); }
+.brand { --role: var(--gold); font-size: 18px; letter-spacing: .02em; }
+@media (min-width: 900px) { .brand { display: flex; align-items: center; gap: 10px; } }
+.logo { --role: var(--gold); width: auto; height: auto; border: 0; border-radius: 0; background: none; }
+.card { position: relative; }
+.card::before { content: ''; position: absolute; inset: 5px; border: 1px solid rgba(255, 255, 255, .07); border-radius: calc(var(--r) - 5px); pointer-events: none; }
+.card.warnb::before { border-color: color-mix(in srgb, var(--orange) 28%, transparent); } .card.badb::before { border-color: color-mix(in srgb, var(--red) 28%, transparent); }
+.gcard::before { border-radius: 3px; }
+.sheet { position: relative; }
+.sheet::before { content: ''; position: absolute; inset: 6px; border: 1px solid rgba(255, 255, 255, .08); border-radius: 14px; pointer-events: none; }
+.sec { display: flex; align-items: center; gap: 12px; padding-right: 14px; font-family: var(--serif); letter-spacing: .16em; color: var(--gold); }
+.sec::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, color-mix(in srgb, var(--gold) 50%, transparent), transparent); }
+.sec.royal::after { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--gold) 55%, transparent)); }
+.kv > :first-child { font-family: var(--serif); font-style: italic; }
+/* chip = inscrição: nada de borda ou fundo, para não parecer botão; a cor continua dizendo ok / atenção / problema */
+.chip, .chip.ok, .chip.warn, .chip.bad { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; border-radius: 0; background: none;
+  font: italic 400 13.5px var(--serif); color: var(--muted); white-space: nowrap; cursor: default; }
+.chip::before { content: ''; flex: none; width: 6px; height: 6px; background: currentColor; transform: rotate(45deg); opacity: .8; }
+.chip.ok { color: var(--green); } .chip.warn { color: var(--orange); } .chip.bad { color: var(--red); }
+.sheet .kv > .chip { justify-content: flex-end; }
+@supports not (background: color-mix(in srgb, red 10%, white)) {
+  .sec::after { background: var(--line); }
+  .sec.royal::before, .sec.royal::after { background: var(--line); }
+}
+.banner.gcard:not(.warn):not(.bad) { border-color: var(--green); }

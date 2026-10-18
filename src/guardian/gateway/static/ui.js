@@ -26,7 +26,38 @@ const ICONS = {
   x: ['M6 6l12 12', 'M18 6L6 18'],
   grid: ['M4 4h6v6H4z', 'M14 4h6v6h-6z', 'M4 14h6v6H4z', 'M14 14h6v6h-6z'],
   device: ['M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z', 'M11 18h2'],
+  key: ['M7 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8', 'M10 12h11', 'M17 12v3', 'M20 12v2'],
+  lock: ['M6 11h12v9H6z', 'M8 11V8a4 4 0 0 1 8 0v3'],
+  sync: ['M20 12a8 8 0 0 0-14-5', 'M4 4v4h4', 'M4 12a8 8 0 0 0 14 5', 'M20 20v-4h-4'],
 };
+
+// Brasões dos guardiões: um escudo comum e a figura de cada papel (mestre: coroa; guardião-mor: espada; guardião: portão do castelo).
+const SHIELD = 'M24 2L44 8V28C44 42 35 50 24 54C13 50 4 42 4 28V8Z';
+const EMBLEM = {
+  master: ['M13 33L11 18L19 24L24 13L29 24L37 18L35 33Z', 'M13 38H35'],
+  admin: ['M24 10L26.5 14V32H21.5V14Z', 'M16 32H32', 'M24 32V40', 'M21.5 42H26.5'],
+  domains: ['M14 41V22H18V26H21V22H27V26H30V22H34V41Z', 'M21 41V34A3 3 0 0 1 27 34V41'],
+  device: ['M17 42V24H31V42Z', 'M15 24V17H19V19H22V17H26V19H29V17H33V24Z', 'M24 29V35'],              // aparelho: atalaia
+  executor: ['M12 41V21H36V41Z', 'M18 21V41M24 21V41M30 21V41', 'M12 27H36M12 34H36', 'M12 21V16M24 21V16M36 21V16'],  // Pi-hole: muralha com grade
+};
+
+export function insignia(role, size = 52) {
+  const s = document.createElementNS(NS, 'svg');
+  s.setAttribute('viewBox', '0 0 48 56');
+  s.setAttribute('width', String(size));
+  s.setAttribute('height', String(Math.round(size * 56 / 48)));
+  s.setAttribute('class', 'insignia');
+  s.setAttribute('aria-hidden', 'true');
+  const add = (d, cls) => {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', d);
+    p.setAttribute('class', cls);
+    s.append(p);
+  };
+  add(SHIELD, 'shield');
+  for (const d of EMBLEM[role] || EMBLEM.admin) add(d, 'emblem');
+  return s;
+}
 
 export function icon(name, size = 22) {
   const s = document.createElementNS(NS, 'svg');

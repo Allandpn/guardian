@@ -1,5 +1,5 @@
 import { enc, dec, sha256, sealPin, commandBytes, pairingString } from './crypto.js';
-import { h, icon, chip, toast, sheet } from './ui.js';
+import { h, icon, chip, toast, sheet, insignia } from './ui.js';
 import { classify } from './gate.js';
 
 const main = document.getElementById('main');
@@ -133,6 +133,18 @@ const hasMaster = () => !!me && Object.values(me.trust || {}).some((g) => g.role
 /** Incluir, remover e promover guardiões: só o mestre. Enquanto não existe mestre, vale o modo antigo (guardião-mor, com duas assinaturas). */
 const canManage = () => isMaster() || (isAdmin() && !hasMaster());
 const roleLabel = (r) => (r === 'master' ? 'mestre' : r === 'domains' ? 'guardião' : 'guardião-mor');
+const deviceKey = (d) => (d.kind === 'executor' ? 'executor' : 'device');
+const roleKey = (r) => (r === 'master' || r === 'domains' ? r : 'admin');
+const EPITHET = { master: 'Senhor das chaves', admin: 'Capitão da guarda', domains: 'Sentinela dos portões' };
+/** Metadado do guardião: texto gravado, sem borda nem fundo (só botão e cartão-link parecem clicáveis). */
+const inscr = (ic, text, kind) => h('span', { class: 'insc-i' + (kind ? ' ' + kind : '') }, icon(ic, 14), text);
+/** Brasão + nome + título: o topo de todo cartão de guardião. */
+const guardianHead = (g, mine) => [insignia(roleKey(g.role)),
+  h('div', { class: 'sp' }, h('div', { class: 'gname' }, g.name, mine ? h('small', {}, ' (você)') : null),
+    h('div', { class: 'gtitle' }, `${roleLabel(g.role)} · ${EPITHET[roleKey(g.role)]}`))];
+const guardianInscr = (g, n) => h('div', { class: 'insc' }, inscr('key', `${n} passkey${n === 1 ? '' : 's'}`, n < 2 ? 'warn' : ''),
+  inscr(g.allow_sync === false ? 'lock' : 'sync', g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'),
+  inscr('clock', g.window ? describeWindow(g.window) : 'a qualquer hora', g.window ? 'warn' : ''));
 const canSee = (k) => isAdmin() || !!(me && me.guardian.see && me.guardian.see[k]);
 const SEE_LABELS = [['devices', 'Estado dos aparelhos'], ['rules', 'Regras (só leitura)'], ['apps', 'Apps (só leitura)'], ['history', 'Histórico completo']];
 /** Confiança que vai na string de pareamento: aparelho e executor conhecem todos os guardiões (o comum aprova apps, o aparelho confere a assinatura). */
@@ -187,7 +199,7 @@ function renderNav(active) {
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
-  nav.replaceChildren(h('div', { class: 'brand' }, 'NotToday Guardian'), ...items.filter(Boolean),
+  nav.replaceChildren(h('div', { class: 'brand' }, insignia('master', 28), 'NotToday Guardian'), ...items.filter(Boolean),
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
 }
 
@@ -217,7 +229,7 @@ let autoLogin = true;
 function loginView() {
   if (autoLogin) { autoLogin = false; doLogin().catch(() => {}); }  // abre o passkey sozinho; se o navegador exigir um toque, o botão fica
   show(h('div', { class: 'login' },
-    h('div', { class: 'logo' }, icon('shield', 38)),
+    h('div', { class: 'logo' }, insignia('master', 72)),
     h('h1', {}, 'NotToday Guardian'),
     h('p', { class: 'muted' }, 'Entre com o seu passkey (biometria ou chave de segurança). Não existe senha.'),
     h('button', { class: 'btn pri', type: 'button', onclick: act(doLogin) }, 'Entrar com passkey'),
@@ -248,7 +260,7 @@ function closedView(msg) {
 
 function inviteView(token) {
   show(h('div', { class: 'login' },
-    h('div', { class: 'logo' }, icon('shield', 38)),
+    h('div', { class: 'logo' }, insignia('master', 72)),
     h('h1', {}, 'Cadastrar passkey'),
     h('p', { class: 'muted' }, 'Você foi convidado como guardião. Cadastre uma passkey neste aparelho e, depois, uma segunda (outro celular ou chave física) para não ficar sem acesso.'),
     h('p', { class: 'note ok' }, 'Digital, rosto ou PIN são conferidos só pelo seu aparelho e não saem dele. O Guardian guarda apenas a chave pública, que vale só neste site. Se o seu gerenciador sincronizar (Google, Apple), a chave privada vai criptografada para a sua conta, nunca para o Guardian.'),
@@ -266,19 +278,17 @@ function inviteView(token) {
 // ---------- início ----------
 function deviceCard(d, now, { sel, href, onclick } = {}) {
   const st = statusOf(d, now);
-  return h('a', { class: 'card' + (sel ? ' sel' : '') + (st.kind === 'bad' ? ' badb' : st.kind === 'warn' ? ' warnb' : ''), href: href || `#/device/${d.id}`, onclick },
-    h('div', { class: 'row' }, h('span', { class: 'dot ' + st.kind }), h('strong', {}, d.name),
+  return h('a', { class: 'card gcard r-' + deviceKey(d) + (sel ? ' sel' : '') + (st.kind === 'bad' ? ' badb' : st.kind === 'warn' ? ' warnb' : ''), href: href || `#/device/${d.id}`, onclick },
+    h('div', { class: 'row', style: 'gap:12px' }, insignia(deviceKey(d), 40), h('strong', {}, d.name),
       d.kind === 'executor' ? chip('Pi-hole') : null, h('span', { class: 'sp' }), chip(st.word, st.kind)),
-    h('div', { class: 'muted', style: 'margin-top:6px' }, st.detail));
+    h('div', { class: 'muted', style: 'margin-top:8px' }, st.detail));
 }
 
 function guardianCard(id, g, { sel, href, onclick } = {}) {
   const n = Object.keys(g.creds || {}).length;
-  const dom = g.role === 'domains';
-  return h('a', { class: 'card' + (sel ? ' sel' : ''), href: href || '#/guardians', onclick },
-    h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()), h('strong', {}, g.name), id === me.guardian.id ? chip('você') : null,
-      h('span', { class: 'sp' }), chip(roleLabel(g.role), dom ? '' : 'ok')),
-    h('div', { class: 'muted', style: 'margin-top:6px' }, `${n} passkey${n === 1 ? '' : 's'} · ${g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar'}${g.window ? ` · ${describeWindow(g.window)}` : ''}`));
+  return h('a', { class: 'card gcard r-' + roleKey(g.role) + (sel ? ' sel' : ''), href: href || '#/guardians', onclick },
+    h('div', { class: 'row', style: 'align-items:flex-start;gap:14px' }, guardianHead(g, id === me.guardian.id)),
+    guardianInscr(g, n));
 }
 
 const canaryOf = (devices) => (devices.map((x) => ((x.report || {}).snapshot || {}).canary).find(Boolean)) || '';
@@ -404,7 +414,7 @@ async function devicesView() {
 
 function statusRow(d, now) {
   const st = statusOf(d, now);
-  return [h('div', { class: 'row' }, h('span', { class: 'dot ' + st.kind }), h('strong', {}, d.name), d.kind === 'executor' ? chip('executor') : null,
+  return [h('div', { class: 'row', style: 'gap:12px' }, insignia(deviceKey(d), 36), h('strong', {}, d.name), d.kind === 'executor' ? chip('executor') : null,
     h('span', { class: 'sp' }), chip(st.word, st.kind)), h('div', { class: 'muted', style: 'margin-top:6px' }, st.detail)];
 }
 
@@ -413,8 +423,8 @@ function deviceBanner(d, now) {
   const st = statusOf(d, now);
   const r = d.report || {};
   const title = d.kind === 'executor' ? 'Executor do Pi-hole' : r.filterActive ? 'Filtro CONFIRMADO' : r.filterActive === false ? 'Filtro NÃO confirmado' : 'Aguardando relatório';
-  return h('div', { class: 'banner ' + (st.kind === 'ok' ? '' : st.kind) },
-    h('div', { class: 'row' }, h('strong', { style: 'font-size:16px' }, title), h('span', { class: 'sp' }), chip(st.word, st.kind)),
+  return h('div', { class: 'banner gcard r-' + deviceKey(d) + ' ' + (st.kind === 'ok' ? '' : st.kind) },
+    h('div', { class: 'row', style: 'gap:12px' }, insignia(deviceKey(d), 40), h('strong', { style: 'font-size:16px' }, title), h('span', { class: 'sp' }), chip(st.word, st.kind)),
     h('div', { class: 'muted', style: 'margin-top:4px;color:var(--text)' }, `visto ${ago(d.last_seen, now)} · relatório ${ago(d.report_ts, now)}`));
 }
 
@@ -1024,20 +1034,17 @@ async function guardiansView() {
     if (canManage() && g.role === 'admin') roleBtns.push(h('button', { class: 'btn', type: 'button', onclick: setRole('master') }, 'Promover a mestre'));
     if (isMaster() && g.role === 'master') roleBtns.push(h('button', { class: 'btn dangero', type: 'button', onclick: setRole('admin') }, 'Rebaixar a guardião-mor'));
     if (isMaster() && g.role === 'admin') roleBtns.push(h('button', { class: 'btn dangero', type: 'button', onclick: setRole('domains') }, 'Rebaixar a guardião'));
-    return h('div', { class: 'card' },
-      h('div', { class: 'row' }, h('div', { class: 'av' }, g.name.slice(0, 1).toUpperCase()),
-        h('div', { class: 'sp' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, h('strong', { style: 'font-size:16px' }, g.name), mineCard ? chip('você') : null, chip(roleLabel(g.role), dom ? '' : 'ok')),
-          h('div', { class: 'muted', style: n < 2 ? 'color:var(--orange)' : '' }, `${n} passkey${n === 1 ? '' : 's'}`)),
+    return h('div', { class: 'card gcard r-' + roleKey(g.role) },
+      h('div', { class: 'row', style: 'align-items:flex-start;gap:14px' }, guardianHead(g, mineCard),
         mineCard || !canManage() ? null : dom ? h('button', { class: 'btn dangero', type: 'button', onclick: removeDomain }, 'Remover') : h('button', { class: 'btn dangero', type: 'button', onclick: removeMor }, 'Remover')),
-      roleBtns.length ? h('div', { style: 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap' }, roleBtns) : null,
-      h('div', { style: 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap' }, chip(g.allow_sync === false ? 'só neste aparelho' : 'pode sincronizar', g.allow_sync === false ? 'ok' : ''),
-        g.window ? chip(describeWindow(g.window), 'warn') : chip('a qualquer hora')),
+      guardianInscr(g, n),
+      roleBtns.length ? h('div', { style: 'margin-top:12px;display:flex;gap:8px;flex-wrap:wrap' }, roleBtns) : null,
       h('details', { class: 'gdet', style: 'margin-top:10px', open: gOpen.has(gid), ontoggle: (e) => { if (e.target.open) gOpen.add(gid); else gOpen.delete(gid); } }, h('summary', {}, dom ? 'Passkeys e permissões' : 'Passkeys'),
         Object.entries(g.creds).map(([cred], i) => {
           const info = (me.cred_info || {})[cred] || {};
           return h('div', { class: 'row', style: 'min-height:40px;gap:8px' },
             h('div', { class: 'sp muted' }, `Passkey ${i + 1}${info.created ? ` · cadastrada ${ago(info.created, me.now)}` : ''}`),
-            chip(info.be ? 'sincronizada' : 'só neste aparelho', info.be ? 'warn' : 'ok'),
+            inscr(info.be ? 'sync' : 'lock', info.be ? 'sincronizada' : 'só neste aparelho', info.be ? 'warn' : ''),
             n > 1 ? h('button', { class: 'btn dangero', type: 'button', onclick: removeCred(cred, i + 1) }, 'Remover') : null);
         }),
         mineCard ? h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: makeInviteLink(out, 'add_passkey') }, 'Cadastrar outra passkey')) : null,
@@ -1053,7 +1060,7 @@ async function guardiansView() {
     myCreds < 2 ? h('div', { class: 'card badb' }, h('strong', {}, 'Cadastre uma chave de reserva'),
       h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'Você é o guardião-mor e tem só 1 passkey. Se perder este celular, ninguém mais administra os aparelhos: cadastre outro celular ou uma chave física.'),
       h('button', { class: 'btn pri', type: 'button', onclick: makeInviteLink(out, 'add_passkey') }, 'Cadastrar outra passkey')) : null,
-    h('div', { class: 'sec' }, `Guardiões · ${gs.length}`),
+    h('div', { class: 'sec royal' }, `Guardiões · ${gs.length}`),
     gs.map(guardianCardFull),
     out,
     h('div', { class: 'sec' }, 'Confiança nos aparelhos'),
@@ -1142,8 +1149,7 @@ async function contaView() {
   });
   const seen = SEE_LABELS.filter(([k]) => canSee(k)).map(([, label]) => label);
   show(top('Conta'), h('div', { class: 'wrap' },
-    h('div', { class: 'card' }, h('div', { class: 'row' }, h('div', { class: 'av' }, me.guardian.name.slice(0, 1).toUpperCase()),
-      h('div', { class: 'sp' }, h('strong', {}, me.guardian.name), h('div', { class: 'muted' }, 'guardião')), chip('guardião'))),
+    h('div', { class: 'card gcard r-' + roleKey(me.guardian.role) }, h('div', { class: 'row', style: 'align-items:flex-start;gap:14px' }, guardianHead(me.guardian, true))),
     h('div', { class: 'sec' }, 'Minhas passkeys'),
     h('div', { class: 'card' + (n < 2 ? ' warnb' : '') }, h('p', { style: 'margin:0 0 10px' }, `${n} passkey${n === 1 ? '' : 's'} cadastrada${n === 1 ? '' : 's'}.` + (n < 2 ? ' Cadastre outra para não perder o acesso se trocar de celular.' : '')),
       h('button', { class: 'btn' + (n < 2 ? ' pri' : ''), type: 'button', onclick: invite }, 'Cadastrar outra passkey')),
