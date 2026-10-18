@@ -82,7 +82,10 @@ Código de saída 0 não prova que instalou (o Wireshark deu 0 sem o Npcap, com 
 
 1. **Conferência local, sem IA.** O agente compara os programas instalados (registro de desinstalação) antes e depois. Programa novo ou versão nova = **conferido**.
    Código bom sem nada novo = **não confirmou** (talvez já existisse). Falha = **falhou**. Isso aparece no resultado, na tela do PC e no site.
-2. **Análise por IA (opcional, OpenRouter).** Só roda quando falhou ou não confirmou, só para **instalações** (nunca para scripts de comando admin), uma por execução e com teto diário.
+2. **Regras locais, antes da IA.** Os erros que já conhecemos têm resposta exata no gateway, sem custo, **sem mandar nada a terceiros e mesmo sem chave**: download bloqueado (libere o domínio),
+   instalador que espera janela (conta de administrador), DBeaver 666660 (`/S /allusers`) e os códigos do MSI 1618, 1603, 1638 e 1602. Foi o teste real que mostrou a necessidade:
+   para o DBeaver 666660 a IA, sem acesso à documentação, sugeriu `/D=` e instalação manual, e não o `/allusers` que resolve.
+3. **Análise por IA (opcional, OpenRouter), só para o que as regras não cobrem.** Só roda quando falhou ou não confirmou, só para **instalações** (nunca para scripts de comando admin), uma por execução e com teto diário.
    O gateway monta a pergunta, a IA devolve diagnóstico e até 3 ações, e o resultado vai ao solicitante (NotToday PC, aba Pedidos) e ao guardião-mor/mestre (tela PC).
 
 Como foi desenhada para não virar um risco:

@@ -387,7 +387,7 @@ class Store:
 
     def analyses_called_since(self, ts: int) -> int:
         """Quantas consultas à IA foram feitas desde `ts` (as puladas por limite não contam)."""
-        return self.one("SELECT COUNT(*) c FROM analyses WHERE ts>=? AND status IN ('done','error','pending')", (ts,))["c"]
+        return self.one("SELECT COUNT(*) c FROM analyses WHERE ts>=? AND status IN ('done','error','pending') AND model!='regras locais'", (ts,))["c"]
 
     def analyses_for(self, dev: str | None = None, limit: int = 20):
         rows = self.q("SELECT * FROM analyses WHERE (?1 IS NULL OR dev=?1) ORDER BY ts DESC LIMIT ?2", (dev, limit))

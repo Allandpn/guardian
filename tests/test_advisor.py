@@ -77,6 +77,27 @@ class Validation(unittest.TestCase):
             self.assertIsNone(adv.validate(raw), raw)
 
 
+BASE = {**RUN, "rc": 4242, "name": "Prog"}   # código que nenhuma regra local conhece: vai para a IA
+
+
+class LocalRules(unittest.TestCase):
+    def test_known_errors_get_an_exact_answer_without_the_ai(self):
+        db = adv.local_rules({**RUN, "req": {**RUN["req"]}})
+        self.assertEqual([(a["kind"], a.get("args")) for a in db["actions"]], [("retry_with_args", "/S /allusers")])   # o conserto real do DBeaver
+        self.assertEqual(db["confidence"], "high")
+        net = adv.local_rules({"rc": 2147954407, "name": "7-Zip", "req": {"source": "winget"},
+                               "out": "Downloading https://www.7-zip.org/a/7z2604-x64.exe\nInternetOpenUrl() failed.\n0x80072ee7 : unknown error"})
+        self.assertEqual(net["actions"][0], {"kind": "release_domain", "domains": ["7-zip.org"], "why": "é de onde o instalador é baixado"})
+        hung = adv.local_rules({"rc": -1, "name": "Npcap", "req": {}, "out": "\n[tempo limite estourado]"})
+        self.assertEqual(hung["actions"][0]["kind"], "admin_manual")
+        for rc in (1618, 1603, 1638, 1602):
+            self.assertIsNotNone(adv.local_rules({"rc": rc, "name": "A", "req": {"kind": "msi"}}), rc)
+        self.assertIsNone(adv.local_rules({"rc": 4242, "name": "X", "req": {}}))                  # desconhecido: segue para a IA
+        self.assertIsNone(adv.local_rules({"rc": 0, "name": "X", "req": {}, "out": ""}))
+        generic = adv.local_rules({"rc": 666660, "name": "Outro", "req": {}})                     # 666660 de outro programa: não inventa argumentos
+        self.assertEqual([a["kind"] for a in generic["actions"]], ["other"])
+
+
 class Flow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -109,7 +130,7 @@ class Flow(unittest.TestCase):
         return self.c.call("GET", "/v1/analyses")[1]["items"]
 
     def test_01_failed_install_is_analysed_and_seen_by_both_sides(self):
-        self.report([RUN])
+        self.report([BASE])
         self.assertEqual(len(self.calls), 1)
         self.assertNotIn("allan", self.calls[0][1])                       # o que saiu já estava limpo
         self.assertIn("NÃO confiável", self.calls[0][0])
@@ -120,15 +141,15 @@ class Flow(unittest.TestCase):
 
     def test_02_same_run_is_never_analysed_twice(self):
         n = len(self.calls)
-        self.report([RUN])
-        self.report([RUN])
+        self.report([BASE])
+        self.report([BASE])
         self.assertEqual(len(self.calls), n)
 
     def test_03_only_installs_that_need_help_are_sent(self):
         n = len(self.calls)
-        self.report([{**RUN, "ctr": 8, "needs_help": False, "ok": True, "verified": True},
-                     {**RUN, "ctr": 9, "type": "win_run", "name": "script secreto", "out": "senha=123"},   # script de comando admin: nunca sai
-                     {**RUN, "ctr": "x"}])
+        self.report([{**BASE, "ctr": 8, "needs_help": False, "ok": True, "verified": True},
+                     {**BASE, "ctr": 9, "type": "win_run", "name": "script secreto", "out": "senha=123"},   # script de comando admin: nunca sai
+                     {**BASE, "ctr": "x"}])
         self.assertEqual(len(self.calls), n)
 
     def test_04_only_admins_read_analyses(self):
@@ -137,7 +158,7 @@ class Flow(unittest.TestCase):
 
     def test_05_daily_cap_skips_and_does_not_call(self):
         n = len(self.calls)                                                                                  # o teto é 2 por dia e o teste 01 já usou 1
-        self.report([{**RUN, "ctr": 20}, {**RUN, "ctr": 21}, {**RUN, "ctr": 22}])
+        self.report([{**BASE, "ctr": 20}, {**BASE, "ctr": 21}, {**BASE, "ctr": 22}])
         st = {x["ctr"]: x["status"] for x in self.items()}
         self.assertEqual(len(self.calls) - n, 1)                                                              # só mais uma consulta de verdade
         self.assertEqual((st[20], st[21], st[22]), ("done", "skipped", "skipped"))
@@ -147,18 +168,27 @@ class Flow(unittest.TestCase):
     def test_06_ai_failure_is_contained(self):
         gw = self.gw
         gw.advisor = Advisor(self.env.store, "k", "m", 99, call=lambda s, u: (_ for _ in ()).throw(RuntimeError("chave sk-or-SEGREDO inválida")))
-        self.report([{**RUN, "ctr": 30}])
+        self.report([{**BASE, "ctr": 30}])
         it = next(x for x in self.items() if x["ctr"] == 30)
         self.assertEqual(it["status"], "error")
         self.assertNotIn("SEGREDO", json.dumps(it))                                                        # nada do erro vaza para a tela
         gw.advisor = Advisor(self.env.store, "k", "m", 99, call=lambda s, u: "não sou JSON")
-        self.report([{**RUN, "ctr": 31}])
+        self.report([{**BASE, "ctr": 31}])
         self.assertEqual(next(x for x in self.items() if x["ctr"] == 31)["status"], "error")
 
-    def test_07_without_a_key_nothing_happens(self):
+    def test_06b_known_errors_never_call_the_ai_and_do_not_count_toward_the_cap(self):
+        n, used = len(self.calls), self.env.store.analyses_called_since(0)
+        self.report([RUN])                                                                          # DBeaver 666660: regra local
+        it = next(x for x in self.items() if x["ctr"] == 7 and x["result"]["actions"][0]["kind"] == "retry_with_args" and x["result"]["actions"][0]["args"] == "/S /allusers")
+        self.assertEqual(len(self.calls), n)
+        self.assertEqual(self.env.store.analyses_called_since(0), used)
+
+    def test_07_without_a_key_only_the_local_rules_work(self):
         self.gw.advisor = Advisor(self.env.store, "", "m", 99, call=lambda s, u: self.fail("não deveria chamar"))
-        self.report([{**RUN, "ctr": 40}])
+        self.report([{**BASE, "ctr": 40}])                                                           # desconhecido e sem chave: nada
         self.assertFalse([x for x in self.items() if x["ctr"] == 40])
+        self.report([{**RUN, "ctr": 41}])                                                            # conhecido: a regra local responde mesmo sem chave
+        self.assertEqual(next(x for x in self.items() if x["ctr"] == 41)["status"], "done")
         self.assertFalse(self.c.call("GET", "/v1/analyses")[1]["enabled"])
 
 

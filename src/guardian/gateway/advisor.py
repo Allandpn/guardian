@@ -19,6 +19,7 @@ from ..executor.domains import normalize as normalize_domain
 URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TAIL = 3000
 CONCURRENT = 2
+LOCAL = "regras locais"   # modelo registrado quando a análise veio das regras daqui, sem IA (não conta no teto diário)
 
 SYSTEM_PROMPT = """Você analisa o resultado de uma instalação de programa no Windows feita por um agente silencioso (como SYSTEM, sem tela) e explica o que deu errado.
 Responda SOMENTE com um objeto JSON, sem texto fora dele, neste formato:
@@ -80,6 +81,56 @@ def build_input(run: dict, host: str = "") -> dict:
         m = re.match(r"^https://([^/?#:@\s]+)", str(req.get("url") or ""))
         d["dominio_do_download"] = m.group(1).lower() if m else None
     return d
+
+
+# ---- regras locais: os erros conhecidos, exatos, sem custo e sem mandar nada a ninguém ----
+_NET_FAIL = re.compile(r"0x80072(ee7|ee2|efd|efe|f78)|InternetOpenUrl\(\) failed|name (could not be )?resolved", re.I)
+_DOWNLOAD = re.compile(r"Downloading\s+https?://([^/\s]+)", re.I)
+_MSI = {
+    1618: ("Outra instalação está em andamento no computador.", "O Windows só roda uma instalação por vez e já havia outra (ou o Windows Update).",
+           [{"kind": "other", "text": "Espere a outra instalação terminar e peça de novo."}]),
+    1603: ("O instalador MSI falhou com erro fatal (1603).", "Causas comuns: o programa está aberto, já existe uma versão em conflito, falta permissão ou espaço em disco.",
+           [{"kind": "other", "text": "Feche o programa, confira o espaço em disco e peça de novo. Se repetir, a pessoa de confiança instala com a conta de administrador."}]),
+    1638: ("Já existe outra versão deste programa instalada.", "O instalador não substitui a versão existente.",
+           [{"kind": "admin_manual", "why": "desinstale a versão atual com a conta de administrador e peça de novo"}]),
+    1602: ("A instalação foi cancelada (pediu uma janela que ninguém viu).", "O instalador esperava interação.", [{"kind": "admin_manual", "why": "precisa de janela"}]),
+    1223: ("A instalação foi cancelada (pediu uma janela que ninguém viu).", "O instalador esperava interação.", [{"kind": "admin_manual", "why": "precisa de janela"}]),
+}
+
+
+def _download_host(out: str):
+    m = _DOWNLOAD.search(out or "")
+    return m.group(1).lower().removeprefix("www.") if m and _NET_FAIL.search(out or "") else None
+
+
+def local_rules(run: dict) -> dict | None:
+    """O diagnóstico dos erros que já conhecemos (resultado no mesmo esquema da IA), ou None se não for um deles."""
+    rc, out = run.get("rc"), str(run.get("out") or "")
+    req = run.get("req") if isinstance(run.get("req"), dict) else {}
+    who = (str(run.get("name") or "") + " " + str(req.get("publisher") or "")).lower()
+    r = None
+    host = _download_host(out)
+    if host:
+        r = {"summary": f"O download falhou: o domínio {host} deve estar bloqueado no Pi-hole.", "cause": "Erro de rede ao baixar o instalador (nome não resolvido).",
+             "actions": [{"kind": "release_domain", "domains": [host], "why": "é de onde o instalador é baixado"}]}
+    elif rc == -1 and "tempo limite" in out:
+        r = {"summary": "O instalador não terminou no tempo: provavelmente espera uma janela que o agente (sem tela) não mostra.",
+             "cause": "Esse instalador não tem modo silencioso, ou pede licença ou driver interativo (como o Npcap).",
+             "actions": [{"kind": "admin_manual", "why": "a pessoa de confiança instala com a conta de administrador"}]}
+    elif rc == 666660:
+        if "dbeaver" in who:
+            r = {"summary": "O instalador do DBeaver recusou os parâmetros: o /S sozinho não basta.", "cause": "Ele exige /allusers (ou /currentuser) junto do /S (documentação do DBeaver: 666660 = parâmetros inválidos).",
+                 "actions": [{"kind": "retry_with_args", "args": "/S /allusers", "why": "instalação silenciosa para todos os usuários"}]}
+        else:
+            r = {"summary": "O instalador recusou os parâmetros da linha de comando (código 666660).", "cause": "Os argumentos silenciosos usados não são os que este instalador espera.",
+                 "actions": [{"kind": "other", "text": "Confira na documentação do fabricante os argumentos silenciosos e peça de novo."}]}
+    elif rc in _MSI and (req.get("kind") == "msi" or req.get("source") in ("url", "file", "winget")):
+        summary, cause, actions = _MSI[rc]
+        r = {"summary": summary, "cause": cause, "actions": actions}
+    if not r:
+        return None
+    r.setdefault("confidence", "high")
+    return validate(r)
 
 
 # ---- resposta da IA: validada, nunca confiada ----
@@ -163,14 +214,22 @@ class Advisor:
 
     def consider(self, dev: str, report: dict) -> int:
         """Chamado a cada relatório do computador: abre a análise das instalações novas que precisam de ajuda. Devolve quantas abriu."""
-        if not self.enabled or not isinstance(report.get("runs"), list):
+        if not isinstance(report.get("runs"), list):
             return 0
         n = 0
         for run in report["runs"][-10:]:
             if not (isinstance(run, dict) and run.get("type") == "win_install" and run.get("needs_help")):
                 continue   # só instalações; scripts (win_run) nunca saem do gateway
             ctr = run.get("ctr")
-            if not isinstance(ctr, int) or isinstance(ctr, bool) or not self.store.analysis_claim(dev, ctr, int(self.now())):
+            if not isinstance(ctr, int) or isinstance(ctr, bool):
+                continue
+            local = local_rules(run)
+            if not local and not self.enabled:
+                continue   # sem regra que cubra e sem chave: nada a fazer
+            if not self.store.analysis_claim(dev, ctr, int(self.now())):
+                continue
+            if local:   # erro conhecido: resposta exata, sem IA e sem custo (e sem mandar nada a terceiros)
+                self.store.analysis_done(dev, ctr, "done", LOCAL, json.dumps(local, ensure_ascii=False))
                 continue
             if self.store.analyses_called_since(int(self.now()) - 86400) > self.daily_max:   # a que acabou de ser reservada já conta
                 self.store.analysis_done(dev, ctr, "skipped", "", json.dumps({"summary": "Limite diário de análises por IA atingido; veja o resultado acima."}))
