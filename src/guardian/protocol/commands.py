@@ -6,6 +6,7 @@ A asserção do passkey usa challenge = SHA-256(bytes). Veja protocol/SPEC.md.
 import datetime
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -40,6 +41,80 @@ GUARDIAN_TYPES = DOMAIN_TYPES | {"approve_app", "revoke_app"}
 # Vetar (ou desvetar) um site pai: nenhum guardião pode liberar o domínio nem o que está abaixo dele. Só o mestre, sozinho.
 T_PARENT_BLOCK = "pihole_parent_block"
 MASTER_TYPES = {T_PARENT_BLOCK}
+
+# Comandos para o agente do Windows (o computador deixa de ter senha de administrador na mão de quem o usa).
+# Só guardião-mor ou mestre, com uma passkey; o guardião comum fica só com domínios. Veja docs/AGENTE.md.
+T_WIN_INSTALL = "win_install"   # instalar um programa: pacote do winget, ou instalador por link com SHA-256
+T_WIN_RUN = "win_run"           # rodar um script do PowerShell como administrador, uma vez
+WIN_TYPES = {T_WIN_INSTALL, T_WIN_RUN}
+WIN_MAX_AGE_S = 7 * 24 * 3600   # um comando aprovado e não executado (agente desligado) deixa de valer depois de `not_after`
+WIN_MAX_SCRIPT_BYTES = 6000
+WIN_MAX_ARGS = 200
+_WINGET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{1,100}$")
+_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_HOST = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
+
+
+def _win_text(args: dict, key: str, lo: int, hi: int, required: bool = True) -> str:
+    v = args.get(key)
+    if v is None and not required:
+        return ""
+    if not isinstance(v, str) or not lo <= len(v) <= hi or any(ord(c) < 32 for c in v):
+        raise CommandError(f"campo '{key}' inválido")
+    return v
+
+
+def check_win_request(type_: str, args: dict) -> None:
+    """Valida o que o programa ou script faz (o que a pessoa pede e o guardião aprova). Sem a validade (`not_after`)."""
+    if not isinstance(args, dict):
+        raise CommandError("argumentos inválidos")
+    if type_ == T_WIN_INSTALL:
+        _win_text(args, "name", 1, 80)
+        source = args.get("source")
+        if source == "winget":
+            if not _WINGET_ID.match(_win_text(args, "id", 3, 101)):
+                raise CommandError("id do winget inválido")
+            if args.get("version") is not None and not _VERSION.match(_win_text(args, "version", 1, 41)):
+                raise CommandError("versão inválida")
+        elif source == "url":
+            url = _win_text(args, "url", 12, 500)
+            m = re.match(r"^https://([^/?#:@\s]+)(/[^\s]*)?$", url)
+            if not m or not _HOST.match(m.group(1).lower()):
+                raise CommandError("o instalador precisa de um endereço https com nome de domínio")
+            if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
+                raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
+            if args.get("kind") not in ("msi", "exe"):
+                raise CommandError("tipo do instalador deve ser msi ou exe")
+            _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+        else:
+            raise CommandError("origem do programa inválida")
+    elif type_ == T_WIN_RUN:
+        if args.get("shell", "powershell") != "powershell":
+            raise CommandError("só PowerShell")
+        script = args.get("script")
+        if not isinstance(script, str) or not script.strip() or "\x00" in script or len(script.encode("utf-8")) > WIN_MAX_SCRIPT_BYTES:
+            raise CommandError(f"script inválido (até {WIN_MAX_SCRIPT_BYTES} bytes)")
+        _win_text(args, "name", 0, 80, required=False)
+        t = args.get("timeout_s", 600)
+        if not isinstance(t, int) or isinstance(t, bool) or not 5 <= t <= 3600:
+            raise CommandError("tempo limite de 5 s a 1 h")
+    else:
+        raise CommandError("comando do Windows desconhecido")
+
+
+def check_win_args(type_: str, args: dict, now: float | None = None, creating: bool = False) -> None:
+    """Valida o comando inteiro. `creating`: o gateway ao receber (a validade tem de estar no futuro e dentro de 7 dias);
+    senão é o agente ao executar (só confere que ainda não venceu)."""
+    check_win_request(type_, args)
+    now = time.time() if now is None else now
+    na = args.get("not_after")
+    if not isinstance(na, int) or isinstance(na, bool):
+        raise CommandError("falta a validade do comando (not_after)")
+    if na < now:
+        raise CommandError("o comando venceu (not_after)")
+    if creating and na > now + WIN_MAX_AGE_S:
+        raise CommandError("validade longe demais (no máximo 7 dias)")
 
 
 class CommandError(ValueError):

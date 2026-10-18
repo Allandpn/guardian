@@ -52,7 +52,8 @@ class Store:
                                ("invites", "role TEXT NOT NULL DEFAULT 'admin'"),
                                ("guardians", "allow_sync INTEGER NOT NULL DEFAULT 1"), ("guardians", "window TEXT NOT NULL DEFAULT ''"),
                                ("invites", "allow_sync INTEGER NOT NULL DEFAULT 1"), ("invites", "window TEXT NOT NULL DEFAULT ''"),
-                               ("credentials", "be INTEGER NOT NULL DEFAULT 0")):
+                               ("credentials", "be INTEGER NOT NULL DEFAULT 0"),
+                               ("requests", "payload TEXT NOT NULL DEFAULT ''")):
                 try:  # bancos criados antes dos papéis
                     self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 except sqlite3.OperationalError:
@@ -322,12 +323,23 @@ class Store:
     def audit_list(self, limit: int):
         return self.q("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))
 
-    def add_request(self, dev: str, kind: str, text: str) -> bool:
+    def add_request(self, dev: str, kind: str, text: str, payload: str = "") -> bool:
         with self.lock:
             if self.one("SELECT COUNT(*) c FROM requests WHERE status='open'")["c"] >= REQUESTS_MAX:
                 return False
-            self.db.execute("INSERT INTO requests(dev,ts,kind,text) VALUES(?,?,?,?)", (dev, int(time.time()), kind, text[:500]))
+            self.db.execute("INSERT INTO requests(dev,ts,kind,text,payload) VALUES(?,?,?,?,?)", (dev, int(time.time()), kind, text[:500], payload))
             return True
+
+    def admin_requests_open(self, dev: str) -> int:
+        return self.one("SELECT COUNT(*) c FROM requests WHERE dev=? AND kind IN ('install','command') AND status='open'", (dev,))["c"]
+
+    def device_admin_requests(self, dev: str, limit: int = 20):
+        """Pedidos de instalação e de comando do computador, com o estado (open, approved, denied)."""
+        return [{"id": r["id"], "ts": r["ts"], "kind": r["kind"], "text": r["text"], "status": r["status"]}
+                for r in self.q("SELECT * FROM requests WHERE dev=? AND kind IN ('install','command') ORDER BY id DESC LIMIT ?", (dev, limit))]
+
+    def set_request_status(self, rid: int, status: str):
+        self.x("UPDATE requests SET status=? WHERE id=?", (status, rid))
 
     def requests_open(self):
         return self.q("SELECT * FROM requests WHERE status='open' ORDER BY id DESC")

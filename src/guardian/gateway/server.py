@@ -25,10 +25,12 @@ DEVICE_TYPES = {"set_config", "confirm", "cancel", "approve_app", "revoke_app", 
                 "set_dev_policy", "set_pin", "set_dev_pin", "activate"} | cmds.TRUST_TYPES
 EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.MASTER_TYPES | cmds.TRUST_TYPES
 SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião ver
-STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet"}
+STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet", "platform"}
 RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows", "pkgNames"}
 APP_KEYS = {"pendingApps", "approvedApps"}
-REQUEST_KINDS = {"domain", "app", "other", "unblock"}
+REQUEST_KINDS = {"domain", "app", "other", "unblock", "install", "command"}
+ADMIN_REQUEST_KINDS = {"install": cmds.T_WIN_INSTALL, "command": cmds.T_WIN_RUN}  # pedido do computador -> comando que o aprova
+ADMIN_REQUESTS_MAX_PER_DEV = 10
 BLOCK_SOURCES = {"own", "list"}
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -558,6 +560,14 @@ class Gateway:
             reported = r.get(gid, 0) if isinstance(r, dict) and isinstance(r.get(gid, 0), int) else 0
         return 200, {"next": max(self.store.last_ctr(dev, gid), reported) + 1}, {}
 
+    @staticmethod
+    def _is_windows(row) -> bool:
+        """O aparelho se declarou computador com Windows (o agente informa `platform` no relatório assinado dele)."""
+        try:
+            return json.loads(row["report"] or "{}").get("platform") == "windows"
+        except (ValueError, AttributeError):
+            return False
+
     def post_command(self, req, dev):
         gid = self.guardian(req)
         if not self.l_cmd.allow(gid):
@@ -573,13 +583,18 @@ class Gateway:
             signers = cmds.verify_sigs(trust, payload, env.get("sigs"))
         except (cmds.CommandError, ValueError) as e:
             raise HttpError(400, str(e))
-        allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES
+        allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES | (cmds.WIN_TYPES if self._is_windows(row) else set())
         if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or cmd["type"] not in allowed:
             raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
         try:
             cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
         except cmds.CommandError as e:
             raise HttpError(403, str(e))
+        if cmd["type"] in cmds.WIN_TYPES:
+            try:
+                cmds.check_win_args(cmd["type"], cmd["args"], time.time(), creating=True)
+            except cmds.CommandError as e:
+                raise HttpError(400, str(e))
         if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
             raise HttpError(429, "fila cheia")
         ready = cmd["type"] in cmds.GUARDIAN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd)
@@ -705,6 +720,13 @@ class Gateway:
             d = dict(r)
             if r["kind"] == "unblock":
                 d["items"] = [{"domain": i["domain"], "state": i["state"]} for i in self.store.request_items(r["id"])]
+            if r["kind"] in ADMIN_REQUEST_KINDS:
+                try:
+                    d["payload"] = json.loads(r["payload"] or "{}")
+                except ValueError:
+                    d["payload"] = {}
+            else:
+                d.pop("payload", None)
             out.append(d)
         return 200, {"items": out}, {}
 
@@ -731,6 +753,8 @@ class Gateway:
             raise HttpError(429, "devagar")
         d = req.json()
         row = self.store.request(int(rid))
+        if row and row["kind"] in ADMIN_REQUEST_KINDS and row["status"] == "open":
+            return self._resolve_admin(req, gid, row, d)
         if not row or row["kind"] != "unblock" or row["status"] != "open":
             raise HttpError(404, "pedido não encontrado ou já resolvido")
         open_domains = {i["domain"] for i in self.store.request_items(row["id"]) if i["state"] == "open"}
@@ -766,6 +790,25 @@ class Gateway:
         self.store.audit(row["dev"], "request", f"{gid}: " + ", ".join(f"{k} {v[0]}" for k, v in sorted(states.items()))[:250])
         return 200, {"ok": True}, {}
 
+    def _resolve_admin(self, req, gid: str, row, d: dict):
+        """Aprova um pedido de instalação ou de comando: o guardião-mor já enviou o comando assinado que faz exatamente o que foi pedido."""
+        if self.store.guardian(gid)["role"] not in cmds.ADMINISH:
+            raise HttpError(403, "só o guardião-mor")
+        cid = d.get("cmd")
+        c = self.store.command(cid) if isinstance(cid, int) and not isinstance(cid, bool) else None
+        if not c or c["guardian"] != gid or c["dev"] != row["dev"]:
+            raise HttpError(400, "comando não confere")
+        try:
+            cmd = cmds.parse_payload(b64.dec(json.loads(c["envelope"])["payload"]))
+            want = json.loads(row["payload"] or "{}")
+        except (cmds.CommandError, ValueError, KeyError):
+            raise HttpError(400, "comando ilegível")
+        if cmd["type"] != ADMIN_REQUEST_KINDS[row["kind"]] or any(cmd["args"].get(k) != v for k, v in want.items()):
+            raise HttpError(400, "o comando não é o que foi pedido")  # o que foi assinado tem de ser exatamente o pedido
+        self.store.set_request_status(row["id"], "approved")
+        self.store.audit(row["dev"], "request", f"{gid}: aprovou {row['kind']}: {row['text'][:200]}")
+        return 200, {"ok": True}, {}
+
     def dismiss(self, req, rid):
         _, role, _ = self.who(req)
         row = self.store.request(int(rid))
@@ -773,7 +816,11 @@ class Gateway:
             raise HttpError(404, "pedido não encontrado")
         if role not in cmds.ADMINISH and row["kind"] not in ("domain", "unblock"):
             raise HttpError(403, "só o guardião-mor")
-        self.store.dismiss_request(int(rid))
+        if row["kind"] in ADMIN_REQUEST_KINDS:  # negar é diferente de aprovar: o computador mostra o estado
+            self.store.set_request_status(int(rid), "denied")
+            self.store.audit(row["dev"], "request", f"negou {row['kind']}: {row['text'][:200]}")
+        else:
+            self.store.dismiss_request(int(rid))
         return 200, {"ok": True}, {}
 
     def forget(self, req, dev):
@@ -966,7 +1013,7 @@ class Gateway:
 
     def device_requests(self, req, dev):
         self.device(req, dev)
-        return 200, {"requests": self.store.device_requests(dev), "now": int(time.time())}, {}
+        return 200, {"requests": self.store.device_requests(dev), "admin": self.store.device_admin_requests(dev), "now": int(time.time())}, {}
 
     def cancel_request(self, req, dev, rid):
         self.device(req, dev)
@@ -1000,8 +1047,34 @@ class Gateway:
                 raise HttpError(429, "pedidos demais em aberto")
             self.store.audit(dev, "request", f"pedido de liberação: {', '.join(doms)[:250]}")
             return 200, {"ok": True, "id": rid or None}, {}
+        if d["kind"] in ADMIN_REQUEST_KINDS:
+            return self._post_admin_request(dev, d)
         if not self.store.add_request(dev, d["kind"], _str(d, "text", 500)):
             raise HttpError(429, "pedidos demais em aberto")
+        return 200, {"ok": True}, {}
+
+    def _post_admin_request(self, dev: str, d: dict):
+        """O computador pede para instalar um programa ou rodar um comando como administrador. O guardião-mor lê o que vai ser executado."""
+        row = self.store.device(dev)
+        if not self._is_windows(row):
+            raise HttpError(403, "só computadores com o agente do Windows pedem isto")
+        type_ = ADMIN_REQUEST_KINDS[d["kind"]]
+        payload = d.get("payload")
+        try:
+            cmds.check_win_request(type_, payload)
+        except cmds.CommandError as e:
+            raise HttpError(400, str(e))
+        if self.store.admin_requests_open(dev) >= ADMIN_REQUESTS_MAX_PER_DEV:
+            raise HttpError(429, "pedidos demais em aberto")
+        if type_ == cmds.T_WIN_INSTALL:
+            what = (payload["id"] + (f" {payload['version']}" if payload.get("version") else "")) if payload["source"] == "winget" else payload["url"]
+            text = f"Instalar {payload['name']} ({what})"
+        else:
+            text = "Rodar comando: " + (payload.get("name") or payload["script"].strip().splitlines()[0])[:120]
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if not self.store.add_request(dev, d["kind"], text[:500], body):
+            raise HttpError(429, "pedidos demais em aberto")
+        self.store.audit(dev, "request", text[:250])
         return 200, {"ok": True}, {}
 
 
