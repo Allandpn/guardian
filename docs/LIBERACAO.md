@@ -79,3 +79,7 @@ O executor reporta todos os bloqueios dos aparelhos pareados, deduplicados por a
 3. Site: Pedidos, Bloqueios, Liberados com bloqueio novo, entrada sem atrito e link direto.
 4. App: Bloqueado agora, pedido, compartilhar, estado e notificação.
 5. Testes de ponta a ponta com o site e o gateway reais, e testes do Kotlin contra o gateway real.
+
+## Itens do lote que o executor não aplica
+
+O gateway marca os domínios como liberados assim que o guardião assina. Se o executor recusar um item do lote (veto das listas adultas, domínio que cobriria o canário, erro do Pi-hole), ele aplica os outros e informa os recusados no relatório (`executed[].failed`). O gateway passa esses itens para `failed` e o app mostra "não aplicado (peça de novo)". Esses domínios não entram em **Liberados**, porque não existem no Pi-hole. O motivo fica no Histórico, na linha `pihole_batch`: `liberados: … | falharam: domínio: motivo`.

@@ -456,6 +456,14 @@ class Store:
             if not self.one("SELECT 1 FROM request_domains WHERE rid=? AND state='open'", (rid,)):
                 self.db.execute("UPDATE requests SET status='done' WHERE id=?", (rid,))
 
+    def fail_allowed(self, dev: str, doms: list) -> None:
+        """O executor não aplicou estes domínios: o que o pedido mostrava como liberado passa a 'failed'."""
+        with self.lock:
+            for d in doms:
+                if isinstance(d, str):
+                    self.db.execute("UPDATE request_domains SET state='failed' WHERE state='allowed' AND domain=? AND ts>? AND rid IN "
+                                    "(SELECT id FROM requests WHERE dev=?)", (d.strip().lower(), int(time.time()) - 3600, dev))
+
     def cancel_request(self, rid: int, dev: str) -> bool:
         with self.lock:
             if not self.one("SELECT 1 FROM requests WHERE id=? AND dev=? AND status='open'", (rid, dev)):

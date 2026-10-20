@@ -144,6 +144,7 @@ class Executor:
         self.gw = GatewayClient(self.state.data["gateway"], self.key)
         self.pihole = pihole or Pihole(cfg.pihole_url, cfg.pihole_password, cfg.pihole_ca)
         self.executed: list[dict] = []
+        self.failed: dict[str, str] = {}  # domínios que o último lote não aplicou, e por quê
         self.last_report = 0.0
         self._lists: dict | None = None
         self._lists_ts = 0.0
@@ -217,6 +218,7 @@ class Executor:
             if not isinstance(items, list) or not 1 <= len(items) <= BATCH_MAX:
                 raise ValueError("lote inválido")
             ok, bad = [], []
+            self.failed = {}
             for it in items:
                 try:
                     if not isinstance(it, dict):
@@ -227,8 +229,10 @@ class Executor:
                     if ttl:
                         self.state.data["temp"].append({"list": "allow", "domain": d, "expires": int(self.now()) + ttl})
                     ok.append(f"{d} por {_fmt_ttl(ttl)}" if ttl else d)
-                except ValueError as e:
-                    bad.append(f"{str(it.get('domain'))[:60] if isinstance(it, dict) else '?'}: {e}")
+                except (ValueError, PiholeError) as e:  # um item que falha não derruba os outros
+                    name = str(it.get("domain"))[:60] if isinstance(it, dict) else "?"
+                    bad.append(f"{name}: {e}")
+                    self.failed[name] = str(e)[:100]
             if bad and not ok:
                 raise ValueError("; ".join(bad))
             return "liberados: " + ", ".join(ok) + (f" | falharam: {'; '.join(bad)}" if bad else "")
@@ -285,11 +289,12 @@ class Executor:
         except cmds.CommandError as e:
             self.executed.append({"type": "?", "ok": False, "msg": f"recusado: {e}"})
             return
+        self.failed = {}
         try:
             msg = self.apply(v.cmd)
-            self.executed.append({"type": v.cmd["type"], "ok": True, "msg": msg})
+            self.executed.append({"type": v.cmd["type"], "ok": True, "msg": msg, **({"failed": self.failed} if self.failed else {})})
         except (ValueError, cmds.CommandError, PiholeError) as e:
-            self.executed.append({"type": v.cmd["type"], "ok": False, "msg": str(e)})
+            self.executed.append({"type": v.cmd["type"], "ok": False, "msg": str(e), **({"failed": self.failed} if self.failed else {})})
         self.state.data["consumer"] = self.consumer.to_json()  # contador consumido, deu certo ou não
         self.state.save()
 

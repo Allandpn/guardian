@@ -887,6 +887,8 @@ class Gateway:
                 if isinstance(e, dict):
                     self.store.audit(dev, "executed", f"{str(e.get('type', '?'))[:40]} "
                                      f"{'ok' if e.get('ok') else 'FALHOU'}: {str(e.get('msg', ''))[:200]}")
+                    if e.get("type") == "pihole_batch" and isinstance(e.get("failed"), dict):
+                        self.store.fail_allowed(dev, list(e["failed"])[:50])  # o guardião assinou, mas o executor não aplicou
         self.store.save_report(dev, report)
         if report.get("platform") == "windows":
             self.advisor.consider(dev, report)   # instalação que falhou ou não conferiu: abre a análise (em segundo plano)

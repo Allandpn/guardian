@@ -129,6 +129,12 @@ class RegexAllow(unittest.TestCase):
         self.send("pihole_allow", {"domain": "outro.exemplo.com"})  # irmão do canário: pode
         self.assertIn(domains.to_regex("outro.exemplo.com"), self.fake.regex["allow"])
 
+    def test_05_batch_item_that_fails_is_reported_and_the_others_still_apply(self):
+        self.send("pihole_batch", {"items": [{"domain": "exemplo.com"}, {"domain": "novo.itau.com.br"}]})  # o 1º cobriria o canário
+        self.assertIn(domains.to_regex("novo.itau.com.br"), self.fake.regex["allow"])
+        self.assertNotIn(domains.to_regex("exemplo.com"), self.fake.regex["allow"])
+        self.assertEqual(list(self.ex.failed), ["exemplo.com"])
+
 
 if __name__ == "__main__":
     unittest.main()
