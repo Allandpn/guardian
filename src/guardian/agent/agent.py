@@ -18,7 +18,7 @@ from ..executor.runner import GatewayClient, GatewayError, State, load_or_create
 from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import actions
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 REPORT_EVERY_S = actions._env_int("GUARDIAN_AGENT_REPORT_EVERY_S", 60)
 RUNS_KEEP = 6
 RUN_OUT_REPORT = 3000
