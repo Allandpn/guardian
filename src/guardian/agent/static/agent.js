@@ -63,14 +63,23 @@ const maxCut = (d) => { let k = 0; while (k + 1 < parts(d).length && !isSuffix(p
 const eff = (d) => parts(d).slice(Math.min(cut[d] || 0, maxCut(d))).join('.');
 const openDomains = () => new Set((st.requests || []).flatMap((q) => (q.items || []).filter((i) => i.state === 'open').map((i) => i.domain)));
 
+// Filtros da aba: aparelho ('' = todos) e origem ('' = todas; 'own' = regras próprias; 'list' = listas de bloqueio).
+let devFilter = '';
+let srcFilter = '';
+const listName = (l) => { if (!l) return 'lista'; try { return new URL(l).hostname.replace(/^www\./, ''); } catch (_) { return l.length > 28 ? l.slice(0, 28) + '…' : l; } };
+const pills = (label, options, current, onPick) => h('div', { class: 'durs filt', style: 'margin-top:10px', role: 'group', 'aria-label': label },
+  options.map(([k, text]) => h('button', { type: 'button', 'aria-pressed': String(current === k), onclick: () => onPick(k) }, text)));
+
 function blockedTab() {
   const all = st.blocked || [];
   const open = openDomains();
   const q = f.search.value.trim().toLowerCase();
+  // Só as regras próprias deste computador podem ser pedidas; o resto (listas, outros aparelhos) é para ver.
+  const mine = (b) => b.dev === st.me && b.src === 'own';
   const nHidden = all.filter((b) => hidden.has(b.domain)).length;
-  let rows = all.filter((b) => (showHidden || !hidden.has(b.domain)) && (!q || b.domain.includes(q)));
+  let rows = all.filter((b) => (!devFilter || b.dev === devFilter) && (!srcFilter || b.src === srcFilter) && (showHidden || !hidden.has(b.domain)) && (!q || b.domain.includes(q)));
   rows = [...rows].sort((a, b) => (sortBy === 'count' ? b.count - a.count || b.last - a.last : b.last - a.last));
-  const sel = [...picked].filter((d) => all.some((b) => b.domain === d));
+  const sel = [...picked].filter((d) => all.some((b) => b.domain === d && mine(b)));
 
   const request = act(async () => {
     const d = [...new Set(sel.map(eff))].slice(0, 20);
@@ -81,36 +90,45 @@ function blockedTab() {
   });
   const clearList = () => { rows.forEach((b) => { hidden.add(b.domain); picked.delete(b.domain); }); store.set('hidden', [...hidden]); draw(); };
   const hideSelected = () => { sel.forEach((d) => { hidden.add(d); picked.delete(d); }); store.set('hidden', [...hidden]); draw(); };
+  const devs = st.devices || [];
+  const pickable = rows.filter((b) => mine(b) && !open.has(eff(b.domain)));
+
+  const row = (b) => {
+    const can = mine(b), e = can ? eff(b.domain) : b.domain, isOpen = can && open.has(e);
+    return h('div', { class: 'li', style: hidden.has(b.domain) ? 'opacity:.6' : '' },
+      can ? h('input', { type: 'checkbox', checked: picked.has(b.domain), disabled: isOpen, 'aria-label': e, style: 'width:22px;height:22px;flex:none',
+        onchange: (ev) => { ev.target.checked ? picked.add(b.domain) : picked.delete(b.domain); draw(); } })
+        : h('span', { class: 'ib', style: 'width:22px;height:22px;flex:none;color:var(--muted)', title: b.src === 'list' ? 'Bloqueado por lista: só o guardião libera' : 'De outro aparelho: só para ver' }, icon(b.src === 'list' ? 'lock' : 'device', 18)),
+      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, e), isOpen ? [' ', chip('aguardando', 'warn')] : null,
+        h('div', { class: 'muted' }, `${b.count}× · ${ago(b.last)}${e !== b.domain ? ` · de ${b.domain}` : ''}${hidden.has(b.domain) ? ' · escondido' : ''}`),
+        h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px' }, chip(b.name || 'aparelho', b.dev === st.me ? 'ok' : ''), b.src === 'list' ? chip(`lista · ${listName(b.list)}`, 'warn') : chip('regra do Guardian')))
+      , can && maxCut(b.domain) ? [
+        small('«', () => { cut[b.domain] = Math.min((cut[b.domain] || 0) + 1, maxCut(b.domain)); draw(); }, { 'aria-label': 'Encurtar: pedir o domínio pai', disabled: (cut[b.domain] || 0) >= maxCut(b.domain), style: 'min-height:38px;min-width:38px;padding:0' }),
+        small('»', () => { cut[b.domain] = Math.max((cut[b.domain] || 0) - 1, 0); draw(); }, { 'aria-label': 'Ampliar: voltar ao domínio de baixo', disabled: !(cut[b.domain] > 0), style: 'min-height:38px;min-width:38px;padding:0' })] : null);
+  };
 
   return [
-    h('div', { class: 'sec' }, `Bloqueado agora · ${all.length - nHidden}`),
+    h('div', { class: 'sec' }, `Bloqueado agora · ${rows.length}`),
     h('div', { class: 'card' },
-      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Marque o que você precisa e peça a liberação; o guardião decide. Use « e » para pedir o domínio inteiro (exemplo.com) em vez de só um subdomínio.'),
-      f.search,
+      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Veja o que foi bloqueado em todos os aparelhos da rede. Nos bloqueios deste computador por regra do Guardian, marque o que precisa e peça a liberação; o guardião decide. Use « e » para pedir o domínio inteiro (exemplo.com).'),
+      h('div', { class: 'note', style: 'margin:0 0 8px' }, h('span', { style: 'display:inline-flex;vertical-align:middle;margin-right:6px' }, icon('lock', 16)),
+        'Domínios bloqueados por lista (cadeado) não podem ser pedidos. Se um deles estiver bloqueado por engano, avise o guardião: ele pode incluir o domínio à mão e liberar.'),
+      h('div', { style: 'position:relative' }, f.search),
+      pills('Filtrar por aparelho', [['', 'Todos os aparelhos'], ...devs.map((d) => [d.id, d.id === st.me ? `${d.name} (este)` : d.name])], devFilter, (k) => { devFilter = k; draw(); }),
+      pills('Filtrar por origem', [['', 'Toda origem'], ['own', 'Regras do Guardian'], ['list', 'Listas']], srcFilter, (k) => { srcFilter = k; draw(); }),
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' },
-        small('Atualizar', act(async () => { await refresh(); toast('Lista atualizada.'); })),
         small('Mais recentes', () => { sortBy = 'recent'; draw(); }, { 'aria-pressed': String(sortBy === 'recent') }),
         small('Mais bloqueados', () => { sortBy = 'count'; draw(); }, { 'aria-pressed': String(sortBy === 'count') }),
-        small('Marcar todos', () => { rows.forEach((b) => { if (!open.has(eff(b.domain))) picked.add(b.domain); }); draw(); }),
+        small('Marcar os deste PC', () => { pickable.forEach((b) => picked.add(b.domain)); draw(); }, { disabled: !pickable.length }),
         small('Esconder marcados', hideSelected, { disabled: !sel.length }),
         small('Limpar lista', clearList, { disabled: !rows.length, title: 'Esconde todos os domínios visíveis (dá para mostrar de novo)' }),
         nHidden ? small(showHidden ? 'Ocultar escondidos' : `Mostrar escondidos (${nHidden})`, () => { showHidden = !showHidden; draw(); }) : null),
-      rows.length ? rows.map((b) => {
-        const e = eff(b.domain), isOpen = open.has(e);
-        return h('div', { class: 'li', style: hidden.has(b.domain) ? 'opacity:.6' : '' },
-          h('input', { type: 'checkbox', checked: picked.has(b.domain), disabled: isOpen, 'aria-label': e, style: 'width:22px;height:22px;flex:none',
-            onchange: (ev) => { ev.target.checked ? picked.add(b.domain) : picked.delete(b.domain); draw(); } }),
-          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, e), isOpen ? [' ', chip('aguardando', 'warn')] : null,
-            h('div', { class: 'muted' }, `${b.count}× · ${ago(b.last)}${e !== b.domain ? ` · de ${b.domain}` : ''}${hidden.has(b.domain) ? ' · escondido' : ''}`)),
-          maxCut(b.domain) ? [
-            small('«', () => { cut[b.domain] = Math.min((cut[b.domain] || 0) + 1, maxCut(b.domain)); draw(); }, { 'aria-label': 'Encurtar: pedir o domínio pai', disabled: (cut[b.domain] || 0) >= maxCut(b.domain), style: 'min-height:38px;min-width:38px;padding:0' }),
-            small('»', () => { cut[b.domain] = Math.max((cut[b.domain] || 0) - 1, 0); draw(); }, { 'aria-label': 'Ampliar: voltar ao domínio de baixo', disabled: !(cut[b.domain] > 0), style: 'min-height:38px;min-width:38px;padding:0' })] : null);
-      }) : h('p', { class: 'muted', style: 'margin:12px 0 0' }, all.length ? 'Nada com esse filtro.' : 'Nada bloqueado nas últimas 24 horas.'),
+      rows.length ? rows.map(row) : h('p', { class: 'muted', style: 'margin:12px 0 0' }, all.length ? 'Nada com esses filtros.' : 'Nada bloqueado nas últimas 24 horas.'),
       // O botão de pedir fica logo abaixo dos domínios, onde a pessoa está olhando (não numa barra no rodapé da página).
       h('div', { class: 'row', style: 'margin-top:14px;gap:10px;flex-wrap:wrap;align-items:center' },
         h('button', { class: 'btn pri', type: 'button', disabled: !sel.length, onclick: request }, sel.length ? `Pedir liberação (${sel.length})` : 'Pedir liberação'),
         sel.length ? h('button', { class: 'btn', type: 'button', onclick: () => { picked.clear(); draw(); } }, 'Limpar seleção') : null,
-        h('span', { class: 'muted' }, sel.length ? `${sel.length} marcado${sel.length > 1 ? 's' : ''}` : 'Marque os domínios acima'))),
+        h('span', { class: 'muted' }, sel.length ? `${sel.length} marcado${sel.length > 1 ? 's' : ''}` : 'Marque os domínios deste computador'))),
   ];
 }
 
@@ -257,7 +275,7 @@ function requestsTab() {
   return [blocks, open];
 }
 
-const TABS = [['bloqueados', 'Bloqueados'], ['programas', 'Programas'], ['comando', 'Comando'], ['pedidos', 'Pedidos']];
+const TABS = [['bloqueados', 'Bloqueados', 'ban'], ['programas', 'Programas', 'box'], ['comando', 'Comando', 'terminal'], ['pedidos', 'Pedidos', 'inbox']];
 
 function draw() {
   if (!st) return;
@@ -269,7 +287,7 @@ function draw() {
       h('span', { class: 'sp' }), st.busy ? chip(`executando ${st.busy.name || (st.busy.type === 'win_install' ? 'instalação' : 'comando')}`, 'warn') : null, chip(st.gateway_ok ? 'conectado' : 'sem conexão', st.gateway_ok ? 'ok' : 'bad'),
       h('button', { class: 'ib', type: 'button', 'aria-label': 'Atualizar', title: 'Atualizar', onclick: act(async () => { await refresh(); toast('Atualizado.'); }) }, icon('sync'))),
     h('div', { class: 'wrap' },
-      h('nav', { class: 'seg', 'aria-label': 'Seções' }, TABS.map(([k, label]) => h('a', { href: `#${k}`, class: k === tab ? 'on' : '', 'aria-current': k === tab ? 'page' : null }, k === 'pedidos' && open ? `${label} · ${open}` : label))),
+      h('nav', { class: 'seg', 'aria-label': 'Seções' }, TABS.map(([k, label, ic]) => h('a', { href: `#${k}`, class: k === tab ? 'on' : '', 'aria-current': k === tab ? 'page' : null, style: 'gap:6px' }, icon(ic, 18), k === 'pedidos' && open ? `${label} · ${open}` : label))),
       st.gateway_ok ? null : h('div', { class: 'note bad' }, `Sem conexão com o Guardian: ${st.error}`),
       body));
   if (searching) { f.search.focus(); f.search.setSelectionRange(f.search.value.length, f.search.value.length); }

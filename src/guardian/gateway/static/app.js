@@ -213,7 +213,7 @@ function renderNav(active) {
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/apps', 'Apps', 'grid', 'apps', counts.apps), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
-    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'grid', 'pc', counts.pc), item('#/history', 'Histórico', 'clock', 'history', 0)] :
+    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
@@ -935,16 +935,20 @@ async function domainsView(tab) {
     const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
     body = [guardianPills, listCard('allow', mine),
       others ? h('p', { class: 'muted', style: 'margin:8px 14px 0' }, `Mais ${others} entrada${others > 1 ? 's' : ''} criada${others > 1 ? 's' : ''} direto no Pi-hole. Elas não aparecem nem são alteradas aqui.`) : null,
-      h('details', { class: 'card flat', style: 'margin-top:12px', open: advOpen, ontoggle: (e) => { advOpen = e.target.open; } }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Avançado: bloqueados e domínio manual'),
-        h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${denyMine.length}`), listCard('deny', denyMine),
-        denyOthers ? h('p', { class: 'muted', style: 'margin:8px 0 0' }, `Mais ${denyOthers} bloqueio${denyOthers > 1 ? 's' : ''} criado${denyOthers > 1 ? 's' : ''} direto no Pi-hole.`) : null,
-        h('div', { class: 'sec', style: 'padding-left:0' }, 'Liberar ou bloquear um domínio'),
-        dom, h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
+      // Corrigir um bloqueio indevido (inclusive de lista): digitar o domínio e liberar, sem esperar pedido. Fica à vista, não escondido.
+      h('div', { class: 'sec' }, 'Liberar ou bloquear um domínio à mão'),
+      h('div', { class: 'card' },
+        h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Para corrigir um bloqueio indevido, inclusive de listas de bloqueio, que ninguém consegue pedir: digite o domínio e libere. Só domínio exato.'),
+        h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'ib', style: 'width:24px;height:24px;color:var(--muted)' }, icon('search', 20)), h('div', { style: 'flex:1' }, dom)),
+        h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
         h('div', { class: 'row', style: 'margin-top:12px' },
           h('button', { class: 'btn grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_deny', args(), { title: `Bloquear ${args().domain} ${domDur ? `por ${durLabel(domDur)}` : ''}?`,
             rows: [['Ação', 'Bloquear domínio'], ['Domínio', args().domain], ['Duração', durLabel(domDur)]], effect: 'vale na hora', effectKind: 'ok' }).then((ok) => ok && route())) }, 'Bloquear'),
           h('button', { class: 'btn pri grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_allow', args(), batchSpec([{ domain: args().domain, ttl_s: domDur }])).then((ok) => ok && route())) }, 'Liberar')),
-        h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Só domínio exato. Curinga e regex ficam de fora desta versão.')),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Curinga e regex ficam de fora desta versão.')),
+      h('details', { class: 'card flat', style: 'margin-top:12px', open: advOpen, ontoggle: (e) => { advOpen = e.target.open; } }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Avançado: bloqueados pelo guardião'),
+        h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${denyMine.length}`), listCard('deny', denyMine),
+        denyOthers ? h('p', { class: 'muted', style: 'margin:8px 0 0' }, `Mais ${denyOthers} bloqueio${denyOthers > 1 ? 's' : ''} criado${denyOthers > 1 ? 's' : ''} direto no Pi-hole.`) : null),
       canary ? h('div', { class: 'card flat' }, h('div', { class: 'row' }, h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, canary),
         h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null];
   }

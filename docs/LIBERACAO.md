@@ -61,6 +61,11 @@ O executor reporta todos os bloqueios dos aparelhos pareados, deduplicados por a
 - **Bloqueado agora** (nova tela), **Pedir liberação**, **Compartilhar link**, estado dos pedidos e notificação local quando o guardião responde.
 - Atalho opcional nas configurações rápidas do Android.
 
+## Bloqueios de lista: só para ver
+
+- O gateway só aceita **pedido de liberação** de domínio que tenha sido bloqueado por **regra própria** (`src=own`). Domínio bloqueado só por **lista** (`src=list`) aparece nas telas, mas o pedido é recusado (400): quem corrige é o guardião, com **Liberar ou bloquear um domínio à mão** (Domínios, no site), que não depende de pedido.
+- O computador (agente do Windows) lê os bloqueios de **todos os aparelhos** com `GET /v1/devices/{pc}/blocked?scope=all`. Só quem declarou `platform: windows` no relatório pode; celular e tablet continuam vendo só os próprios (403). A tela do PC filtra por aparelho e por origem e só deixa marcar, para pedir, as regras próprias do próprio computador.
+
 ## Riscos e limites
 
 - **Liberar vale para a casa toda.** A permissão do Pi-hole fica no grupo padrão, então os aparelhos de casa também deixam de ser bloqueados naquele domínio. Para liberar só um aparelho seria preciso um grupo no Pi-hole para os remotos, com as listas replicadas nele.

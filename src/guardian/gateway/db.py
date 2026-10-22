@@ -418,11 +418,15 @@ class Store:
         return self.one("SELECT 1 FROM blocked WHERE dev=? AND domain=? AND last>=?",
                         (dev, domain, int(time.time()) - BLOCKED_KEEP_S)) is not None
 
-    def blocked_under(self, dev: str, domain: str) -> bool:
+    def blocked_under(self, dev: str, domain: str, src: str | None = None) -> bool:
         """O domínio foi bloqueado ou é o pai de algo bloqueado (cloudlinks.cn para advertise.cloudlinks.cn).
-        `domain` já vem normalizado (letras, dígitos, hífen e ponto), então não tem curinga de LIKE."""
-        return self.one("SELECT 1 FROM blocked WHERE dev=? AND (domain=? OR domain LIKE ?) AND last>=?",
-                        (dev, domain, "%." + domain, int(time.time()) - BLOCKED_KEEP_S)) is not None
+        `domain` já vem normalizado (letras, dígitos, hífen e ponto), então não tem curinga de LIKE.
+        Com `src`, só conta o bloqueio dessa origem ('own' = regra própria; 'list' = lista de bloqueio)."""
+        sql, args = "SELECT 1 FROM blocked WHERE dev=? AND (domain=? OR domain LIKE ?) AND last>=?", [dev, domain, "%." + domain, int(time.time()) - BLOCKED_KEEP_S]
+        if src:
+            sql += " AND src=?"
+            args.append(src)
+        return self.one(sql, tuple(args)) is not None
 
     def add_unblock_request(self, dev: str, domains: list[str]) -> int | None:
         """Cria o pedido com os domínios que ainda não têm pedido aberto. None se nada novo ou se há pedidos demais."""

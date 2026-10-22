@@ -127,7 +127,7 @@ class UnblockFlow(unittest.TestCase):
     def test_07_resolve_rejects_foreign_or_wrong_commands(self):
         post = lambda d: self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests",  # noqa: E731
                                                   {"kind": "unblock", "domains": d})
-        self.assertEqual(post(["ads.tracker.net"])[0], 200)
+        self.assertEqual(post(["cdn.alvo.com"])[0], 200)
         rid = next(x["id"] for x in self.c.call("GET", "/v1/requests")[1]["items"] if x["kind"] == "unblock")
         (st, resp, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.ex.dev, "pihole_allow", {"domain": "ads.tracker.net"})
         self.assertEqual(st, 200)
@@ -139,6 +139,15 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertEqual(self.c.call("POST", f"/v1/requests/{rid}/resolve", {"cmd": other["id"]})[0], 400)  # comando de outro guardião
         self.ex.step(wait_s=0)
+
+    def test_07a_list_blocked_domain_cannot_be_requested(self):
+        """Domínio bloqueado por lista aparece para o aparelho, mas só o guardião pode liberar (à mão), não por pedido."""
+        post = lambda d: self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests",  # noqa: E731
+                                                  {"kind": "unblock", "domains": d})
+        st, r, _ = post(["ads.tracker.net"])
+        self.assertEqual(st, 400, r)
+        self.assertIn("lista", r["error"])
+        self.assertEqual(self.blocked("list")["ads.tracker.net"]["src"], "list")  # continua visível
 
     def test_08_device_cancels_its_request(self):
         rid = next(x["id"] for x in self.c.call("GET", "/v1/requests")[1]["items"] if x["kind"] == "unblock")

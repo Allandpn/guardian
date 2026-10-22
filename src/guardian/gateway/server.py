@@ -1029,9 +1029,27 @@ class Gateway:
         if src is not None and src not in BLOCK_SOURCES:
             raise HttpError(400, "origem inválida")
         self.store.touch(dev)
+        if parse_qs(req.query).get("scope", [None])[0] == "all":
+            return self._blocked_all(row, src)
         canary = self._canary(dev)
         return 200, {"items": [self._blocked_row(r) for r in self.store.blocked_list(dev, src, 300) if r["domain"] != canary],
                      "now": int(time.time())}, {}
+
+    def _blocked_all(self, row, src):
+        """O computador (agente do Windows) vê os bloqueios de todos os aparelhos protegidos, só para ler: pedir liberação continua
+        sendo por aparelho e só para regras próprias. Outros aparelhos (celular, tablet) enxergam só os próprios."""
+        try:
+            platform = json.loads(row["report"]).get("platform")
+        except (TypeError, ValueError, AttributeError):
+            platform = None
+        if platform != "windows":
+            raise HttpError(403, "só o computador vê os bloqueios dos outros aparelhos")
+        devs = [d for d in self.store.devices() if d["kind"] == "device"]
+        names = {d["id"]: d["name"] for d in devs}
+        canaries = {d["id"]: self._canary(d["id"]) for d in devs}
+        items = [{**self._blocked_row(r), "name": names[r["dev"]]} for r in self.store.blocked_list(None, src, 600)
+                 if r["dev"] in names and r["domain"] != canaries[r["dev"]]]
+        return 200, {"items": items, "devices": [{"id": d["id"], "name": d["name"]} for d in devs], "now": int(time.time())}, {}
 
     def device_requests(self, req, dev):
         self.device(req, dev)
@@ -1065,6 +1083,8 @@ class Gateway:
                 raise HttpError(400, "não dá para pedir um sufixo inteiro (como cn ou com.br)")
             if not all(self.store.blocked_under(dev, x) for x in doms):  # o domínio bloqueado ou o pai dele (o app deixa encurtar)
                 raise HttpError(400, "só dá para pedir domínios que foram bloqueados")
+            if not all(self.store.blocked_under(dev, x, "own") for x in doms):  # bloqueio de lista é só para ver: quem libera é o guardião, à mão
+                raise HttpError(400, "esse domínio é bloqueado por uma lista; só o guardião pode liberar")
             rid = self.store.add_unblock_request(dev, doms)
             if rid is None:
                 raise HttpError(429, "pedidos demais em aberto")

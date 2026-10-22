@@ -1,9 +1,17 @@
 // Peças de interface sem innerHTML: todo texto vindo da rede entra por textContent.
+// Aplica 'a:b;c:d' propriedade por propriedade: o CSSOM por propriedade passa pela CSP 'style-src self'; cssText não.
+function setStyle(el, css) {
+  for (const decl of css.split(';')) {
+    const i = decl.indexOf(':');
+    if (i > 0) el.style.setProperty(decl.slice(0, i).trim(), decl.slice(i + 1).trim());
+  }
+}
+
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'style' && v) el.style.cssText = v;  // atributo style inline é barrado pela CSP; o CSSOM não
+    else if (k === 'style') { if (v) setStyle(el, v); }  // atributo style inline (e style.cssText) é barrado pela CSP; setProperty não
     else if (v === true) el.setAttribute(k, '');
     else if (v !== false && v != null) el.setAttribute(k, v);
   }
@@ -28,6 +36,14 @@ const ICONS = {
   device: ['M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z', 'M11 18h2'],
   key: ['M7 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8', 'M10 12h11', 'M17 12v3', 'M20 12v2'],
   lock: ['M6 11h12v9H6z', 'M8 11V8a4 4 0 0 1 8 0v3'],
+  search: ['M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14', 'M20 20l-4-4'],
+  ban: ['M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18', 'M5.6 5.6l12.8 12.8'],
+  list: ['M8 6h12', 'M8 12h12', 'M8 18h12', 'M4 6h.01', 'M4 12h.01', 'M4 18h.01'],
+  eyeoff: ['M3 3l18 18', 'M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-3.2 3.7', 'M6.5 7.6A15 15 0 0 0 3 12s4 6 9 6a9 9 0 0 0 3.6-.8', 'M9.9 9.9a3 3 0 0 0 4.2 4.2'],
+  terminal: ['M4 5h16v14H4z', 'M7 10l3 2-3 2', 'M12 15h5'],
+  box: ['M21 8l-9-5-9 5v8l9 5 9-5z', 'M3 8l9 5 9-5', 'M12 13v8'],
+  inbox: ['M3 13l3-8h12l3 8', 'M3 13v6h18v-6', 'M3 13h5a4 4 0 0 0 8 0h5'],
+  send: ['M21 3L10 14', 'M21 3l-7 18-4-7-7-4z'],
   sync: ['M20 12a8 8 0 0 0-14-5', 'M4 4v4h4', 'M4 12a8 8 0 0 0 14 5', 'M20 20v-4h-4'],
 };
 

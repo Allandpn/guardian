@@ -204,8 +204,11 @@ class Agent:
                "runs": [{k: v for k, v in r.items() if k != "by"} for r in self.runs[-RUNS_KEEP:]], "gateway_ok": True, "error": self.last_error,
                "busy": dict(self.current) if self.current else None}
         try:
-            b = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked?src=own")
-            out["blocked"] = [{k: i[k] for k in ("domain", "count", "last")} for i in b.get("items", [])][:UI_BLOCKED_MAX]
+            b = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked?scope=all")   # todos os aparelhos, regras próprias e listas
+            out["blocked"] = [{**{k: i[k] for k in ("dev", "domain", "src", "list", "count", "last")}, "name": i.get("name", "")}
+                              for i in b.get("items", [])][:UI_BLOCKED_MAX]
+            out["devices"] = b.get("devices", [])
+            out["me"] = self.dev
             q = self.gw.call("GET", f"/v1/devices/{self.dev}/requests")
             out["requests"], out["admin"] = q.get("requests", []), q.get("admin", [])
             out["analyses"] = q.get("analyses", [])   # análise por IA das instalações que falharam (se o gateway tiver a chave)

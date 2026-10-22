@@ -146,6 +146,25 @@ class WinGateway(unittest.TestCase):
             n += st == 200
         self.assertLessEqual(n, 10)
 
+    def test_09_only_the_pc_sees_blocks_of_all_devices(self):
+        import time
+        now = int(time.time())
+        row = lambda d, src: {"domain": d, "src": src, "list": "lista" if src == "list" else "", "cname": 0, "count": 2, "first": now - 5, "last": now}  # noqa: E731
+        self.env.store.merge_blocked(self.pc, [row("meu.exemplo.com", "own")])
+        self.env.store.merge_blocked(self.ph, [row("do-celular.exemplo.com", "own"), row("anuncio.exemplo.net", "list")])
+        self.pc_report()
+        st, r, _ = self.signed(self.pckey, self.pc, "GET", "/blocked?scope=all")
+        self.assertEqual(st, 200, r)
+        got = {(i["name"], i["domain"], i["src"]) for i in r["items"]}
+        self.assertEqual(got, {("Meu PC", "meu.exemplo.com", "own"), ("Celular", "do-celular.exemplo.com", "own"), ("Celular", "anuncio.exemplo.net", "list")})
+        self.assertEqual({d["name"] for d in r["devices"]}, {"Meu PC", "Celular"})
+        st, r, _ = self.signed(self.pckey, self.pc, "GET", "/blocked?scope=all&src=list")
+        self.assertEqual([i["domain"] for i in r["items"]], ["anuncio.exemplo.net"])
+        st, r, _ = self.signed(self.phkey, self.ph, "GET", "/blocked?scope=all")       # o celular não vê os dos outros
+        self.assertEqual(st, 403, r)
+        st, r, _ = self.signed(self.phkey, self.ph, "GET", "/blocked")
+        self.assertEqual({i["domain"] for i in r["items"]}, {"do-celular.exemplo.com", "anuncio.exemplo.net"})
+
     def test_08_payload_is_not_exposed_on_other_kinds(self):
         self.signed(self.pckey, self.pc, "POST", "/requests", {"kind": "other", "text": "oi"})
         for x in self.c.call("GET", "/v1/requests")[1]["items"]:
