@@ -86,6 +86,13 @@ class Veto:
             return f"{domains.rule_domain(domain)} cobre domínios das listas de conteúdo adulto"
         return None
 
+    def hides(self, domain: str, regex_mode: bool = True) -> bool:
+        """O domínio some da lista de bloqueados? Só quando o veto é certo: sem o índice das listas não esconde nada (liberar continua recusado)."""
+        self.refresh()
+        if self.path and not self.loaded:
+            return any(domain == p or domain.endswith("." + p) for p in self.parents)
+        return bool(self.reason(domain, regex_mode))
+
     def add_parent(self, domain: str) -> bool:
         d = domains.rule_domain(domain)  # www.reddit.com e reddit.com são o mesmo site
         if "." not in d or domains.is_public_suffix(d):

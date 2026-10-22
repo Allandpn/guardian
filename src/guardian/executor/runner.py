@@ -379,7 +379,7 @@ class Executor:
                     continue
                 if d == canary:  # o canário é o teste de saúde do aparelho: bloqueado de propósito, não é pedido de ninguém
                     continue
-                if self.veto.reason(d, self.cfg.allow_mode == "regex"):  # não pode ser liberado: não vira pedido (e some do que já estava guardado)
+                if self.veto.hides(d, self.cfg.allow_mode == "regex"):  # não pode ser liberado: não vira pedido (e some do que já estava guardado)
                     vetoed.setdefault(dev, set()).add(d)
                     continue
                 e = per_dev.setdefault(dev, {}).setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t),
@@ -414,7 +414,7 @@ class Executor:
                 d = domains.normalize(it.get("domain"))
             except (ValueError, AttributeError):
                 continue
-            if isinstance(it.get("dev"), str) and self.veto.reason(d, regex):
+            if isinstance(it.get("dev"), str) and self.veto.hides(d, regex):
                 per_dev.setdefault(it["dev"], []).append(d)
         n = 0
         for dev, ds in per_dev.items():
