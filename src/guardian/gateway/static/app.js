@@ -103,8 +103,9 @@ async function passkeyGet(publicKey) {
   return { id: a.id, authenticatorData: enc(a.response.authenticatorData), clientDataJSON: enc(a.response.clientDataJSON), signature: enc(a.response.signature) };
 }
 
-async function signPayload(bytes) {
-  const mine = Object.keys((me.trust[me.guardian.id] || {}).creds || {});
+async function signPayload(bytes, only) {
+  let mine = Object.keys((me.trust[me.guardian.id] || {}).creds || {});
+  if (only && only.length) mine = mine.filter((c) => only.includes(c));   // só as passkeys que o destino já conhece
   const a = await passkeyGet({
     challenge: await sha256(bytes), rpId: me.rp_id, userVerification: 'required', timeout: 60000,
     allowCredentials: mine.map((id) => ({ type: 'public-key', id: dec(id) })),
@@ -115,7 +116,13 @@ async function signPayload(bytes) {
 async function sendCommand(dev, type, args = {}) {
   const { next } = await api('GET', `/v1/devices/${dev}/ctr`);
   const bytes = commandBytes({ v: 1, dev, guardian: me.guardian.id, ctr: next, type, args });
-  const sig = await signPayload(bytes);
+  // Passkey nova ainda não é conhecida pelo destino: assinar a propagação com ela seria recusado. Oferece só as que o destino já confia.
+  let known;
+  if (type === 'add_credential' || type === 'add_guardian') {
+    const d = ((await api('GET', '/v1/devices')).devices || []).find((x) => x.id === dev);
+    known = ((d && d.report && d.report.trust) || {})[me.guardian.id];
+  }
+  const sig = await signPayload(bytes, known);
   const r = await api('POST', `/v1/devices/${dev}/commands`, { payload: enc(bytes), sigs: [sig] });
   toast(r.status === 'awaiting' ? 'Enviado: aguarda a co-assinatura de outro guardião.' : 'Comando enviado ao aparelho.');
   return r;
