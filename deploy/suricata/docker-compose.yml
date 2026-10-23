@@ -1,0 +1,14 @@
+# Suricata em modo IPS só com as regras de torrent. Lê a fila NFQUEUE 0 (ver ../torrent-firewall.sh).
+services:
+  suricata:
+    image: jasonish/suricata:7.0.8
+    container_name: guardian-suricata
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW, SYS_NICE]
+    restart: unless-stopped
+    command: ["-q", "0", "-S", "/etc/suricata/rules/torrent.rules"]
+    volumes:
+      - ./torrent.rules:/etc/suricata/rules/torrent.rules
+      - suricata-log:/var/log/suricata
+volumes:
+  suricata-log:

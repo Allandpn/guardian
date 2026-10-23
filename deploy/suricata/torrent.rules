@@ -1,0 +1,14 @@
+# Bloqueio do protocolo BitTorrent (só ele). Cada regra casa com bytes que existem apenas no protocolo.
+# Limite: torrent com criptografia de protocolo (MSE/PE) não tem assinatura e passa.
+
+# Handshake dos peers (TCP): 0x13 + "BitTorrent protocol"
+drop tcp any any -> any any (msg:"GUARDIAN BitTorrent handshake TCP"; flow:established; content:"|13|BitTorrent protocol"; depth:20; classtype:policy-violation; sid:9000001; rev:1;)
+# Handshake dentro de uTP (UDP): cabeçalho uTP de 20 bytes, depois o mesmo handshake
+drop udp any any -> any any (msg:"GUARDIAN BitTorrent handshake uTP"; content:"|13|BitTorrent protocol"; offset:20; depth:20; classtype:policy-violation; sid:9000002; rev:1;)
+# Anúncio ao tracker por HTTP: só tracker de torrent usa info_hash= na URL
+drop http any any -> any any (msg:"GUARDIAN BitTorrent tracker HTTP"; http.uri; content:"info_hash="; classtype:policy-violation; sid:9000003; rev:1;)
+# Tracker por UDP: "connect" começa com a constante 0x41727101980 e tem exatos 16 bytes
+drop udp any any -> any any (msg:"GUARDIAN BitTorrent tracker UDP"; dsize:16; content:"|00 00 04 17 27 10 19 80|"; depth:8; classtype:policy-violation; sid:9000004; rev:1;)
+# DHT: consultas e respostas em bencode ("a"/"r" vêm primeiro porque as chaves são ordenadas)
+drop udp any any -> any any (msg:"GUARDIAN BitTorrent DHT query"; content:"d1:ad2:id20:"; depth:12; classtype:policy-violation; sid:9000005; rev:1;)
+drop udp any any -> any any (msg:"GUARDIAN BitTorrent DHT response"; content:"d1:rd2:id20:"; depth:12; classtype:policy-violation; sid:9000006; rev:1;)

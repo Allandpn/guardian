@@ -1,0 +1,13 @@
+[Unit]
+Description=Guardian: tráfego do exit node passa pelo Suricata (bloqueio de torrent)
+After=docker.service tailscaled.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/bin/docker compose -f /opt/guardian/deploy/suricata/docker-compose.yml up -d
+ExecStart=/opt/guardian/deploy/torrent-firewall.sh
+
+[Install]
+WantedBy=multi-user.target
