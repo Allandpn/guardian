@@ -198,38 +198,27 @@ class ExecutorVeto(unittest.TestCase):
         self.assertNotIn("escola.example", {x["domain"] for x in rep["audit"]})
         self.assertEqual(rep["audit_total"], len(rep["audit"]))
 
-    def test_06_vetoed_domains_do_not_become_requests_and_old_ones_vanish(self):
+    def test_06_vetoed_and_listed_domains_are_shown_with_the_reason_but_cannot_be_requested(self):
         k, d = self.k1, self.d1
         st, r, _ = self.env.client().signed(k, "POST", f"/v1/devices/{d}/report", {"kind": "device", "tsIps": ["100.64.0.7"]})
         self.assertEqual(st, 200, r)
-        q = lambda t, dom: {"time": t, "domain": dom, "status": "REGEX", "client": {"ip": "100.64.0.7"}}
-        off = Executor(ExecConfig(self.tmp.name, self.fake.url, "senha-app", "canario.example", allow_mode="regex"), now=lambda: NOW)  # sem veto
-        self.fake.queries += [q(NOW - 40, "cdn.pornhub.com"), q(NOW - 39, "bom.example")]
-        off.state.data["blocked_since"] = 0
-        off.collect_blocks()
-        got = lambda: {i["domain"] for i in self.env.client().signed(k, "GET", f"/v1/devices/{d}/blocked")[1]["items"]}
-        self.assertEqual(got(), {"cdn.pornhub.com", "bom.example"})
+        q = lambda t, dom, status="REGEX", **kw: {"time": t, "domain": dom, "status": status, "client": {"ip": "100.64.0.7"}, **kw}
+        self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "add", "domain": "vetado.example"}))
+        self.fake.queries += [q(NOW - 40, "cdn.vetado.example"), q(NOW - 39, "bom.example"), q(NOW - 38, "lista.example", "GRAVITY")]
         self.ex.state.data["blocked_since"] = 0
-        self.fake.queries += [q(NOW - 20, "cdn.pornhub.com"), q(NOW - 19, "globo.example"), q(NOW - 18, "outro.example")]
         self.ex.collect_blocks()
-        self.assertEqual(got(), {"bom.example", "outro.example"})
-
-
-    def test_07_sweep_removes_stored_blocks_that_became_vetoed(self):
-        k, d = self.k1, self.d1
-        got = lambda: {i["domain"] for i in self.env.client().signed(k, "GET", f"/v1/devices/{d}/blocked")[1]["items"]}
-        off = Executor(ExecConfig(self.tmp.name, self.fake.url, "senha-app", "canario.example", allow_mode="regex"), now=lambda: NOW)  # sem veto
-        self.fake.queries.append({"time": NOW - 5, "domain": "cdn.vetar-depois.example", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
-        off.state.data["blocked_since"] = 0
-        off.collect_blocks()
-        self.assertIn("cdn.vetar-depois.example", got())
-        self.ex.sweep_vetoed()
-        self.assertIn("cdn.vetar-depois.example", got())                                                              # ainda não vetado: a varredura deixa
-        self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "add", "domain": "vetar-depois.example"}))             # o mestre veta o site
-        self.assertGreaterEqual(self.ex.sweep_vetoed(), 1)                                                            # ninguém consultou de novo: a varredura apaga
-        self.assertNotIn("cdn.vetar-depois.example", got())
-        self.assertIn("bom.example", got())                                                                           # o resto fica
-        self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "remove", "domain": "vetar-depois.example"}))
+        got = lambda: {i["domain"]: i for i in self.env.client().signed(k, "GET", f"/v1/devices/{d}/blocked")[1]["items"]}
+        g = got()
+        self.assertEqual(g["bom.example"]["src"], "own")
+        self.assertEqual((g["cdn.vetado.example"]["src"], g["cdn.vetado.example"]["list"]), ("veto", "vetado.example"))
+        self.assertEqual(g["lista.example"]["src"], "list")
+        post = lambda doms: self.env.client().signed(k, "POST", f"/v1/devices/{d}/requests", {"kind": "unblock", "domains": doms})
+        self.assertEqual(post(["bom.example"])[0], 200)
+        st, body, _ = post(["cdn.vetado.example"])
+        self.assertEqual(st, 400)
+        self.assertIn("vetado", body["error"])
+        self.assertEqual(post(["lista.example"])[0], 400)
+        self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "remove", "domain": "vetado.example"}))
 
     def test_08_only_the_executor_reads_the_index(self):
         st, _, _ = self.env.client().signed(self.k1, "GET", f"/v1/devices/{self.d1}/blocked-index")

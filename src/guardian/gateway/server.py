@@ -32,7 +32,7 @@ APP_KEYS = {"pendingApps", "approvedApps"}
 REQUEST_KINDS = {"domain", "app", "other", "unblock", "install", "command"}
 ADMIN_REQUEST_KINDS = {"install": cmds.T_WIN_INSTALL, "command": cmds.T_WIN_RUN}  # pedido do computador -> comando que o aprova
 ADMIN_REQUESTS_MAX_PER_DEV = 10
-BLOCK_SOURCES = {"own", "list"}
+BLOCK_SOURCES = {"own", "list", "veto"}  # own: nada liberou (dá para pedir) · list: lista do Pi-hole · veto: site vetado pelo mestre
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 STATIC = {
@@ -1083,6 +1083,8 @@ class Gateway:
                 raise HttpError(400, "não dá para pedir um sufixo inteiro (como cn ou com.br)")
             if not all(self.store.blocked_under(dev, x) for x in doms):  # o domínio bloqueado ou o pai dele (o app deixa encurtar)
                 raise HttpError(400, "só dá para pedir domínios que foram bloqueados")
+            if any(self.store.blocked_under(dev, x, "veto") for x in doms):  # site vetado pelo mestre: não se pede
+                raise HttpError(400, "esse site foi vetado pelo guardião-mor; não dá para pedir")
             if not all(self.store.blocked_under(dev, x, "own") for x in doms):  # bloqueio de lista é só para ver: quem libera é o guardião, à mão
                 raise HttpError(400, "esse domínio é bloqueado por uma lista; só o guardião pode liberar")
             rid = self.store.add_unblock_request(dev, doms)

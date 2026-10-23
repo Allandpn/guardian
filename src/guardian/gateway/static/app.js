@@ -787,7 +787,10 @@ async function domainsView(tab) {
     ['#/domains/vetos', veto.audit_total ? `Vetos · ${veto.audit_total}` : 'Vetos', 'vetos']] :
     [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/liberados', 'Liberados', 'liberados'], ['#/domains/recusados', 'Recusados', 'recusados']];
   const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
-    x.cname ? chip('via CNAME') : null];
+    x.cname ? chip('via CNAME') : null,
+    x.src === 'list' ? chip('lista de conteúdo adulto: confira antes de liberar', 'warn') : null,
+    x.src === 'veto' ? chip('site vetado pelo mestre', 'bad') : null];
+  const srcLabel = (b) => (b.src === 'own' ? 'regra própria' : b.src === 'veto' ? `vetado (${b.list})` : b.list || 'lista');
   const batchSpec = (items) => ({ title: `Liberar ${items.length} domínio${items.length > 1 ? 's' : ''}?`,
     rows: items.map((i) => [i.domain, i.ttl_s ? durLabel(i.ttl_s) : 'sem prazo']), effect: 'vale na hora', effectKind: 'ok',
     note: items.some((i) => !i.ttl_s) ? 'Sem prazo: o domínio fica liberado até alguém bloquear de novo. Vale para a casa toda, com os subdomínios.' : 'Vale para a casa toda, com os subdomínios.', noteKind: 'warn' });
@@ -841,7 +844,7 @@ async function domainsView(tab) {
         const b = info.get(`${x.q.dev}|${x.i.domain}`);
         return h('div', { class: 'li', style: 'flex-wrap:wrap' },
           h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.i.domain),
-            h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${b.src === 'own' ? 'regra própria' : b.list || 'lista'}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
+            h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${srcLabel(b)}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
           h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'), h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
       })) : empty('Nenhuma solicitação de liberação.'),
       otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
@@ -856,7 +859,7 @@ async function domainsView(tab) {
     body = [h('div', { class: 'sec' }, 'Aparelho'),
       pillGroup('Filtrar por aparelho', [['', 'Todos'], ...protectedDevs.map((x) => [x.id, x.name])], blkDev, (k) => { blkDev = k; route(); }),
       h('div', { class: 'sec' }, 'Quem bloqueou'),
-      pillGroup('Filtrar por origem', [['own', 'Regras próprias'], ['list', 'Listas'], ['', 'Tudo']], blkSrc, (k) => { blkSrc = k; route(); }),
+      pillGroup('Filtrar por origem', [['own', 'Regras próprias'], ['list', 'Listas'], ['veto', 'Vetados'], ['', 'Tudo']], blkSrc, (k) => { blkSrc = k; route(); }),
       guardianPills,
       h('div', { class: 'sec' }, 'Liberar direto por'),
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
@@ -864,8 +867,8 @@ async function domainsView(tab) {
       h('div', { class: 'sec' }, 'Últimas 24 horas'),
       items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
-          h('div', { class: 'muted' }, `${devName(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${x.src === 'own' ? 'regra própria' : x.list || 'lista'}`, ' ', flags(x))),
-        covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
+          h('div', { class: 'muted' }, `${devName(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${srcLabel(x)}`, ' ', flags(x))),
+        covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : x.src === 'veto' ? null : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
           batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) : empty('Nada bloqueado com esses filtros.')];
   } else if (tab === 'liberados' && !admin) {
     const myId = me.guardian.id;

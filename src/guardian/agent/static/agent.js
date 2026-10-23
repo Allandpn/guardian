@@ -98,10 +98,10 @@ function blockedTab() {
     return h('div', { class: 'li', style: hidden.has(b.domain) ? 'opacity:.6' : '' },
       can ? h('input', { type: 'checkbox', checked: picked.has(b.domain), disabled: isOpen, 'aria-label': e, style: 'width:22px;height:22px;flex:none',
         onchange: (ev) => { ev.target.checked ? picked.add(b.domain) : picked.delete(b.domain); draw(); } })
-        : h('span', { class: 'ib', style: 'width:22px;height:22px;flex:none;color:var(--muted)', title: b.src === 'list' ? 'Bloqueado por lista: só o guardião libera' : 'De outro aparelho: só para ver' }, icon(b.src === 'list' ? 'lock' : 'device', 18)),
+        : h('span', { class: 'ib', style: 'width:22px;height:22px;flex:none;color:var(--muted)', title: b.src === 'veto' ? 'Site vetado pelo guardião-mor: não se pede' : b.src === 'list' ? 'Bloqueado por lista: só o guardião libera' : 'De outro aparelho: só para ver' }, icon(b.src === 'list' || b.src === 'veto' ? 'lock' : 'device', 18)),
       h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, e), isOpen ? [' ', chip('aguardando', 'warn')] : null,
         h('div', { class: 'muted' }, `${b.count}× · ${ago(b.last)}${e !== b.domain ? ` · de ${b.domain}` : ''}${hidden.has(b.domain) ? ' · escondido' : ''}`),
-        h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px' }, chip(b.name || 'aparelho', b.dev === st.me ? 'ok' : ''), b.src === 'list' ? chip(`lista · ${listName(b.list)}`, 'warn') : chip('regra do Guardian')))
+        h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px' }, chip(b.name || 'aparelho', b.dev === st.me ? 'ok' : ''), b.src === 'veto' ? chip(`vetado · ${b.list}`, 'bad') : b.src === 'list' ? chip(`lista · ${listName(b.list)}`, 'warn') : chip('regra do Guardian')))
       , can && maxCut(b.domain) ? [
         small('«', () => { cut[b.domain] = Math.min((cut[b.domain] || 0) + 1, maxCut(b.domain)); draw(); }, { 'aria-label': 'Encurtar: pedir o domínio pai', disabled: (cut[b.domain] || 0) >= maxCut(b.domain), style: 'min-height:38px;min-width:38px;padding:0' }),
         small('»', () => { cut[b.domain] = Math.max((cut[b.domain] || 0) - 1, 0); draw(); }, { 'aria-label': 'Ampliar: voltar ao domínio de baixo', disabled: !(cut[b.domain] > 0), style: 'min-height:38px;min-width:38px;padding:0' })] : null);
@@ -115,7 +115,7 @@ function blockedTab() {
         'Domínios bloqueados por lista (cadeado) não podem ser pedidos. Se um deles estiver bloqueado por engano, avise o guardião: ele pode incluir o domínio à mão e liberar.'),
       h('div', { style: 'position:relative' }, f.search),
       pills('Filtrar por aparelho', [['', 'Todos os aparelhos'], ...devs.map((d) => [d.id, d.id === st.me ? `${d.name} (este)` : d.name])], devFilter, (k) => { devFilter = k; draw(); }),
-      pills('Filtrar por origem', [['', 'Toda origem'], ['own', 'Regras do Guardian'], ['list', 'Listas']], srcFilter, (k) => { srcFilter = k; draw(); }),
+      pills('Filtrar por origem', [['', 'Toda origem'], ['own', 'Regras do Guardian'], ['list', 'Listas'], ['veto', 'Vetados']], srcFilter, (k) => { srcFilter = k; draw(); }),
       h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' },
         small('Mais recentes', () => { sortBy = 'recent'; draw(); }, { 'aria-pressed': String(sortBy === 'recent') }),
         small('Mais bloqueados', () => { sortBy = 'count'; draw(); }, { 'aria-pressed': String(sortBy === 'count') }),

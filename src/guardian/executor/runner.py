@@ -21,8 +21,6 @@ PARENTS_BATCH_MAX = 80
 BLOCKS_EVERY_S = 10
 BLOCKS_CHUNK = 150
 BLOCKS_BACKFILL_S = 3600
-BLOCKS_VETO_MAX = 400
-SWEEP_EVERY_S = 120
 OWN_STATUSES = {"REGEX", "DENYLIST", "REGEX_CNAME", "DENYLIST_CNAME"}
 LIST_STATUSES = {"GRAVITY", "GRAVITY_CNAME"}
 
@@ -363,7 +361,6 @@ class Executor:
         newest = since
         canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
         per_dev: dict[str, dict] = {}
-        vetoed: dict[str, set] = {}
         for ip, dev in clients.items():
             for q in self.pihole.queries(since, ip):
                 status, t = q.get("status"), q.get("time")
@@ -379,58 +376,33 @@ class Executor:
                     continue
                 if d == canary:  # o canário é o teste de saúde do aparelho: bloqueado de propósito, não é pedido de ninguém
                     continue
-                if self.veto.hides(d, self.cfg.allow_mode == "regex"):  # não pode ser liberado: não vira pedido (e some do que já estava guardado)
-                    vetoed.setdefault(dev, set()).add(d)
-                    continue
+                # Tudo que foi bloqueado aparece, com o motivo: "own" (nada liberou; dá para pedir), "list" (lista; só para ver)
+                # e "veto" (site vetado pelo mestre; só para ver). Só "own" vira pedido de liberação.
+                parent = self.veto.master_parent(d)
+                src = "veto" if parent else kind
                 e = per_dev.setdefault(dev, {}).setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t),
-                                                               "src": kind, "list": "", "cname": cname})
+                                                               "src": src, "list": "", "cname": cname})
                 e["count"] += 1
                 e["first"], e["last"] = min(e["first"], int(t)), max(e["last"], int(t))
-                if kind == "list" and not e["list"]:
+                if src == "veto":
+                    e["list"] = parent
+                elif src == "list" and not e["list"]:
                     e["list"] = self._list_name(q.get("list_id"))
         total = 0
-        for dev in sorted(set(per_dev) | set(vetoed)):
-            items = sorted(per_dev.get(dev, {}).values(), key=lambda x: x["last"], reverse=True)
-            drop = sorted(vetoed.get(dev, ()))[:BLOCKS_VETO_MAX]
-            for i in range(0, max(len(items), 1), BLOCKS_CHUNK):
-                body = {"dev": dev, "items": items[i:i + BLOCKS_CHUNK]}
-                if i == 0 and drop:
-                    body["veto"] = drop  # o gateway apaga o que já tinha guardado destes domínios
-                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", body)
+        for dev in sorted(per_dev):
+            items = sorted(per_dev[dev].values(), key=lambda x: x["last"], reverse=True)
+            for i in range(0, len(items), BLOCKS_CHUNK):
+                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": dev, "items": items[i:i + BLOCKS_CHUNK]})
             total += len(items)
         if newest > since:
             self.state.data["blocked_since"] = newest + 0.000001
             self.state.save()
         return total
 
-    def sweep_vetoed(self) -> int:
-        """Apaga do gateway o que já estava guardado e passou a ser vetado (o mestre vetou um site, as listas mudaram).
-        Sem isto, só sumiria quando alguém consultasse o domínio de novo ou em 24 h. Devolve quantos."""
-        got = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked-index").get("items", [])
-        regex = self.cfg.allow_mode == "regex"
-        per_dev: dict[str, list] = {}
-        for it in got:
-            try:
-                d = domains.normalize(it.get("domain"))
-            except (ValueError, AttributeError):
-                continue
-            if isinstance(it.get("dev"), str) and self.veto.hides(d, regex):
-                per_dev.setdefault(it["dev"], []).append(d)
-        n = 0
-        for dev, ds in per_dev.items():
-            for i in range(0, len(ds), BLOCKS_VETO_MAX):
-                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": dev, "items": [], "veto": ds[i:i + BLOCKS_VETO_MAX]})
-            n += len(ds)
-        return n
-
     def _blocks_loop(self, stop) -> None:
-        last_sweep = 0.0
         while not stop.is_set():
             try:
                 self.collect_blocks()
-                if time.monotonic() - last_sweep >= SWEEP_EVERY_S:
-                    last_sweep = time.monotonic()
-                    self.sweep_vetoed()
             except (GatewayError, PiholeError) as e:
                 print("bloqueios:", e, file=sys.stderr)
             stop.wait(BLOCKS_EVERY_S)
