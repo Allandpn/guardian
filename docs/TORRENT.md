@@ -28,3 +28,15 @@ Suricata em modo IPS (fila NFQUEUE 0), que derruba só os pacotes com assinatura
 
 As regras foram validadas offline com capturas sintéticas: 6 casos de torrent alertam e 6 de tráfego normal
 (HTTP, TLS, DNS, QUIC, STUN, UDP parecido com uTP) não. Ao vivo: `docker logs guardian-suricata` e `docker exec guardian-suricata tail -f /var/log/suricata/fast.log`.
+
+## Trackers no Pi-hole
+
+`deploy/pihole/torrent-trackers.txt` (108 hosts exatos) está cadastrada como lista do Pi-hole
+(`file:///opt/guardian/deploy/pihole/torrent-trackers.txt`, grupo Default). Para atualizar: `python3 tools/gerar_trackers.py` e `sudo pihole -g`.
+Fontes: [ngosang/trackerslist](https://github.com/ngosang/trackerslist) e [XIU2/TrackersListCollection](https://github.com/XIU2/TrackersListCollection).
+
+Este Pi-hole é de lista de permissão, e **liberar vence bloquear**. Em 23/10/2026 removi da lista de permitidos 9 trackers
+liberados em 2025 (`tracker.opentrackr.org`, `open.demonii.com`, `exodus.desync.com`, `tracker.openbittorrent.com`,
+`tracker.torrent.eu.org`, `explodie.org`, `p4p.arenabg.com`, `open.stealth.si`, `9.rarbg.me`). Ficaram liberados `evan.im` e
+`martin-gebhardt.eu` (sites pessoais, liberados em jul/2026). Se um tracker voltar a ser liberado, ele passa de novo.
+Backup do banco antes da mudança: `/etc/pihole/gravity.db.bak-torrent`.
