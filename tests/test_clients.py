@@ -89,6 +89,13 @@ class AutoClients(unittest.TestCase):
         st, _, _ = self.env.client().signed(self.k1, "POST", f"/v1/devices/{self.d1}/unblock", {"domains": ["tv.exemplo.com"]})
         self.assertNotEqual(st, 200)
 
+    def test_02c_own_machine_addresses_are_not_network_clients(self):
+        from unittest import mock
+        self.fake.queries.append({"time": NOW - 10, "domain": "eu-mesmo.exemplo.com", "status": "REGEX", "client": {"ip": "100.99.99.1", "name": "pi.hole"}})
+        with mock.patch("guardian.executor.runner.local_ips", return_value={"100.99.99.1"}):
+            self.ex.collect_blocks()
+        self.assertNotIn("100.99.99.1", [n["ip"] for n in self.c.call("GET", "/v1/blocked")[1]["net"]])
+
     def test_03_conflicting_claim_is_dropped_for_both(self):
         self.report(self.k2, self.d2, ["100.64.0.7", "100.64.0.8"])
         self.assertEqual(self.ex.known_clients(), {"fd7a:115c:a1e0::7": self.d1, "100.64.0.8": self.d2})

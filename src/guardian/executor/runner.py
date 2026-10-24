@@ -2,6 +2,7 @@
 import ipaddress
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -38,6 +39,15 @@ class ExecConfig:
     clients: dict | None = None       # {IP do aparelho na Tailscale: id do aparelho protegido}
     allow_mode: str = "exact"         # "regex": grava domínio + subdomínios como regex no Pi-hole (o guardião só vê o domínio)
     gravity_db: str | None = None     # gravity.db do Pi-hole: o que está nas listas dele (conteúdo adulto) não pode ser liberado; None desliga
+
+
+def local_ips() -> set[str]:
+    """Os endereços desta máquina (o Pi-hole falando consigo mesmo, pela Tailscale ou pela rede, não é cliente de ninguém)."""
+    try:
+        out = subprocess.run(["ip", "-o", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {f[3].split("/")[0] for f in (line.split() for line in out.splitlines()) if len(f) > 3 and f[2] in ("inet", "inet6")}
 
 
 def net_id(ip: str) -> str | None:
@@ -409,10 +419,11 @@ class Executor:
                 if t is not None:
                     newest = max(newest, t)
         net: dict[str, dict] = {}  # id de rede -> {"name", "ip", "items"}
+        mine = local_ips()
         for q in self.pihole.queries(since, None, max_pages=NET_PAGES):
             c = q.get("client") if isinstance(q.get("client"), dict) else {}
             ip = c.get("ip")
-            if not isinstance(ip, str) or ip in clients or ip in NET_SKIP:
+            if not isinstance(ip, str) or ip in clients or ip in NET_SKIP or ip in mine:
                 continue
             nid = net_id(ip)
             if nid is None:
