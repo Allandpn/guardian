@@ -689,26 +689,6 @@ async function appsView(tab) {
     h('div', { class: 'muted' }, d.name, extra ? ` · ${extra}` : ''));
   const empty = (text) => h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, text));
 
-  const atOf = (d) => (r.allow_at || {})[d] || 0;  // quando a liberação foi criada no Pi-hole (0 = sem data)
-  // Lista de liberados: mais recentes primeiro, com data e hora, e uma pesquisa por domínio (também acha o pai que cobre o domínio digitado).
-  const allowCard = (list, emptyText, withBy) => {
-    const sorted = [...list].sort((a, b) => atOf(b) - atOf(a) || a.localeCompare(b));
-    const by = r.allow_by || {};
-    const box = h('div');
-    const draw = () => {
-      const q = search.value.trim().toLowerCase().replace(/^\.+/, '');
-      const shown = q ? sorted.filter((x) => x.includes(q) || q.endsWith(`.${x}`)) : sorted;
-      box.replaceChildren(shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => h('div', { class: 'li' },
-        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
-          h('div', { class: 'muted' }, atOf(x) ? `${fmtWhen(atOf(x))} · ${ago(atOf(x), now)}` : 'sem data', withBy && by[x] ? ` · liberado por ${gname(by[x])}` : '', ' ',
-            temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
-        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) :
-        empty(q ? 'Nenhum liberado combina com a pesquisa.' : emptyText));
-    };
-    const search = h('input', { class: 'inp', type: 'search', placeholder: 'Pesquisar domínio liberado', 'aria-label': 'Pesquisar domínio liberado', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', oninput: draw });
-    draw();
-    return [h('div', { class: 'pad', style: 'margin:12px 0' }, search), box];
-  };
   let body;
   if (tab === 'solicitacoes') {
     const rows = shown.flatMap((d) => pendingOf(d).map((a) => ({ d, a })));
@@ -820,6 +800,26 @@ async function domainsView(tab) {
     rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
     note: name === 'allow' ? 'Volta a valer a regra do Pi-hole para este domínio.' : null });
 
+  const atOf = (d) => (r.allow_at || {})[d] || 0;  // quando a liberação foi criada no Pi-hole (0 = sem data)
+  // Lista de liberados: mais recentes primeiro, com data e hora, e uma pesquisa por domínio (também acha o pai que cobre o domínio digitado).
+  const allowCard = (list, emptyText, withBy) => {
+    const sorted = [...list].sort((a, b) => atOf(b) - atOf(a) || a.localeCompare(b));
+    const by = r.allow_by || {};
+    const box = h('div');
+    const draw = () => {
+      const q = search.value.trim().toLowerCase().replace(/^\.+/, '');
+      const shown = q ? sorted.filter((x) => x.includes(q) || q.endsWith(`.${x}`)) : sorted;
+      box.replaceChildren(shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
+          h('div', { class: 'muted' }, atOf(x) ? `${fmtWhen(atOf(x))} · ${ago(atOf(x), now)}` : 'sem data', withBy && by[x] ? ` · liberado por ${gname(by[x])}` : '', ' ',
+            temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
+        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) :
+        empty(q ? 'Nenhum liberado combina com a pesquisa.' : emptyText));
+    };
+    const search = h('input', { class: 'inp', type: 'search', placeholder: 'Pesquisar domínio liberado', 'aria-label': 'Pesquisar domínio liberado', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', oninput: draw });
+    draw();
+    return [h('div', { class: 'pad', style: 'margin:12px 0' }, search), box];
+  };
   let body;
   if (tab === 'solicitacoes') {
     const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
