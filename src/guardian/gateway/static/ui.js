@@ -152,11 +152,11 @@ export function parentsOf(domain) {
   return out;
 }
 
-/** Folha para escolher até onde encurtar o domínio antes de liberar. Resolve o domínio escolhido, ou null se cancelar. */
+/** Folha para encurtar o domínio antes de liberar: « tira o primeiro rótulo, » volta um passo. Resolve o domínio escolhido, ou null se cancelar. */
 export function chooseDomain(domain) {
   return new Promise((resolve) => {
     const opts = [domain, ...parentsOf(domain)];
-    let pick = domain, overlay;
+    let at = 0, overlay;
     const prev = document.activeElement;
     const onKey = (e) => { if (e.key === 'Escape') close(null); };
     const close = (v) => {
@@ -166,18 +166,27 @@ export function chooseDomain(domain) {
       if (prev && prev.focus) prev.focus();
       resolve(v);
     };
-    const btns = opts.map((d, i) => h('button', { type: 'button', class: 'mono', 'aria-pressed': String(i === 0),
-      onclick: () => { pick = d; btns.forEach((b, j) => b.setAttribute('aria-pressed', String(j === i))); } }, d));
+    const shown = h('div', { class: 'mono', style: 'font-weight:600;font-size:17px;text-align:center;word-break:break-all;flex:1' }, domain);
+    const less = h('button', { class: 'btn', type: 'button', 'aria-label': 'Encurtar um nível', onclick: () => go(1) }, '«');
+    const more = h('button', { class: 'btn', type: 'button', 'aria-label': 'Voltar um nível', onclick: () => go(-1) }, '»');
+    const info = h('div', { class: 'muted', style: 'text-align:center;margin-top:8px' });
+    const go = (d) => {
+      at = Math.max(0, Math.min(opts.length - 1, at + d));
+      shown.textContent = opts[at];
+      less.disabled = at === opts.length - 1;
+      more.disabled = at === 0;
+      info.textContent = at === 0 ? 'Só este domínio e os subdomínios dele.' : 'Libera também todos os subdomínios de ' + opts[at] + '.';
+    };
     overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(null); } },
       h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Encurtar domínio' },
         h('div', { class: 'grab' }),
-        h('h2', {}, 'Liberar qual nível?'),
-        h('div', { class: 'note warn' }, 'Liberar o domínio pai libera também todos os subdomínios dele. Quanto mais curto, mais abrangente.'),
-        h('div', { class: 'durs', style: 'flex-direction:column;align-items:stretch', role: 'group', 'aria-label': 'Nível do domínio' }, btns),
+        h('h2', {}, 'Encurtar antes de liberar'),
+        h('div', { class: 'row', style: 'gap:10px;align-items:center' }, less, shown, more), info,
         h('div', { class: 'row gap' }, h('button', { class: 'btn', type: 'button', onclick: () => close(null) }, 'Cancelar'),
-          h('button', { class: 'btn pri', type: 'button', onclick: () => close(pick) }, 'Continuar'))));
+          h('button', { class: 'btn pri', type: 'button', onclick: () => close(opts[at]) }, 'Continuar'))));
+    go(0);
     document.body.append(overlay);
     document.addEventListener('keydown', onKey);
-    btns[0].focus();
+    less.focus();
   });
 }
