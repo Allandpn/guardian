@@ -754,6 +754,7 @@ let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = s
 let blkDev = '';             // filtro do log: aparelho ('' = todos)
 let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
 let advOpen = false;         // seção Avançado de Liberados aberta
+const blkSel = new Set();    // domínios marcados na lista de bloqueios para liberar de uma vez
 let blkTtl = 0;              // duração ao liberar direto pelo log (0 = sempre)
 const TTL_CHOICES = [['always', 'Sempre', 0], ['3600', '1 h', 3600], ['86400', '1 dia', 86400], ['deny', 'Negar', null]];
 const REQ_TTLS = [[0, 'Sempre'], [3600, '1 h'], [86400, '1 dia']];
@@ -863,6 +864,35 @@ async function domainsView(tab) {
     const items = blkDev ? everyone.filter((x) => x.dev === blkDev) : everyone;
     const netPills = netDevs.filter((x) => perDev.get(x.id)).sort((a, b) => perDev.get(b.id) - perDev.get(a.id));  // os sem bloqueio aqui não entram na lista
     const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
+    const pickable = (d) => !covers(d) && !items.some((x) => x.domain === d && x.src === 'veto');  // o que já está liberado ou é vetado não se marca
+    const pick = [...new Set(items.map((x) => x.domain).filter(pickable))];
+    [...blkSel].forEach((d) => { if (!pick.includes(d)) blkSel.delete(d); });
+    const boxes = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
+    const goBtn = h('button', { class: 'btn pri', type: 'button' });
+    const sync = () => {  // atualiza as caixas e o botão sem redesenhar a tela (a rolagem fica onde está)
+      for (const [d, els] of boxes) els.forEach((e) => { e.checked = blkSel.has(d); });
+      allBox.checked = pick.length > 0 && pick.every((d) => blkSel.has(d));
+      goBtn.textContent = blkSel.size ? `Liberar ${blkSel.size} marcado${blkSel.size > 1 ? 's' : ''}` : 'Liberar marcados';
+      goBtn.disabled = blkSel.size === 0;
+    };
+    const checkFor = (d) => {
+      const e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${d}`, onchange: (ev) => { if (ev.target.checked) blkSel.add(d); else blkSel.delete(d); sync(); } });
+      boxes.set(d, [...(boxes.get(d) || []), e]);
+      return e;
+    };
+    allBox.addEventListener('change', () => { if (allBox.checked) pick.forEach((d) => blkSel.add(d)); else pick.forEach((d) => blkSel.delete(d)); sync(); });
+    goBtn.addEventListener('click', act(async () => {  // um só comando (até 50 domínios) e um só passkey
+      const its = [...blkSel].slice(0, 50).map((domain) => ({ domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
+      if (!its.length) return;
+      const sent = await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its));
+      if (!sent) return;
+      blkSel.clear();
+      route();
+    }));
+    const selectBar = pick.length ? h('div', { class: 'card', style: 'margin-bottom:12px' }, h('div', { class: 'row', style: 'gap:10px' },
+      h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, `Marcar todos (${pick.length})`)), goBtn),
+      pick.length > 50 ? h('div', { class: 'muted', style: 'margin-top:8px' }, 'Cada liberação leva até 50 domínios; os outros continuam marcados para a próxima.') : null) : null;
+    setTimeout(sync, 0);
     body = [h('div', { class: 'sec' }, 'Aparelho'),
       pillGroup('Filtrar por aparelho', [['', `Todos · ${everyone.length}`], ...protectedDevs.map((x) => [x.id, `${x.name} · ${perDev.get(x.id) || 0}`])], blkDev, (k) => { blkDev = k; route(); }),
       netPills.length ? [h('div', { class: 'sec' }, 'Outros da rede'),
@@ -874,7 +904,8 @@ async function domainsView(tab) {
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
         TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, s]) => pill(label, blkTtl === s, () => { blkTtl = s; route(); }))),
       h('div', { class: 'sec' }, 'Últimas 24 horas'),
-      items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
+      selectBar, items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
+        pickable(x.domain) ? checkFor(x.domain) : h('span', { class: 'chk' }),
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
           h('div', { class: 'muted' }, `${nameOf(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${srcLabel(x)}`, ' ', flags(x))),
         covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : x.src === 'veto' ? null : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
