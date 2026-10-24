@@ -1,5 +1,5 @@
 import { enc, dec, sha256, sealPin, commandBytes, pairingString } from './crypto.js';
-import { h, icon, chip, toast, sheet, insignia } from './ui.js';
+import { h, icon, chip, toast, sheet, insignia, chooseDomain, parentsOf } from './ui.js';
 import { classify } from './gate.js';
 
 const main = document.getElementById('main');
@@ -834,8 +834,10 @@ async function domainsView(tab) {
         await api('POST', `/v1/requests/${q.id}/resolve`, cmd ? { cmd, deny: [] } : { deny: all.filter((x) => x.q.id === q.id && set.has(x.i.domain)).map((x) => x.i.domain) });
       }
     };
-    const releaseOne = (x) => act(async () => {
-      const items = [{ domain: x.i.domain, ...ttl }];
+    const releaseOne = (x, short) => act(async () => {
+      const dom = short ? await chooseDomain(x.i.domain) : x.i.domain;
+      if (!dom) return;
+      const items = [{ domain: dom, ...ttl }];
       const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
       if (!sent) return;
       await resolveAll([x.i.domain], sent.id);
@@ -866,7 +868,9 @@ async function domainsView(tab) {
         return h('div', { class: 'li', style: 'flex-wrap:wrap' },
           h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.i.domain),
             h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${srcLabel(b)}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
-          h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'), h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
+          h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'),
+            parentsOf(x.i.domain).length ? h('button', { class: 'btn', type: 'button', onclick: releaseOne(x, true) }, 'Encurtar') : null,
+            h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
       })) : empty('Nenhuma solicitação de liberação.'),
       otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
         h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
@@ -928,8 +932,15 @@ async function domainsView(tab) {
         pickable(x.domain) ? checkFor(x.domain) : h('span', { class: 'chk' }),
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
           h('div', { class: 'muted' }, `${nameOf(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${srcLabel(x)}`, ' ', flags(x))),
-        covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : x.src === 'veto' ? null : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
-          batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) : empty('Nada bloqueado com esses filtros.')];
+        covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : x.src === 'veto' ? null : h('div', { class: 'acts' },
+          parentsOf(x.domain).length ? h('button', { class: 'btn', type: 'button', onclick: act(async () => {
+            const dom = await chooseDomain(x.domain);
+            if (!dom) return;
+            const its = [{ domain: dom, ...(blkTtl ? { ttl_s: blkTtl } : {}) }];
+            if (await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its))) route();
+          }) }, 'Encurtar') : null,
+          h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
+          batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar'))))) : empty('Nada bloqueado com esses filtros.')];
   } else if (tab === 'liberados' && !admin) {
     const myId = me.guardian.id;
     const by = r.allow_by || {};

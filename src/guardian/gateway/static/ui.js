@@ -141,3 +141,43 @@ export function sheet({ title, rows = [], effect, effectKind = 'ok', note, noteK
     ok.focus();
   });
 }
+
+/** Domínios pais que dá para liberar no lugar do informado (a.b.exemplo.com -> b.exemplo.com, exemplo.com). Nunca só o sufixo (com, com.br). */
+export function parentsOf(domain) {
+  const l = domain.split('.');
+  const suffix2 = l.length >= 3 && l[l.length - 1].length === 2 && ['com', 'net', 'org', 'gov', 'edu', 'co', 'ac', 'mil'].includes(l[l.length - 2]);
+  const min = suffix2 ? 3 : 2;
+  const out = [];
+  for (let i = 1; l.length - i >= min; i++) out.push(l.slice(i).join('.'));
+  return out;
+}
+
+/** Folha para escolher até onde encurtar o domínio antes de liberar. Resolve o domínio escolhido, ou null se cancelar. */
+export function chooseDomain(domain) {
+  return new Promise((resolve) => {
+    const opts = [domain, ...parentsOf(domain)];
+    let pick = domain, overlay;
+    const prev = document.activeElement;
+    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    const close = (v) => {
+      if (!overlay.isConnected) return;
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+      if (prev && prev.focus) prev.focus();
+      resolve(v);
+    };
+    const btns = opts.map((d, i) => h('button', { type: 'button', class: 'mono', 'aria-pressed': String(i === 0),
+      onclick: () => { pick = d; btns.forEach((b, j) => b.setAttribute('aria-pressed', String(j === i))); } }, d));
+    overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(null); } },
+      h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Encurtar domínio' },
+        h('div', { class: 'grab' }),
+        h('h2', {}, 'Liberar qual nível?'),
+        h('div', { class: 'note warn' }, 'Liberar o domínio pai libera também todos os subdomínios dele. Quanto mais curto, mais abrangente.'),
+        h('div', { class: 'durs', style: 'flex-direction:column;align-items:stretch', role: 'group', 'aria-label': 'Nível do domínio' }, btns),
+        h('div', { class: 'row gap' }, h('button', { class: 'btn', type: 'button', onclick: () => close(null) }, 'Cancelar'),
+          h('button', { class: 'btn pri', type: 'button', onclick: () => close(pick) }, 'Continuar'))));
+    document.body.append(overlay);
+    document.addEventListener('keydown', onKey);
+    btns[0].focus();
+  });
+}
