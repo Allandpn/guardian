@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TE
 CREATE TABLE IF NOT EXISTS blocked(dev TEXT NOT NULL, domain TEXT NOT NULL, src TEXT NOT NULL, list TEXT NOT NULL DEFAULT '',
   cname INTEGER NOT NULL DEFAULT 0, count INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(dev, domain));
 CREATE INDEX IF NOT EXISTS blocked_last ON blocked(dev, last);
+CREATE TABLE IF NOT EXISTS net_clients(id TEXT PRIMARY KEY, name TEXT NOT NULL, ip TEXT NOT NULL, seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_asks(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
@@ -226,6 +227,7 @@ class Store:
         cutoff = int(time.time()) - DELIVERED_KEEP_S
         self.x("DELETE FROM commands WHERE created<?", (cutoff,))
         self.x("DELETE FROM blocked WHERE last<?", (int(time.time()) - BLOCKED_KEEP_S,))
+        self.x("DELETE FROM net_clients WHERE id NOT IN (SELECT dev FROM blocked)")
         self.x("DELETE FROM requests WHERE status<>'open' AND ts<?", (cutoff,))
         self.x("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
         self.x("DELETE FROM app_refusals WHERE ts<?", (int(time.time()) - 90 * 24 * 3600,))
@@ -368,6 +370,14 @@ class Store:
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
+
+    def put_net_client(self, id_: str, name: str, ip: str) -> None:
+        """Cliente da rede que não é aparelho pareado: o Pi-hole o vê (nome e IP), mas ele não tem passkey nem pede liberação."""
+        self.x("INSERT INTO net_clients(id,name,ip,seen) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, ip=excluded.ip, seen=excluded.seen",
+               (id_, name, ip, int(time.time())))
+
+    def net_clients(self):
+        return self.q("SELECT id, name, ip FROM net_clients ORDER BY name")
 
     def drop_blocked(self, dev: str, domains: list[str]) -> None:
         """Apaga bloqueios guardados (o executor vetou estes domínios: não podem ser liberados, então não viram pedido)."""

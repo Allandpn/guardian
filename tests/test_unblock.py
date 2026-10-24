@@ -47,7 +47,7 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(st, 200, r)
         return {i["domain"]: i for i in r["items"]}
 
-    def test_01_executor_reports_only_blocked_of_paired_clients(self):
+    def test_01_executor_reports_blocked_of_paired_and_network_clients(self):
         t = NOW - 60
         self.fake.queries += [
             q(t, "cdn.exemplo.com", "REGEX"), q(t + 1, "cdn.exemplo.com", "DENYLIST"),
@@ -59,7 +59,7 @@ class UnblockFlow(unittest.TestCase):
             q(t + 7, "*.invalido", "REGEX"),
             q(t + 8, "canario.example", "DENYLIST"),  # o canário nunca entra na lista de bloqueios
         ]
-        self.assertEqual(self.ex.collect_blocks(), 4)
+        self.assertEqual(self.ex.collect_blocks(), 5)  # 4 do aparelho pareado e 1 do cliente da rede (192.168.1.5)
         got = self.blocked()
         self.assertEqual(set(got), {"cdn.exemplo.com", "ads.tracker.net", "cdn.alvo.com", "ipv6.exemplo.org"})
         self.assertEqual(got["cdn.exemplo.com"]["count"], 2)
@@ -67,7 +67,8 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(got["ads.tracker.net"]["src"], "list")
         self.assertEqual(got["ads.tracker.net"]["list"], "listas.example")
         self.assertTrue(got["cdn.alvo.com"]["cname"])
-        self.assertNotIn("de-outro.com", got)
+        self.assertNotIn("de-outro.com", got)  # o aparelho não vê o do cliente da rede
+        self.assertIn("de-outro.com", {r["domain"] for r in self.env.store.blocked_list("net-192-168-1-5")})
         self.assertNotIn("canario.example", got)
         self.assertEqual(set(self.blocked("own")), {"cdn.exemplo.com", "cdn.alvo.com", "ipv6.exemplo.org"})
 
@@ -224,7 +225,7 @@ class UnblockFlow(unittest.TestCase):
         self.env.store.x("UPDATE blocked SET last=? WHERE dev=?", (now - 90000, self.dev))
         self.assertEqual(self.blocked(), {})  # tudo com mais de 24 h some da consulta
         self.env.store.purge()
-        self.assertEqual(self.env.store.one("SELECT COUNT(*) c FROM blocked")["c"], 0)
+        self.assertEqual(self.env.store.one("SELECT COUNT(*) c FROM blocked WHERE dev=?", (self.dev,))["c"], 0)
 
 
 if __name__ == "__main__":

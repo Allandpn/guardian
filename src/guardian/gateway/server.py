@@ -32,6 +32,7 @@ APP_KEYS = {"pendingApps", "approvedApps"}
 REQUEST_KINDS = {"domain", "app", "other", "unblock", "install", "command"}
 ADMIN_REQUEST_KINDS = {"install": cmds.T_WIN_INSTALL, "command": cmds.T_WIN_RUN}  # pedido do computador -> comando que o aprova
 ADMIN_REQUESTS_MAX_PER_DEV = 10
+NET_ID = r"net-[0-9a-f]{1,4}(?:-[0-9a-f]{1,4}){3,7}"  # cliente da rede sem pareamento (IP com hífens)
 BLOCK_SOURCES = {"own", "list", "veto"}  # own: nada liberou (dá para pedir) · list: lista do Pi-hole · veto: site vetado pelo mestre
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -740,14 +741,15 @@ class Gateway:
         self.guardian(req)
         q = parse_qs(req.query)
         dev, src = q.get("dev", [None])[0], q.get("src", [None])[0]
-        if dev is not None and not re.fullmatch(r"[a-z2-7]{20}", dev):
+        if dev is not None and not (re.fullmatch(r"[a-z2-7]{20}", dev) or re.fullmatch(NET_ID, dev)):
             raise HttpError(400, "aparelho inválido")
         if src is not None and src not in BLOCK_SOURCES:
             raise HttpError(400, "origem inválida")
         canaries: dict[str, str] = {}
         rows = [r for r in (self.store.blocked_list(dev, src) if dev else self.store.blocked_list_each(src))
                 if r["domain"] != canaries.setdefault(r["dev"], self._canary(r["dev"]))]
-        return 200, {"items": [self._blocked_row(r) for r in rows], "now": int(time.time())}, {}
+        return 200, {"items": [self._blocked_row(r) for r in rows], "net": [dict(r) for r in self.store.net_clients()],
+                     "now": int(time.time())}, {}
 
     @staticmethod
     def _blocked_row(r) -> dict:
@@ -984,9 +986,15 @@ class Gateway:
             raise HttpError(403, "só o executor envia bloqueios")
         d = req.json()
         target = d.get("dev")
-        trow = self.store.device(target) if isinstance(target, str) and re.fullmatch(r"[a-z2-7]{20}", target) else None
-        if not trow or trow["kind"] != "device":
-            raise HttpError(400, "aparelho de destino inválido")
+        if isinstance(target, str) and re.fullmatch(NET_ID, target):  # cliente da rede sem pareamento: só aparece, não pede liberação
+            name, ip = d.get("name"), d.get("ip")
+            if not (isinstance(name, str) and name.strip() and isinstance(ip, str) and len(ip) <= 45):
+                raise HttpError(400, "cliente da rede sem nome")
+            self.store.put_net_client(target, name.strip()[:60], ip)
+        else:
+            trow = self.store.device(target) if isinstance(target, str) and re.fullmatch(r"[a-z2-7]{20}", target) else None
+            if not trow or trow["kind"] != "device":
+                raise HttpError(400, "aparelho de destino inválido")
         raw = d.get("items")
         if not isinstance(raw, list) or len(raw) > 200:
             raise HttpError(400, "lista inválida")

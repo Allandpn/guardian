@@ -1,4 +1,5 @@
 """Laço do executor: puxa comandos, verifica, aplica no Pi-hole, expira liberações temporárias e se reporta."""
+import ipaddress
 import json
 import os
 import sys
@@ -21,6 +22,8 @@ PARENTS_BATCH_MAX = 80
 BLOCKS_EVERY_S = 10
 BLOCKS_CHUNK = 150
 BLOCKS_BACKFILL_S = 3600
+NET_PAGES = 20                    # até 20 mil consultas por leitura dos clientes que não são aparelhos pareados
+NET_SKIP = {"127.0.0.1", "::1"}   # o próprio Pi-hole
 OWN_STATUSES = {"REGEX", "DENYLIST", "REGEX_CNAME", "DENYLIST_CNAME"}
 LIST_STATUSES = {"GRAVITY", "GRAVITY_CNAME"}
 
@@ -35,6 +38,15 @@ class ExecConfig:
     clients: dict | None = None       # {IP do aparelho na Tailscale: id do aparelho protegido}
     allow_mode: str = "exact"         # "regex": grava domínio + subdomínios como regex no Pi-hole (o guardião só vê o domínio)
     gravity_db: str | None = None     # gravity.db do Pi-hole: o que está nas listas dele (conteúdo adulto) não pode ser liberado; None desliga
+
+
+def net_id(ip: str) -> str | None:
+    """Identificador de um cliente da rede que não é aparelho pareado ('net-192-168-2-90'). None se não for um IP."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    return "net-" + (a.exploded if a.version == 6 else str(a)).replace(".", "-").replace(":", "-")
 
 
 def _fmt_ttl(s: int) -> str:
@@ -356,47 +368,69 @@ class Executor:
             print("clientes:", e, file=sys.stderr)  # sem o gateway, vale o último mapa bom
         return {**getattr(self, "_auto_clients", {}), **(self.cfg.clients or {})}
 
+    def _blocked_entry(self, per: dict, q: dict, canary: str | None) -> float | None:
+        """Soma um bloqueio ao mapa do aparelho. Devolve o horário dele (para avançar o ponto de leitura) ou None se não é bloqueio."""
+        status, t = q.get("status"), q.get("time")
+        kind = "own" if status in OWN_STATUSES else "list" if status in LIST_STATUSES else None
+        if kind is None or not isinstance(t, (int, float)):
+            return None
+        cname = str(status).endswith("_CNAME")
+        raw = q.get("cname") if cname and q.get("cname") else q.get("domain")
+        try:
+            d = domains.normalize(raw)
+        except ValueError:
+            return float(t)
+        if d == canary:  # o canário é o teste de saúde do aparelho: bloqueado de propósito, não é pedido de ninguém
+            return float(t)
+        # Tudo que foi bloqueado aparece, com o motivo: "own" (nada liberou; dá para pedir), "list" (lista; só para ver)
+        # e "veto" (site vetado pelo mestre; só para ver). Só "own" vira pedido de liberação.
+        parent = self.veto.master_parent(d)
+        src = "veto" if parent else kind
+        e = per.setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t), "src": src, "list": "", "cname": cname})
+        e["count"] += 1
+        e["first"], e["last"] = min(e["first"], int(t)), max(e["last"], int(t))
+        if src == "veto":
+            e["list"] = parent
+        elif src == "list" and not e["list"]:
+            e["list"] = self._list_name(q.get("list_id"))
+        return float(t)
+
     def collect_blocks(self) -> int:
-        """Lê no Pi-hole o que foi bloqueado para os aparelhos pareados e envia ao gateway. Devolve quantos domínios."""
+        """Lê no Pi-hole o que foi bloqueado e envia ao gateway: dos aparelhos pareados (com pedido de liberação) e dos outros
+        clientes da rede (só para ver). Devolve quantos domínios."""
         clients = self.known_clients()
-        if not clients:
-            return 0
         since = self.state.data.get("blocked_since") or self.now() - BLOCKS_BACKFILL_S
         newest = since
         canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
         per_dev: dict[str, dict] = {}
         for ip, dev in clients.items():
             for q in self.pihole.queries(since, ip):
-                status, t = q.get("status"), q.get("time")
-                kind = "own" if status in OWN_STATUSES else "list" if status in LIST_STATUSES else None
-                if kind is None or not isinstance(t, (int, float)):
-                    continue
-                newest = max(newest, float(t))
-                cname = str(status).endswith("_CNAME")
-                raw = q.get("cname") if cname and q.get("cname") else q.get("domain")
-                try:
-                    d = domains.normalize(raw)
-                except ValueError:
-                    continue
-                if d == canary:  # o canário é o teste de saúde do aparelho: bloqueado de propósito, não é pedido de ninguém
-                    continue
-                # Tudo que foi bloqueado aparece, com o motivo: "own" (nada liberou; dá para pedir), "list" (lista; só para ver)
-                # e "veto" (site vetado pelo mestre; só para ver). Só "own" vira pedido de liberação.
-                parent = self.veto.master_parent(d)
-                src = "veto" if parent else kind
-                e = per_dev.setdefault(dev, {}).setdefault(d, {"domain": d, "count": 0, "first": int(t), "last": int(t),
-                                                               "src": src, "list": "", "cname": cname})
-                e["count"] += 1
-                e["first"], e["last"] = min(e["first"], int(t)), max(e["last"], int(t))
-                if src == "veto":
-                    e["list"] = parent
-                elif src == "list" and not e["list"]:
-                    e["list"] = self._list_name(q.get("list_id"))
+                t = self._blocked_entry(per_dev.setdefault(dev, {}), q, canary)
+                if t is not None:
+                    newest = max(newest, t)
+        net: dict[str, dict] = {}  # id de rede -> {"name", "ip", "items"}
+        for q in self.pihole.queries(since, None, max_pages=NET_PAGES):
+            c = q.get("client") if isinstance(q.get("client"), dict) else {}
+            ip = c.get("ip")
+            if not isinstance(ip, str) or ip in clients or ip in NET_SKIP:
+                continue
+            nid = net_id(ip)
+            if nid is None:
+                continue
+            t = self._blocked_entry(net.setdefault(nid, {"name": str(c.get("name") or ip)[:60], "ip": ip, "items": {}})["items"], q, None)
+            if t is not None:
+                newest = max(newest, t)
         total = 0
         for dev in sorted(per_dev):
             items = sorted(per_dev[dev].values(), key=lambda x: x["last"], reverse=True)
             for i in range(0, len(items), BLOCKS_CHUNK):
                 self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": dev, "items": items[i:i + BLOCKS_CHUNK]})
+            total += len(items)
+        for nid in sorted(net):
+            n = net[nid]
+            items = sorted(n["items"].values(), key=lambda x: x["last"], reverse=True)
+            for i in range(0, len(items), BLOCKS_CHUNK):
+                self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": nid, "name": n["name"], "ip": n["ip"], "items": items[i:i + BLOCKS_CHUNK]})
             total += len(items)
         if newest > since:
             self.state.data["blocked_since"] = newest + 0.000001

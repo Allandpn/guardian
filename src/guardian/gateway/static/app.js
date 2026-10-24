@@ -853,14 +853,20 @@ async function domainsView(tab) {
   } else if (tab === 'bloqueios') {
     const qs = new URLSearchParams();
     if (blkSrc) qs.set('src', blkSrc);
-    const everyone = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items.filter((x) => !domGuardian || coverBy(x.domain) === domGuardian);  // com guardião escolhido: só o que ele liberou
+    const resp = await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''));
+    const everyone = resp.items.filter((x) => !domGuardian || coverBy(x.domain) === domGuardian);  // com guardião escolhido: só o que ele liberou
+    const netDevs = resp.net || [];  // clientes da rede que o Pi-hole vê e não são aparelhos protegidos: só para ver
+    const nameOf = (id) => (netDevs.find((x) => x.id === id) || {}).name || devName(id);
     const perDev = new Map();  // quantos bloqueios cada aparelho tem com os filtros de origem e de guardião (o número ao lado do nome)
     everyone.forEach((x) => perDev.set(x.dev, (perDev.get(x.dev) || 0) + 1));
-    if (blkDev && !protectedDevs.some((x) => x.id === blkDev)) blkDev = '';
+    if (blkDev && !protectedDevs.some((x) => x.id === blkDev) && !netDevs.some((x) => x.id === blkDev)) blkDev = '';
     const items = blkDev ? everyone.filter((x) => x.dev === blkDev) : everyone;
+    const netPills = netDevs.filter((x) => perDev.get(x.id)).sort((a, b) => perDev.get(b.id) - perDev.get(a.id));  // os sem bloqueio aqui não entram na lista
     const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
     body = [h('div', { class: 'sec' }, 'Aparelho'),
       pillGroup('Filtrar por aparelho', [['', `Todos · ${everyone.length}`], ...protectedDevs.map((x) => [x.id, `${x.name} · ${perDev.get(x.id) || 0}`])], blkDev, (k) => { blkDev = k; route(); }),
+      netPills.length ? [h('div', { class: 'sec' }, 'Outros da rede'),
+        pillGroup('Filtrar por cliente da rede', netPills.map((x) => [x.id, `${x.name === x.ip ? x.ip : `${x.name} (${x.ip})`} · ${perDev.get(x.id)}`]), blkDev, (k) => { blkDev = k; route(); })] : null,
       h('div', { class: 'sec' }, 'Quem bloqueou'),
       pillGroup('Filtrar por origem', [['own', 'Regras próprias'], ['list', 'Listas'], ['veto', 'Vetados'], ['', 'Tudo']], blkSrc, (k) => { blkSrc = k; route(); }),
       guardianPills,
@@ -870,7 +876,7 @@ async function domainsView(tab) {
       h('div', { class: 'sec' }, 'Últimas 24 horas'),
       items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain),
-          h('div', { class: 'muted' }, `${devName(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${srcLabel(x)}`, ' ', flags(x))),
+          h('div', { class: 'muted' }, `${nameOf(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)} · ${srcLabel(x)}`, ' ', flags(x))),
         covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : x.src === 'veto' ? null : h('button', { class: 'btn', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }] },
           batchSpec([{ domain: x.domain, ttl_s: blkTtl }])) }, 'Liberar')))) : empty('Nada bloqueado com esses filtros.')];
   } else if (tab === 'liberados' && !admin) {

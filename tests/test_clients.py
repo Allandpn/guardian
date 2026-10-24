@@ -66,8 +66,28 @@ class AutoClients(unittest.TestCase):
         self.report(self.k1, self.d1, ["100.64.0.7", "fd7a:115c:a1e0::7", "8.8.8.8"])
         self.assertEqual(self.ex.known_clients(), {"100.64.0.7": self.d1, "fd7a:115c:a1e0::7": self.d1})
         self.fake.queries += [self.q(NOW - 30, "auto.exemplo.com", "100.64.0.7"), self.q(NOW - 29, "outro.com", "100.64.0.99")]
-        self.assertEqual(self.ex.collect_blocks(), 1)
-        self.assertEqual(self.blocked(self.k1, self.d1), {"auto.exemplo.com"})
+        self.assertEqual(self.ex.collect_blocks(), 2)  # o do aparelho pareado e o do cliente da rede
+        self.assertEqual(self.blocked(self.k1, self.d1), {"auto.exemplo.com"})  # o aparelho não vê o do vizinho
+
+    def test_02b_unpaired_network_client_shows_up_for_the_guardian_only(self):
+        self.fake.queries += [{"time": NOW - 20, "domain": "tv.exemplo.com", "status": "REGEX", "client": {"ip": "192.168.2.51", "name": "tv-sala"}},
+                              {"time": NOW - 19, "domain": "tv.exemplo.com", "status": "GRAVITY", "client": {"ip": "192.168.2.51", "name": "tv-sala"}, "list_id": -7},
+                              {"time": NOW - 18, "domain": "eco.exemplo.com", "status": "REGEX", "client": {"ip": "127.0.0.1"}},
+                              {"time": NOW - 17, "domain": "ok.exemplo.com", "status": "FORWARDED", "client": {"ip": "192.168.2.52"}}]
+        self.ex.collect_blocks()
+        st, r, _ = self.c.call("GET", "/v1/blocked")
+        self.assertEqual(st, 200, r)
+        self.assertEqual([(n["id"], n["name"], n["ip"]) for n in r["net"] if n["ip"] == "192.168.2.51"], [("net-192-168-2-51", "tv-sala", "192.168.2.51")])
+        self.assertNotIn("127.0.0.1", [n["ip"] for n in r["net"]])   # o próprio Pi-hole não conta
+        self.assertNotIn("192.168.2.52", [n["ip"] for n in r["net"]])  # sem bloqueio, não aparece
+        mine = [i for i in r["items"] if i["dev"] == "net-192-168-2-51"]
+        self.assertEqual({i["domain"] for i in mine}, {"tv.exemplo.com"})
+        self.assertEqual(self.c.call("GET", "/v1/blocked?dev=net-192-168-2-51")[1]["items"][0]["domain"], "tv.exemplo.com")
+        self.assertEqual(self.c.call("GET", "/v1/blocked?dev=net-zz")[0], 400)
+        # nenhum aparelho pareado enxerga o cliente da rede
+        self.assertNotIn("tv.exemplo.com", self.blocked(self.k1, self.d1))
+        st, _, _ = self.env.client().signed(self.k1, "POST", f"/v1/devices/{self.d1}/unblock", {"domains": ["tv.exemplo.com"]})
+        self.assertNotEqual(st, 200)
 
     def test_03_conflicting_claim_is_dropped_for_both(self):
         self.report(self.k2, self.d2, ["100.64.0.7", "100.64.0.8"])

@@ -103,11 +103,14 @@ class Pihole:
         return [{"domain": str(i["domain"]), "comment": str(i.get("comment") or "")}
                 for i in items if isinstance(i, dict) and i.get("domain")]
 
-    def queries(self, since: float, client_ip: str, length: int = 1000, max_pages: int = 5) -> list[dict]:
-        """Consultas de um cliente desde `since` (timestamp Unix). Filtra o status no chamador."""
+    def queries(self, since: float, client_ip: str | None = None, length: int = 1000, max_pages: int = 5) -> list[dict]:
+        """Consultas desde `since` (timestamp Unix), de um cliente ou, sem `client_ip`, de todos. Filtra o status no chamador."""
         out: list[dict] = []
         for page in range(max_pages):
-            qs = urllib.parse.urlencode({"from": f"{since:.6f}", "client_ip": client_ip, "length": length, "start": page * length})
+            params = {"from": f"{since:.6f}", "length": length, "start": page * length}
+            if client_ip:
+                params["client_ip"] = client_ip
+            qs = urllib.parse.urlencode(params)
             st, body = self._call("GET", "/api/queries?" + qs)
             if st != 200:
                 raise PiholeError(f"consultas falharam ({st})")
