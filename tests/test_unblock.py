@@ -65,7 +65,7 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(got["cdn.exemplo.com"]["count"], 2)
         self.assertEqual(got["cdn.exemplo.com"]["src"], "own")
         self.assertEqual(got["ads.tracker.net"]["src"], "list")
-        self.assertEqual(got["ads.tracker.net"]["list"], "https://listas.example/ads.txt")
+        self.assertEqual(got["ads.tracker.net"]["list"], "listas.example")
         self.assertTrue(got["cdn.alvo.com"]["cname"])
         self.assertNotIn("de-outro.com", got)
         self.assertNotIn("canario.example", got)

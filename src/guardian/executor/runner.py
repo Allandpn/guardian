@@ -334,13 +334,17 @@ class Executor:
 
     # --- bloqueios ---------------------------------------------------------------
     def _list_name(self, list_id) -> str:
+        """Nome da lista que bloqueou. O Pi-hole grava o id com sinal negativo nas consultas (-25 = lista 25).
+        Lista que não existe mais (o dono a tirou) vira "lista removida (#N)"; sem id nenhum, ""."""
+        if not isinstance(list_id, int) or isinstance(list_id, bool) or list_id == 0:
+            return ""
         if self._lists is None or self.now() - self._lists_ts > 600:
             try:
                 self._lists = self.pihole.list_names()
             except PiholeError:
                 self._lists = self._lists or {}
             self._lists_ts = self.now()
-        return self._lists.get(list_id, "") if isinstance(list_id, int) else ""
+        return self._lists.get(abs(list_id)) or f"lista removida (#{abs(list_id)})"
 
     def known_clients(self) -> dict:
         """IP -> aparelho: os que os aparelhos declaram no relatório (via gateway) e, por cima, o CLIENTS escrito à mão."""

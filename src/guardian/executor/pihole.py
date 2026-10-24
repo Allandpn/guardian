@@ -7,6 +7,19 @@ import urllib.parse
 import urllib.request
 
 
+
+def list_label(address: str, comment: str = "") -> str:
+    """Nome curto da lista para o celular e o site: o comentário dela, ou dono · projeto de um raw.githubusercontent.com, ou o host.
+    Sem barra: o app corta no primeiro '/' quando o texto parece um endereço."""
+    if comment.strip():
+        return comment.strip()[:80]
+    u = urllib.parse.urlparse(address)
+    parts = [x for x in u.path.split("/") if x]
+    if u.hostname == "raw.githubusercontent.com" and len(parts) >= 2:
+        return f"{parts[0]} · {parts[1]}"[:80]
+    return (u.hostname or address)[:80]
+
+
 class PiholeError(Exception):
     pass
 
@@ -105,12 +118,12 @@ class Pihole:
         return out
 
     def list_names(self) -> dict[int, str]:
-        """{id da lista de anúncios: endereço}. Melhor esforço: vazio se a rota não existir."""
+        """{id da lista de anúncios: nome legível}. Melhor esforço: vazio se a rota não existir."""
         st, body = self._call("GET", "/api/lists")
         if st != 200 or not isinstance(body, dict):
             return {}
-        return {int(i["id"]): str(i.get("address", ""))[:120] for i in body.get("lists", [])
-                if isinstance(i, dict) and isinstance(i.get("id"), int)}
+        return {int(i["id"]): list_label(str(i.get("address", "")), str(i.get("comment") or ""))
+                for i in body.get("lists", []) if isinstance(i, dict) and isinstance(i.get("id"), int)}
 
     def put_domain(self, list_: str, domain: str, comment: str = "", kind: str = "exact") -> None:
         st, body = self._call("PUT", f"{self._p(list_, kind)}/{urllib.parse.quote(domain, safe='')}",
