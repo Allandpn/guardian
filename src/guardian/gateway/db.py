@@ -414,6 +414,14 @@ class Store:
             args.append(src)
         return self.q(sql + " ORDER BY last DESC LIMIT ?", args + [limit])
 
+    def blocked_list_each(self, src: str | None = None, per_dev: int = 300):
+        """Os bloqueios mais recentes de CADA aparelho (até per_dev), do mais novo para o mais antigo. Um aparelho muito barulhento
+        não empurra os outros para fora do limite."""
+        sql = ("SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY dev ORDER BY last DESC) rn FROM blocked WHERE last>=?"
+               + (" AND src=?" if src else "") + ") WHERE rn<=? ORDER BY last DESC")
+        args = [int(time.time()) - BLOCKED_KEEP_S] + ([src] if src else []) + [per_dev]
+        return self.q(sql, args)
+
     def blocked_has(self, dev: str, domain: str) -> bool:
         return self.one("SELECT 1 FROM blocked WHERE dev=? AND domain=? AND last>=?",
                         (dev, domain, int(time.time()) - BLOCKED_KEEP_S)) is not None

@@ -745,7 +745,8 @@ class Gateway:
         if src is not None and src not in BLOCK_SOURCES:
             raise HttpError(400, "origem inválida")
         canaries: dict[str, str] = {}
-        rows = [r for r in self.store.blocked_list(dev, src) if r["domain"] != canaries.setdefault(r["dev"], self._canary(r["dev"]))]
+        rows = [r for r in (self.store.blocked_list(dev, src) if dev else self.store.blocked_list_each(src))
+                if r["domain"] != canaries.setdefault(r["dev"], self._canary(r["dev"]))]
         return 200, {"items": [self._blocked_row(r) for r in rows], "now": int(time.time())}, {}
 
     @staticmethod
@@ -1047,7 +1048,7 @@ class Gateway:
         devs = [d for d in self.store.devices() if d["kind"] == "device"]
         names = {d["id"]: d["name"] for d in devs}
         canaries = {d["id"]: self._canary(d["id"]) for d in devs}
-        items = [{**self._blocked_row(r), "name": names[r["dev"]]} for r in self.store.blocked_list(None, src, 600)
+        items = [{**self._blocked_row(r), "name": names[r["dev"]]} for r in self.store.blocked_list_each(src)
                  if r["dev"] in names and r["domain"] != canaries[r["dev"]]]
         return 200, {"items": items, "devices": [{"id": d["id"], "name": d["name"]} for d in devs], "now": int(time.time())}, {}
 
