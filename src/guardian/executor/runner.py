@@ -202,7 +202,7 @@ class Executor:
         for e in self.pihole.list_entries(list_, kind="regex"):
             d = domains.from_regex(e["domain"])
             if d:
-                out.setdefault(d, {"domain": d, "comment": e["comment"], "rx": True})  # rx: a regra cobre também os subdomínios
+                out.setdefault(d, {"domain": d, "comment": e["comment"], "at": e.get("at", 0), "rx": True})  # rx: a regra cobre também os subdomínios
         return list(out.values())
 
     @staticmethod
@@ -329,9 +329,13 @@ class Executor:
             allow, deny = self._entries("allow"), self._entries("deny")
             # As entradas do Guardian vêm primeiro: com centenas de entradas suas no Pi-hole, o corte alfabético escondia as liberações dele.
             for name, entries in (("allow", allow), ("deny", deny)):
-                mine = sorted(e["domain"] for e in entries if e["comment"].startswith("guardian:"))
+                # As mais recentes primeiro (a lista é cortada em LIST_CAP); `_at` é quando a entrada foi criada no Pi-hole.
+                mine = [e for e in sorted(entries, key=lambda e: (-e.get("at", 0), e["domain"])) if e["comment"].startswith("guardian:")]
                 others = sorted(e["domain"] for e in entries if not e["comment"].startswith("guardian:"))
-                r[name] = (mine + others)[:LIST_CAP]
+                shown = [e["domain"] for e in mine] + others
+                r[name] = shown[:LIST_CAP]
+                kept = set(r[name])
+                r[name + "_at"] = {e["domain"]: e["at"] for e in entries if e.get("at") and e["domain"] in kept}
                 r[name + "_total"] = len(entries)
                 r[name + "_by"] = {e["domain"]: e["comment"][9:] for e in entries if e["comment"].startswith("guardian:")}
             r["pihole_ok"] = True

@@ -689,6 +689,26 @@ async function appsView(tab) {
     h('div', { class: 'muted' }, d.name, extra ? ` · ${extra}` : ''));
   const empty = (text) => h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, text));
 
+  const atOf = (d) => (r.allow_at || {})[d] || 0;  // quando a liberação foi criada no Pi-hole (0 = sem data)
+  // Lista de liberados: mais recentes primeiro, com data e hora, e uma pesquisa por domínio (também acha o pai que cobre o domínio digitado).
+  const allowCard = (list, emptyText, withBy) => {
+    const sorted = [...list].sort((a, b) => atOf(b) - atOf(a) || a.localeCompare(b));
+    const by = r.allow_by || {};
+    const box = h('div');
+    const draw = () => {
+      const q = search.value.trim().toLowerCase().replace(/^\.+/, '');
+      const shown = q ? sorted.filter((x) => x.includes(q) || q.endsWith(`.${x}`)) : sorted;
+      box.replaceChildren(shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => h('div', { class: 'li' },
+        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
+          h('div', { class: 'muted' }, atOf(x) ? `${fmtWhen(atOf(x))} · ${ago(atOf(x), now)}` : 'sem data', withBy && by[x] ? ` · liberado por ${gname(by[x])}` : '', ' ',
+            temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
+        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) :
+        empty(q ? 'Nenhum liberado combina com a pesquisa.' : emptyText));
+    };
+    const search = h('input', { class: 'inp', type: 'search', placeholder: 'Pesquisar domínio liberado', 'aria-label': 'Pesquisar domínio liberado', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', oninput: draw });
+    draw();
+    return [h('div', { class: 'pad', style: 'margin:12px 0' }, search), box];
+  };
   let body;
   if (tab === 'solicitacoes') {
     const rows = shown.flatMap((d) => pendingOf(d).map((a) => ({ d, a })));
@@ -914,11 +934,7 @@ async function domainsView(tab) {
     const myId = me.guardian.id;
     const by = r.allow_by || {};
     const mine = (r.allow || []).filter((d) => by[d] === myId);
-    body = [h('div', { class: 'sec' }, `Liberei · ${mine.length}`),
-      mine.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, mine.map((x) => h('div', { class: 'li' },
-        h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
-          h('div', { class: 'muted' }, temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
-        h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) : empty('Você ainda não liberou nada.')];
+    body = [h('div', { class: 'sec' }, `Liberei · ${mine.length}`), allowCard(mine, 'Você ainda não liberou nada.', false)];
   } else if (tab === 'recusados') {
     const dec = await api('GET', '/v1/my/decisions');
     const openDomains = new Set(unb.flatMap((q) => q.items.filter((i) => i.state === 'open').map((i) => i.domain)));
@@ -976,7 +992,7 @@ async function domainsView(tab) {
     const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
     const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
     const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
-    body = [guardianPills, listCard('allow', mine),
+    body = [guardianPills, allowCard(mine, 'Vazio.', true),
       others ? h('p', { class: 'muted', style: 'margin:8px 14px 0' }, `Mais ${others} entrada${others > 1 ? 's' : ''} criada${others > 1 ? 's' : ''} direto no Pi-hole. Elas não aparecem nem são alteradas aqui.`) : null,
       // Corrigir um bloqueio indevido (inclusive de lista): digitar o domínio e liberar, sem esperar pedido. Fica à vista, não escondido.
       h('div', { class: 'sec' }, 'Liberar ou bloquear um domínio à mão'),

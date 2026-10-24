@@ -170,6 +170,9 @@ class ExecutorEndToEnd(unittest.TestCase):
         self.assertTrue(d["report"]["pihole_ok"])
         self.assertIn("bloqueado.example", d["report"]["deny"])
         self.assertIn(self.gid, d["report"]["trust"])
+        at = d["report"]["allow_at"]  # quando cada liberação foi criada no Pi-hole (a tela ordena e mostra por isto)
+        self.assertTrue(all(isinstance(v, int) and v > 0 for v in at.values()))
+        self.assertIn("deny_at", d["report"])
 
     def test_09_pihole_down_is_reported_not_crashing(self):
         self.fake.down = True

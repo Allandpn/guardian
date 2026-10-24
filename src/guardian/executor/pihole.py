@@ -100,7 +100,8 @@ class Pihole:
         if st != 200:
             raise PiholeError(f"listar falhou ({st})")
         items = body.get("domains", []) if isinstance(body, dict) else body
-        return [{"domain": str(i["domain"]), "comment": str(i.get("comment") or "")}
+        return [{"domain": str(i["domain"]), "comment": str(i.get("comment") or ""),
+                 "at": i["date_added"] if isinstance(i.get("date_added"), int) and not isinstance(i.get("date_added"), bool) else 0}
                 for i in items if isinstance(i, dict) and i.get("domain")]
 
     def queries(self, since: float, client_ip: str | None = None, length: int = 1000, max_pages: int = 5) -> list[dict]:

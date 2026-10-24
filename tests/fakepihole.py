@@ -1,5 +1,6 @@
 """Pi-hole v6 de mentira (só o que o executor usa), para testar sem Pi-hole de verdade."""
 import json
+import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -14,6 +15,7 @@ class FakePihole:
         self.sessions_valid = True
         self.down = False
         self.logins = 0
+        self.added = {}     # (lista, tipo, domínio) -> date_added
         self.queries = []   # [{"time","domain","status","client":{"ip"},"cname"?,"list_id"?}]
         self.lists_api = {"lists": [{"id": 7, "address": "https://listas.example/ads.txt"}]}
         fake = self
@@ -65,11 +67,13 @@ class FakePihole:
                 if len(parts) >= 5 and parts[2] == "domains" and parts[3] in fake.lists and parts[4] in ("exact", "regex"):
                     lst = fake.lists[parts[3]] if parts[4] == "exact" else fake.regex[parts[3]]
                     if len(parts) == 5 and self.command == "GET":
-                        return self._reply(200, {"domains": [{"domain": d, "comment": c, "enabled": True} for d, c in lst.items()]})
+                        return self._reply(200, {"domains": [{"domain": d, "comment": c, "enabled": True, "date_added": fake.added.get((parts[3], parts[4], d), 1700000000)}
+                                                             for d, c in lst.items()]})
                     if len(parts) == 6:
                         dom = unquote(parts[5])
                         if self.command == "PUT":
                             lst[dom] = self._body().get("comment", "")
+                            fake.added[(parts[3], parts[4], dom)] = int(time.time())
                             return self._reply(201, {})
                         if self.command == "DELETE":
                             return self._reply(204 if lst.pop(dom, None) is not None else 404, {})
