@@ -852,12 +852,15 @@ async function domainsView(tab) {
         h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
   } else if (tab === 'bloqueios') {
     const qs = new URLSearchParams();
-    if (blkDev) qs.set('dev', blkDev);
     if (blkSrc) qs.set('src', blkSrc);
-    const items = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items.filter((x) => !domGuardian || coverBy(x.domain) === domGuardian);  // com guardião escolhido: só o que ele liberou
+    const everyone = (await api('GET', '/v1/blocked' + (qs.toString() ? `?${qs}` : ''))).items.filter((x) => !domGuardian || coverBy(x.domain) === domGuardian);  // com guardião escolhido: só o que ele liberou
+    const perDev = new Map();  // quantos bloqueios cada aparelho tem com os filtros de origem e de guardião (o número ao lado do nome)
+    everyone.forEach((x) => perDev.set(x.dev, (perDev.get(x.dev) || 0) + 1));
+    if (blkDev && !protectedDevs.some((x) => x.id === blkDev)) blkDev = '';
+    const items = blkDev ? everyone.filter((x) => x.dev === blkDev) : everyone;
     const pill = (label, on, fn) => h('button', { type: 'button', 'aria-pressed': String(on), onclick: fn }, label);
     body = [h('div', { class: 'sec' }, 'Aparelho'),
-      pillGroup('Filtrar por aparelho', [['', 'Todos'], ...protectedDevs.map((x) => [x.id, x.name])], blkDev, (k) => { blkDev = k; route(); }),
+      pillGroup('Filtrar por aparelho', [['', `Todos · ${everyone.length}`], ...protectedDevs.map((x) => [x.id, `${x.name} · ${perDev.get(x.id) || 0}`])], blkDev, (k) => { blkDev = k; route(); }),
       h('div', { class: 'sec' }, 'Quem bloqueou'),
       pillGroup('Filtrar por origem', [['own', 'Regras próprias'], ['list', 'Listas'], ['veto', 'Vetados'], ['', 'Tudo']], blkSrc, (k) => { blkSrc = k; route(); }),
       guardianPills,

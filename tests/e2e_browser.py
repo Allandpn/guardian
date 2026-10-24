@@ -384,9 +384,9 @@ def main():
         fake.queries.append({"time": _t.time() - 5, "domain": "escola.exemplo.com", "status": "REGEX", "client": {"ip": "100.64.0.7"}})
         ex.collect_blocks()
         gw.call("POST", f"/v1/devices/{dev}/requests", {"kind": "unblock", "domains": ["escola.exemplo.com"]})
-        page2.goto(f"{origin}/#/domains/bloqueios")  # guardião: Solicitações | Liberados | Recusados (sem Bloqueios e sem Histórico)
+        page2.goto(f"{origin}/#/domains/bloqueios")  # guardião: Solicitações | Bloqueios | Liberados | Recusados (sem Histórico)
         page2.get_by_text("escola.exemplo.com").first.wait_for(timeout=10000)
-        out["domain_guardian_minimal"] = (page2.get_by_role("link", name="Bloqueios", exact=True).count() == 0 and page2.get_by_role("link", name="Recusados", exact=True).count() == 1
+        out["domain_guardian_minimal"] = (page2.get_by_role("link", name="Bloqueios", exact=True).count() == 1 and page2.get_by_role("link", name="Recusados", exact=True).count() == 1
                                           and page2.get_by_role("link", name="Liberados", exact=True).count() == 1 and "Histórico" not in page2.locator("#nav").inner_text())
         if shots:
             page2.set_viewport_size(PHONE)
