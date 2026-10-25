@@ -820,6 +820,14 @@ async function domainsView(tab) {
     draw();
     return [h('div', { class: 'pad', style: 'margin:12px 0' }, search), box];
   };
+  // Domínio de lista de conteúdo adulto: pede uma segunda confirmação do mesmo guardião, antes da folha de assinatura (individual ou em lote).
+  const confirmAdult = async (domains, blockedItems) => {
+    const adult = [...new Set(domains.filter((d) => blockedItems.some((b) => b.src === 'list' && (b.domain === d || b.domain.endsWith(`.${d}`)))))];
+    if (!adult.length) return true;
+    return sheet({ title: adult.length > 1 ? `${adult.length} domínios de lista de conteúdo adulto` : 'Domínio de lista de conteúdo adulto',
+      rows: adult.slice(0, 8).map((d) => ['Domínio', d]).concat(adult.length > 8 ? [['…', `mais ${adult.length - 8}`]] : []),
+      note: 'Estes domínios estão em lista de conteúdo adulto. Confirme de novo que quer liberar.', noteKind: 'warn', confirm: 'Sim, liberar mesmo', danger: true });
+  };
   let body;
   if (tab === 'solicitacoes') {
     const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
@@ -836,6 +844,7 @@ async function domainsView(tab) {
     };
     const releaseOne = (x) => act(async () => {
       const items = [{ domain: x.i.domain, ...ttl }];
+      if (!(await confirmAdult([x.i.domain], blocked))) return;
       const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
       if (!sent) return;
       await resolveAll([x.i.domain], sent.id);
@@ -848,6 +857,7 @@ async function domainsView(tab) {
     const doms = [...new Set(shown.map((x) => x.i.domain))];
     const items50 = doms.slice(0, 50).map((domain) => ({ domain, ...ttl }));
     const releaseAll = act(async () => {  // um só comando (até 50 domínios) e um só passkey
+      if (!(await confirmAdult(items50.map((x) => x.domain), blocked))) return;
       const sent = await confirmSend(ex.id, 'pihole_batch', { items: items50 }, batchSpec(items50));
       if (!sent) return;
       await resolveAll(items50.map((x) => x.domain), sent.id);
@@ -917,6 +927,7 @@ async function domainsView(tab) {
     goBtn.addEventListener('click', act(async () => {  // um só comando (até 50 domínios) e um só passkey
       const its = [...blkSel].slice(0, 50).map((domain) => ({ domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
       if (!its.length) return;
+      if (!(await confirmAdult(its.map((x) => x.domain), everyone))) return;
       const sent = await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its));
       if (!sent) return;
       blkSel.clear();
@@ -937,6 +948,7 @@ async function domainsView(tab) {
           parentsOf(x.domain).length ? [r.less, r.more] : null,
           h('button', { class: 'btn', type: 'button', onclick: act(async () => {
             const its = [{ domain: eff(x.domain), ...(blkTtl ? { ttl_s: blkTtl } : {}) }];
+            if (!(await confirmAdult([its[0].domain], everyone))) return;
             if (await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its))) { blkLvl.delete(x.domain); route(); }
           }) }, 'Liberar')));
     };
