@@ -28,7 +28,7 @@ EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"
 SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião ver
 STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet", "platform"}
 RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows", "pkgNames"}
-APP_KEYS = {"pendingApps", "approvedApps"}
+APP_KEYS = {"pendingApps", "approvedApps", "installedApps"}
 REQUEST_KINDS = {"domain", "app", "other", "unblock", "install", "command"}
 ADMIN_REQUEST_KINDS = {"install": cmds.T_WIN_INSTALL, "command": cmds.T_WIN_RUN}  # pedido do computador -> comando que o aprova
 ADMIN_REQUESTS_MAX_PER_DEV = 10
@@ -161,6 +161,7 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/requests/(?P<rid>[0-9]{1,12})/cancel", self.cancel_request),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/clients", self.executor_clients),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/refuse", self.refuse_app),
+            ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/veto", self.veto_apps),
             ("GET", r"/v1/my/decisions", self.my_decisions),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/refused", self.device_refused_apps),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apps/request", self.device_ask_apps),
@@ -542,11 +543,12 @@ class Gateway:
         refused = self.store.refused_apps()
         approved_by, refused_by = self.store.app_marks()
         asked = self.store.asked_apps()
+        vetos = self.store.app_vetos()
         for r in self.store.devices():
             report = json.loads(r["report"]) if r["report"] else None
             d = {"id": r["id"], "kind": r["kind"], "name": r["name"], "spki": r["spki"], "created": r["created"],
                  "last_seen": r["last_seen"], "report_ts": r["report_ts"], "pending": r["pending"], "report": report,
-                 "refused": refused.get(r["id"], []), "approved_by": approved_by.get(r["id"], {}), "refused_by": refused_by.get(r["id"], {})}
+                 "refused": refused.get(r["id"], []), "vetoed": vetos.get(r["id"], {}), "approved_by": approved_by.get(r["id"], {}), "refused_by": refused_by.get(r["id"], {})}
             if report and report.get("pendingApps") and asked.get(r["id"]):
                 report["pendingApps"] = [{**a, "asked": True} if a.get("pkg") in asked[r["id"]] else a for a in report["pendingApps"] if isinstance(a, dict)]
             if role not in cmds.ADMINISH and r["kind"] != "executor":
@@ -606,6 +608,8 @@ class Gateway:
                 raise HttpError(400, str(e))
         if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
             raise HttpError(429, "fila cheia")
+        if cmd["type"] == "approve_app" and isinstance(cmd["args"].get("pkg"), str) and self.store.is_app_vetoed(dev, cmd["args"]["pkg"]):
+            raise HttpError(403, "app vetado pelo guardião-mor")
         ready = cmd["type"] in cmds.GUARDIAN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd)
         cid = self.store.enqueue(dev, gid, cmd["ctr"], {"payload": env["payload"], "sigs": env["sigs"]}, ready)
         if cid is None:
@@ -926,6 +930,8 @@ class Gateway:
             pkg = a.get("pkg") if isinstance(a, dict) else None
             if not isinstance(pkg, str) or not re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg) or pkg not in pending:
                 raise HttpError(400, "só dá para pedir apps que estão suspensos neste aparelho")
+            if self.store.is_app_vetoed(dev, pkg):
+                raise HttpError(403, "app vetado pelo guardião-mor")
             names.append(str(pending.get(pkg) or pkg)[:60])
         for a in raw:
             self.store.ask_app(dev, a["pkg"])
@@ -961,6 +967,34 @@ class Gateway:
         else:
             self.store.refuse_app(dev, pkg, gid)
             self.store.audit(dev, "app", f"{gid}: recusou {pkg}")
+        return 200, {"ok": True}, {}
+
+    def veto_apps(self, req, dev):
+        """Vetar apps (ou tirar o veto): só o guardião-mor e o mestre. Vetar só restringe, então não pede passkey; para suspender um app já
+        aprovado o site envia também a revogação assinada."""
+        gid, role, _ = self.who(req)
+        if role not in cmds.ADMINISH:
+            raise HttpError(403, "só o guardião-mor veta apps")
+        if not self.l_cmd.allow(gid):
+            raise HttpError(429, "devagar")
+        row = self.store.device(dev)
+        if not row or row["kind"] != "device":
+            raise HttpError(404, "aparelho desconhecido")
+        d = req.json()
+        raw = d.get("apps")
+        if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
+            raise HttpError(400, "lista de apps inválida")
+        undo = d.get("undo") is True
+        for a in raw:
+            pkg = a.get("pkg") if isinstance(a, dict) else None
+            if not isinstance(pkg, str) or not re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg):
+                raise HttpError(400, "pacote inválido")
+        for a in raw:
+            if undo:
+                self.store.unveto_app(dev, a["pkg"])
+            else:
+                self.store.veto_app(dev, a["pkg"], str(a.get("label") or "")[:80], gid)
+        self.store.audit(dev, "app", f"{gid}: {'tirou o veto de' if undo else 'vetou'} {', '.join(a['pkg'] for a in raw)}"[:290])
         return 200, {"ok": True}, {}
 
     def executor_clients(self, req, dev):

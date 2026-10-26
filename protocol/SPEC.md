@@ -97,7 +97,7 @@ vale o alvo do CNAME.
 
 **Relatório do aparelho** (campos que o site usa): `kind:"device"`, `ts`, `version`, `owner`, `filterActive`, `filterReason`,
 `tailscale`, `tsIps` (endereços do aparelho na Tailscale, até 4; o executor os usa para ligar as consultas do Pi-hole ao aparelho, via `GET /v1/devices/{executor}/clients`), `pinSet`, `pendingApps:[{pkg,label,risks:[...]}]`, `pending:[{kind,state:"waiting|ready",remainingMs,summary}]`,
-`windows:{maintenanceMs,devMs,devUsed}`, `snapshot:{chave:valor}` (`Config.snapshot()`), `labels`/`groups`/`hints` (chave → nome em português, grupo e dica: o site monta as Regras só com isto), `approvedApps:[{pkg,label}]`, `activated`, `trust:{guardian:[cred,...]}`,
+`windows:{maintenanceMs,devMs,devUsed}`, `snapshot:{chave:valor}` (`Config.snapshot()`), `labels`/`groups`/`hints` (chave → nome em português, grupo e dica: o site monta as Regras só com isto), `approvedApps:[{pkg,label}]`, `installedApps:[{pkg,label}]` (opcional: todos os apps instalados, para a aba Apps > Instalados do site; até ~400 itens), `activated`, `trust:{guardian:[cred,...]}`,
 `ctrs:{guardian:int}`, `executed:[...]`. **Relatório do executor**: `kind:"executor"`, `pihole_ok`, `allow`, `deny`, `temp`,
 `allow_by`/`deny_by` ({domínio: guardião} só das entradas criadas pelo guardião), `trust`, `ctrs`, `executed`. Todo texto vindo de relatório é exibido pelo site com `textContent`.
 

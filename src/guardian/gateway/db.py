@@ -30,6 +30,7 @@ CREATE INDEX IF NOT EXISTS queried_last ON queried(dev, last);
 CREATE TABLE IF NOT EXISTS net_clients(id TEXT PRIMARY KEY, name TEXT NOT NULL, ip TEXT NOT NULL, seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
+CREATE TABLE IF NOT EXISTS app_vetos(dev TEXT NOT NULL, pkg TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_asks(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS analyses(dev TEXT NOT NULL, ctr INTEGER NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL,
   model TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', PRIMARY KEY(dev, ctr));
@@ -175,7 +176,7 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests", "blocked", "queried", "app_refusals", "app_approvals", "app_asks"):
+            for t in ("commands", "ctrs", "requests", "blocked", "queried", "app_vetos", "app_refusals", "app_approvals", "app_asks"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
             self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -285,6 +286,25 @@ class Store:
         out: dict[str, set[str]] = {}
         for r in self.q("SELECT dev, pkg FROM app_asks WHERE ts>?", (int(time.time()) - 14 * 24 * 3600,)):
             out.setdefault(r["dev"], set()).add(r["pkg"])
+        return out
+
+    def veto_app(self, dev: str, pkg: str, label: str, gid: str) -> None:
+        """Veto permanente de um app: ninguém o aprova nem o pede até o guardião-mor tirar o veto."""
+        self.x("INSERT INTO app_vetos(dev,pkg,label,guardian,ts) VALUES(?,?,?,?,?) ON CONFLICT(dev,pkg) DO UPDATE SET label=excluded.label, guardian=excluded.guardian, ts=excluded.ts",
+               (dev, pkg, label, gid, int(time.time())))
+        self.x("DELETE FROM app_refusals WHERE dev=? AND pkg=?", (dev, pkg))
+        self.x("DELETE FROM app_asks WHERE dev=? AND pkg=?", (dev, pkg))
+
+    def unveto_app(self, dev: str, pkg: str) -> None:
+        self.x("DELETE FROM app_vetos WHERE dev=? AND pkg=?", (dev, pkg))
+
+    def is_app_vetoed(self, dev: str, pkg: str) -> bool:
+        return bool(self.one("SELECT 1 FROM app_vetos WHERE dev=? AND pkg=?", (dev, pkg)))
+
+    def app_vetos(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for r in self.q("SELECT dev, pkg, label, guardian, ts FROM app_vetos ORDER BY ts DESC"):
+            out.setdefault(r["dev"], {})[r["pkg"]] = {"label": r["label"], "by": r["guardian"], "ts": r["ts"]}
         return out
 
     def refused_of(self, dev: str) -> list[str]:

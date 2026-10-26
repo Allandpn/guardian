@@ -132,6 +132,25 @@ class Roles(unittest.TestCase):
         # o executor não é aparelho protegido
         self.assertEqual(self.env.client().signed(self.exkey, "GET", f"/v1/devices/{self.ex}/apps/refused")[0], 403)
 
+    def test_03e_admin_vetoes_apps_permanently(self):
+        url = f"/v1/devices/{self.dev}/apps/veto"
+        self.assertEqual(self.dc.call("POST", url, {"apps": [{"pkg": "p"}]})[0], 403)   # guardião comum não veta
+        self.assertEqual(self.c.call("POST", url, {"apps": [{"pkg": "../x"}]})[0], 400)
+        self.assertEqual(self.env.client().call("POST", url, {"apps": [{"pkg": "p"}]})[0], 401)
+        self.assertEqual(self.c.call("POST", f"/v1/devices/{self.ex}/apps/veto", {"apps": [{"pkg": "p"}]})[0], 404)
+        self.assertEqual(self.c.call("POST", url, {"apps": [{"pkg": "p", "label": "Jogo"}, {"pkg": "com.mais.um"}]})[0], 200)
+        d = next(x for x in self.dc.call("GET", "/v1/devices")[1]["devices"] if x["id"] == self.dev)
+        self.assertEqual(d["vetoed"]["p"]["label"], "Jogo")
+        # ninguém aprova nem pede um app vetado
+        (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "approve_app", {"pkg": "p"})
+        self.assertEqual(st, 403, r)
+        dev = self.env.client()
+        self.assertEqual(dev.signed(self.devkey, "POST", f"/v1/devices/{self.dev}/apps/request", {"apps": [{"pkg": "p"}]})[0], 403)
+        # tirar o veto libera de novo
+        self.assertEqual(self.c.call("POST", url, {"apps": [{"pkg": "p"}], "undo": True})[0], 200)
+        (st, r, _), _ = self.env.sign_post(self.dc, self.da, self.dgid, self.dev, "approve_app", {"pkg": "p"})
+        self.assertEqual(st, 200, r)
+
     def test_04_history_filtered_unless_allowed(self):
         self.c.call("POST", f"/v1/guardians/{self.dgid}/see", {"history": False})
         rows = self.dc.call("GET", "/v1/audit")[1]["items"]

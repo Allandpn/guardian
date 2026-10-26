@@ -163,8 +163,8 @@ async function loadAll() {
   for (const x of d.devices) {  // apps recusados saem das pendências e ficam em refusedApps (dá para reconsiderar)
     const ref = new Set(x.refused || []);
     if (x.report && x.report.pendingApps) {
-      x.refusedApps = x.report.pendingApps.filter((a) => ref.has(a.pkg));
-      x.report.pendingApps = x.report.pendingApps.filter((a) => !ref.has(a.pkg));
+      x.refusedApps = x.report.pendingApps.filter((a) => ref.has(a.pkg) && !(x.vetoed || {})[a.pkg]);
+      x.report.pendingApps = x.report.pendingApps.filter((a) => !ref.has(a.pkg) && !(x.vetoed || {})[a.pkg]);  // vetados saem das solicitações
     }
   }
   const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).length, 0);
@@ -669,11 +669,12 @@ async function appsView(tab) {
   const phones = devices.filter((x) => x.kind === 'device');
   if (appDev && !phones.some((x) => x.id === appDev)) appDev = '';
   const shown = appDev ? phones.filter((x) => x.id === appDev) : phones;
-  tab = ['solicitacoes', 'aprovados', 'recusados'].includes(tab) ? tab : 'solicitacoes';
+  tab = ['solicitacoes', 'aprovados', 'recusados', ...(isAdmin() ? ['instalados', 'vetados'] : [])].includes(tab) ? tab : 'solicitacoes';
   const pendingOf = (d) => ((d.report || {}).pendingApps || []);
   const nPend = shown.reduce((n, d) => n + pendingOf(d).length, 0);
   const nRef = shown.reduce((n, d) => n + (d.refusedApps || []).length, 0);
-  const tabs = [['#/apps/solicitacoes', `Solicitações · ${nPend}`, 'solicitacoes'], ['#/apps/aprovados', 'Aprovados', 'aprovados'], ['#/apps/recusados', `Recusados · ${nRef}`, 'recusados']];
+  const tabs = [['#/apps/solicitacoes', `Solicitações · ${nPend}`, 'solicitacoes'], ['#/apps/aprovados', 'Aprovados', 'aprovados'], ['#/apps/recusados', `Recusados · ${nRef}`, 'recusados'],
+    ...(isAdmin() ? [['#/apps/instalados', 'Instalados', 'instalados'], ['#/apps/vetados', `Vetados · ${shown.reduce((n, d) => n + Object.keys(d.vetoed || {}).length, 0)}`, 'vetados']] : [])];
   const filters = phones.length > 1 ? [h('div', { class: 'sec' }, 'Aparelho'),
     pillGroup('Filtrar por aparelho', [['', 'Todos'], ...phones.map((x) => [x.id, x.name])], appDev, (k) => { appDev = k; route(); })] : null;
   const refuse = (d, a, undo) => act(async () => {
@@ -723,6 +724,82 @@ async function appsView(tab) {
     };
     draw('');
     body = [h('div', { class: 'pad', style: 'margin-top:12px' }, h('input', { class: 'inp', type: 'search', placeholder: 'Buscar app aprovado', 'aria-label': 'Buscar app aprovado', oninput: (e) => draw(e.target.value) })), listBox];
+  } else if (tab === 'instalados') {
+    // Tudo que se sabe de cada aparelho: a lista completa de instalados (quando o app a envia) mais aprovados, pendentes, recusados e vetados.
+    const stateOf = (d, pkg) => ((d.vetoed || {})[pkg] ? (((d.report || {}).approvedApps || []).some((a) => a.pkg === pkg) ? 'vetoact' : 'veto')
+      : ((d.report || {}).approvedApps || []).some((a) => a.pkg === pkg) ? 'ok' : (d.refusedApps || []).some((a) => a.pkg === pkg) ? 'refused'
+      : ((d.report || {}).pendingApps || []).some((a) => a.pkg === pkg) ? 'pending' : 'inst');
+    const rows = shown.flatMap((d) => {
+      const m = new Map(), put = (a) => { if (a && a.pkg && !m.has(a.pkg)) m.set(a.pkg, { pkg: a.pkg, label: a.label || a.pkg }); };
+      const rep = d.report || {};
+      (rep.installedApps || []).forEach(put); (rep.approvedApps || []).forEach(put); (rep.pendingApps || []).forEach(put); (d.refusedApps || []).forEach(put);
+      Object.entries(d.vetoed || {}).forEach(([pkg, v]) => put({ pkg, label: v.label }));
+      return [...m.values()].map((a) => ({ d, a, st: stateOf(d, a.pkg) }));
+    }).sort((x, y) => x.a.label.localeCompare(y.a.label, 'pt-BR') || x.d.name.localeCompare(y.d.name));
+    const hasFull = shown.some((d) => Array.isArray((d.report || {}).installedApps));
+    const STATES = { ok: ['aprovado', 'ok'], pending: ['pendente', 'warn'], refused: ['recusado', ''], veto: ['vetado', 'bad'], vetoact: ['vetado, ainda ativo', 'bad'], inst: ['instalado', ''] };
+    const keyOf = ({ d, a }) => `${d.id}|${a.pkg}`;
+    const canVeto = (x) => x.st !== 'veto';
+    const vis = () => { const q = appSearch.trim().toLowerCase();
+      return rows.filter((x) => (!appState || x.st === appState || (appState === 'veto' && x.st === 'vetoact')) && (!q || `${x.a.label} ${x.a.pkg}`.toLowerCase().includes(q))); };
+    const boxes = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
+    const goBtn = h('button', { class: 'btn pri danger', type: 'button' }), list = h('div');
+    const sync = () => {
+      for (const [k, e] of boxes) e.checked = appSel.has(k);
+      const pick = vis().filter(canVeto).map(keyOf);
+      allBox.checked = pick.length > 0 && pick.every((k) => appSel.has(k));
+      goBtn.textContent = appSel.size ? `Vetar ${appSel.size} marcado${appSel.size > 1 ? 's' : ''}` : 'Vetar marcados';
+      goBtn.disabled = appSel.size === 0;
+    };
+    const draw = () => {
+      boxes.clear();
+      const v = vis(), cut = v.slice(0, 300);
+      list.replaceChildren(cut.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, cut.map((x) => {
+        const k = keyOf(x), [word, kind] = STATES[x.st];
+        let e = h('span', { class: 'chk' });
+        if (canVeto(x)) { e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${x.a.label}`, onchange: (ev) => { if (ev.target.checked) appSel.add(k); else appSel.delete(k); sync(); } }); boxes.set(k, e); }
+        return h('div', { class: 'li' }, e, nameRow(x.a, x.d, ''), chip(word, kind));
+      }), v.length > cut.length ? h('p', { class: 'muted', style: 'margin:8px 0' }, `Mostrando ${cut.length} de ${v.length}. Use a busca.`) : null) :
+        h('p', { class: 'empty' }, rows.length ? 'Nenhum app com esses filtros.' : 'O aparelho ainda não enviou a lista.'));
+      sync();
+    };
+    allBox.addEventListener('change', () => { const pick = vis().filter(canVeto).map(keyOf); if (allBox.checked) pick.forEach((k) => appSel.add(k)); else pick.forEach((k) => appSel.delete(k)); sync(); });
+    goBtn.addEventListener('click', act(async () => {
+      const chosen = rows.filter((x) => appSel.has(keyOf(x)));
+      if (!chosen.length) return;
+      const live = chosen.filter((x) => x.st === 'ok' || x.st === 'vetoact');  // aprovados: precisam da revogação assinada para suspender
+      if (!(await sheet({ title: `Vetar ${chosen.length} app${chosen.length > 1 ? 's' : ''}?`,
+        rows: chosen.slice(0, 8).map((x) => [x.d.name, x.a.label]).concat(chosen.length > 8 ? [['…', `mais ${chosen.length - 8}`]] : []),
+        note: `Veto permanente: o app fica suspenso e ninguém o aprova nem o pede até você tirar o veto.${live.length ? ` ${live.length} já aprovado${live.length > 1 ? 's' : ''}: serão pedidos ${live.length} passkey${live.length > 1 ? 's' : ''} para revogar.` : ''}`,
+        noteKind: 'warn', confirm: 'Vetar', danger: true }))) return;
+      for (const dev of [...new Set(chosen.map((x) => x.d.id))]) {
+        await api('POST', `/v1/devices/${dev}/apps/veto`, { apps: chosen.filter((x) => x.d.id === dev).map((x) => ({ pkg: x.a.pkg, label: x.a.label })) });
+      }
+      let failed = 0;
+      for (const x of live) {
+        try { await sendCommand(x.d.id, 'revoke_app', { pkg: x.a.pkg }); } catch (e) { failed += 1; }
+      }
+      appSel.clear();
+      if (failed) toast(`${failed} revogaç${failed > 1 ? 'ões não foram' : 'ão não foi'} enviada${failed > 1 ? 's' : ''}: o app segue ativo no aparelho. Vete de novo para tentar outra vez.`);
+      route();
+    }));
+    draw();
+    body = [h('div', { class: 'pad', style: 'margin-top:12px' }, h('input', { class: 'inp', type: 'search', placeholder: 'Buscar app', 'aria-label': 'Buscar app', value: appSearch,
+        autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', oninput: (e) => { appSearch = e.target.value; draw(); } })),
+      pillGroup('Filtrar por situação', [['', 'Todos'], ['ok', 'Aprovados'], ['pending', 'Pendentes'], ['refused', 'Recusados'], ['veto', 'Vetados'], ['inst', 'Só instalados']], appState, (k) => { appState = k; route(); }),
+      hasFull ? null : h('div', { class: 'note warn', style: 'margin:12px 0' }, 'O app do aparelho ainda não envia a lista completa de instalados: aparecem só os apps aprovados, pendentes, recusados e vetados.'),
+      h('div', { class: 'card', style: 'margin:12px 0' }, h('div', { class: 'row', style: 'gap:10px' },
+        h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), goBtn)), list];
+  } else if (tab === 'vetados') {
+    const rows = shown.flatMap((d) => Object.entries(d.vetoed || {}).map(([pkg, v]) => ({ d, a: { pkg, label: v.label || pkg }, by: v.by })));
+    body = rows.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, rows.map(({ d, a, by }) => h('div', { class: 'li' },
+      nameRow(a, d, by ? `vetado por ${gname(by)}` : ''),
+      h('button', { class: 'btn', type: 'button', onclick: act(async () => {
+        if (!(await sheet({ title: `Tirar o veto de “${a.label}” em ${d.name}?`, rows: [['Aparelho', d.name], ['Pacote', a.pkg]],
+          note: 'O app continua suspenso, mas volta a poder ser pedido e aprovado.', confirm: 'Tirar veto' }))) return;
+        await api('POST', `/v1/devices/${d.id}/apps/veto`, { apps: [{ pkg: a.pkg }], undo: true });
+        route();
+      }) }, 'Tirar veto')))) : empty('Nenhum app vetado.');
   } else {
     const rows = shown.flatMap((d) => (d.refusedApps || []).map((a) => ({ d, a, by: (d.refused_by || {})[a.pkg] })));
     body = rows.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, rows.map(({ d, a, by }) => h('div', { class: 'li' },
@@ -753,6 +830,8 @@ let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que l
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let qryDev = '', qryState = '', qrySearch = '';   // Consultas: aparelho, resultado ('' tudo | 'ok' | 'blk') e pesquisa
 const qrySel = new Set(), qryLvl = new Map();
+let appState = '', appSearch = '';   // Apps > Instalados: situação e busca
+const appSel = new Set();
 let blkDev = '';             // filtro do log: aparelho ('' = todos)
 let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
 let advOpen = false;         // seção Avançado de Liberados aberta
@@ -1700,7 +1779,7 @@ async function route() {
   try {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
     const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|consultas|liberados|recusados|vetos|meus)$/) || hash.match(/^#\/(domains)$/);
-    const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados))?$/);
+    const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados|instalados|vetados))?$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);
