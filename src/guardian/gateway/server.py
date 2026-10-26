@@ -191,7 +191,9 @@ class Gateway:
 
     # ------------------------------------------------------------------ infra
     def body_limit(self, path: str) -> int:
-        if path.endswith("/report") or path.endswith("/blocked") or path.endswith("/queried"):
+        if path.endswith("/report"):
+            return 128 * 1024  # com a lista de apps instalados (até ~400) o relatório passa de 64 KB
+        if path.endswith("/blocked") or path.endswith("/queried"):
             return 64 * 1024
         if path.endswith("/commands") or path.endswith("/cosign"):
             return 16 * 1024
