@@ -161,6 +161,14 @@ class ExecutorVeto(unittest.TestCase):
         self.assertNotIn("x.adulto.example", self.rx_allowed())
         self.assertIn("vetado", out)
 
+    def test_03b_batch_can_block_and_release_together(self):
+        self.ex.apply(self.cmd("pihole_allow", {"domain": "trocar.example"}))
+        out = self.ex.apply(self.cmd("pihole_batch", {"items": [{"domain": "trocar.example", "deny": True}, {"domain": "outro-bom.example"}]}))
+        self.assertNotIn("trocar.example", self.rx_allowed())  # bloquear tira da lista de permissão
+        self.assertIn("outro-bom.example", self.rx_allowed())
+        self.assertIn("bloqueados: trocar.example", out)
+        self.assertIn("trocar.example", {e["domain"] for e in self.ex._entries("deny")})
+
     def test_04_master_parent_list_persists_and_is_enforced(self):
         self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "add", "domain": "reddit.com"}))
         with self.assertRaisesRegex(ValueError, "vetado pelo mestre"):

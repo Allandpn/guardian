@@ -79,7 +79,14 @@ class AutoClients(unittest.TestCase):
         self.assertEqual(st, 200, r)
         self.assertEqual([(n["id"], n["name"], n["ip"]) for n in r["net"] if n["ip"] == "192.168.2.51"], [("net-192-168-2-51", "tv-sala", "192.168.2.51")])
         self.assertNotIn("127.0.0.1", [n["ip"] for n in r["net"]])   # o próprio Pi-hole não conta
-        self.assertNotIn("192.168.2.52", [n["ip"] for n in r["net"]])  # sem bloqueio, não aparece
+        self.assertEqual([i for i in r["items"] if i["dev"] == "net-192-168-2-52"], [])  # consultou, mas sem bloqueio: nada na lista de bloqueios
+        st, q, _ = self.c.call("GET", "/v1/queried")
+        self.assertEqual(st, 200, q)
+        by = {(i["dev"], i["domain"]): i for i in q["items"]}
+        self.assertEqual((by[("net-192-168-2-51", "tv.exemplo.com")]["count"], by[("net-192-168-2-51", "tv.exemplo.com")]["blocked"]), (2, 2))
+        self.assertEqual((by[("net-192-168-2-52", "ok.exemplo.com")]["count"], by[("net-192-168-2-52", "ok.exemplo.com")]["blocked"]), (1, 0))
+        self.assertNotIn(("net-127-0-0-1", "eco.exemplo.com"), by)
+        self.assertEqual(self.c.call("GET", "/v1/queried?dev=net-zz")[0], 400)
         mine = [i for i in r["items"] if i["dev"] == "net-192-168-2-51"]
         self.assertEqual({i["domain"] for i in mine}, {"tv.exemplo.com"})
         self.assertEqual(self.c.call("GET", "/v1/blocked?dev=net-192-168-2-51")[1]["items"][0]["domain"], "tv.exemplo.com")

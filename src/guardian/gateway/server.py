@@ -168,6 +168,8 @@ class Gateway:
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked", self.device_blocked),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/blocked-index", self.executor_blocked_index),
             ("GET", r"/v1/blocked", self.blocked),
+            ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/queried", self.post_queried),
+            ("GET", r"/v1/queried", self.queried),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/resolve", self.resolve),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
             ("GET", r"/v1/push/key", self.push_key),
@@ -188,7 +190,7 @@ class Gateway:
 
     # ------------------------------------------------------------------ infra
     def body_limit(self, path: str) -> int:
-        if path.endswith("/report") or path.endswith("/blocked"):
+        if path.endswith("/report") or path.endswith("/blocked") or path.endswith("/queried"):
             return 64 * 1024
         if path.endswith("/commands") or path.endswith("/cosign"):
             return 16 * 1024
@@ -1021,6 +1023,48 @@ class Gateway:
                 continue
         self.store.drop_blocked(target, veto)
         return 200, {"ok": True, "accepted": len(items)}, {}
+
+    def post_queried(self, req, dev):
+        row = self.device(req, dev)
+        if row["kind"] != "executor":
+            raise HttpError(403, "só o executor envia consultas")
+        d = req.json()
+        target = d.get("dev")
+        if isinstance(target, str) and re.fullmatch(NET_ID, target):
+            name, ip = d.get("name"), d.get("ip")
+            if not (isinstance(name, str) and name.strip() and isinstance(ip, str) and len(ip) <= 45):
+                raise HttpError(400, "cliente da rede sem nome")
+            self.store.put_net_client(target, name.strip()[:60], ip)
+        else:
+            trow = self.store.device(target) if isinstance(target, str) and re.fullmatch(r"[a-z2-7]{20}", target) else None
+            if not trow or trow["kind"] != "device":
+                raise HttpError(400, "aparelho de destino inválido")
+        raw = d.get("items")
+        if not isinstance(raw, list) or len(raw) > 200:
+            raise HttpError(400, "lista inválida")
+        items, now = [], int(time.time())
+        for it in raw:
+            try:
+                dom = normalize_domain(it.get("domain"))
+                cnt, blk, first, last = it["count"], it["blocked"], it["first"], it["last"]
+                ok = (all(isinstance(x, int) and not isinstance(x, bool) for x in (cnt, blk, first, last))
+                      and 1 <= cnt <= 10_000_000 and 0 <= blk <= cnt and 0 < first <= last <= now + 300)
+            except (ValueError, KeyError, AttributeError, TypeError):
+                ok = False
+            if ok:
+                items.append({"domain": dom, "count": cnt, "blocked": blk, "first": first, "last": last})
+        self.store.merge_queried(target, items)
+        return 200, {"ok": True, "accepted": len(items)}, {}
+
+    def queried(self, req):
+        self.guardian(req)
+        dev = parse_qs(req.query).get("dev", [None])[0]
+        if dev is not None and not (re.fullmatch(r"[a-z2-7]{20}", dev) or re.fullmatch(NET_ID, dev)):
+            raise HttpError(400, "aparelho inválido")
+        canaries: dict[str, str] = {}
+        rows = [r for r in self.store.queried_list(dev) if r["domain"] != canaries.setdefault(r["dev"], self._canary(r["dev"]))]
+        return 200, {"items": [{"dev": r["dev"], "domain": r["domain"], "count": r["count"], "blocked": r["blocked"], "first": r["first"], "last": r["last"]} for r in rows],
+                     "net": [dict(r) for r in self.store.net_clients()], "now": int(time.time())}, {}
 
     def _canary(self, dev: str) -> str:
         """O domínio-canário que o aparelho relatou ('' se não houver). Ele é o teste de saúde: bloqueado de propósito."""

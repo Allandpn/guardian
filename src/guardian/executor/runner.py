@@ -24,6 +24,7 @@ BLOCKS_EVERY_S = 10
 BLOCKS_CHUNK = 150
 BLOCKS_BACKFILL_S = 3600
 NET_PAGES = 20                    # até 20 mil consultas por leitura dos clientes que não são aparelhos pareados
+QUERIED_MAX = 1000  # domínios consultados por aparelho em cada envio
 NET_SKIP = {"127.0.0.1", "::1"}   # o próprio Pi-hole
 OWN_STATUSES = {"REGEX", "DENYLIST", "REGEX_CNAME", "DENYLIST_CNAME"}
 LIST_STATUSES = {"GRAVITY", "GRAVITY_CNAME"}
@@ -237,12 +238,20 @@ class Executor:
             items = a.get("items")
             if not isinstance(items, list) or not 1 <= len(items) <= BATCH_MAX:
                 raise ValueError("lote inválido")
-            ok, bad = [], []
+            ok, bad, blocked_now = [], [], []
             self.failed = {}
             for it in items:
                 try:
                     if not isinstance(it, dict):
                         raise ValueError("item inválido")
+                    if it.get("deny") is True:  # bloquear: a lista de permissão vence a de bloqueio, então sai de lá
+                        d = self._guard(it.get("domain"), allow=False)
+                        self._put("deny", d, who)
+                        self._del("allow", d)
+                        self._drop_temp("allow", d)
+                        self._drop_temp("deny", d)
+                        blocked_now.append(d)
+                        continue
                     d, ttl = self._guard(it.get("domain"), allow=True), self._ttl(it)
                     self._put("allow", d, who)
                     self._drop_temp("allow", d)
@@ -253,9 +262,11 @@ class Executor:
                     name = str(it.get("domain"))[:60] if isinstance(it, dict) else "?"
                     bad.append(f"{name}: {e}")
                     self.failed[name] = str(e)[:100]
-            if bad and not ok:
+            if bad and not ok and not blocked_now:
                 raise ValueError("; ".join(bad))
-            return "liberados: " + ", ".join(ok) + (f" | falharam: {'; '.join(bad)}" if bad else "")
+            parts = [f"liberados: {', '.join(ok)}" if ok else "", f"bloqueados: {', '.join(blocked_now)}" if blocked_now else "",
+                     f"falharam: {'; '.join(bad)}" if bad else ""]
+            return " | ".join(p for p in parts if p)
         if t == cmds.T_PARENT_BLOCK:
             action = a.get("action")
             if action not in ("add", "remove"):
@@ -409,6 +420,24 @@ class Executor:
             e["list"] = self._list_name(q.get("list_id"))
         return float(t)
 
+    @staticmethod
+    def _query_entry(per: dict, q: dict, canary: str | None) -> None:
+        """Soma uma consulta (de qualquer resultado) ao mapa do aparelho: quantas vezes e quantas foram bloqueadas."""
+        t = q.get("time")
+        if not isinstance(t, (int, float)):
+            return
+        try:
+            d = domains.normalize(q.get("domain"))
+        except ValueError:
+            return
+        if d == canary:
+            return
+        blocked = 1 if q.get("status") in OWN_STATUSES or q.get("status") in LIST_STATUSES else 0
+        e = per.setdefault(d, {"domain": d, "count": 0, "blocked": 0, "first": int(t), "last": int(t)})
+        e["count"] += 1
+        e["blocked"] += blocked
+        e["first"], e["last"] = min(e["first"], int(t)), max(e["last"], int(t))
+
     def collect_blocks(self) -> int:
         """Lê no Pi-hole o que foi bloqueado e envia ao gateway: dos aparelhos pareados (com pedido de liberação) e dos outros
         clientes da rede (só para ver). Devolve quantos domínios."""
@@ -417,11 +446,14 @@ class Executor:
         newest = since
         canary = domains.normalize(self.cfg.canary) if self.cfg.canary else None
         per_dev: dict[str, dict] = {}
+        seen_dev: dict[str, dict] = {}  # tudo que cada aparelho consultou (bloqueado ou não)
         for ip, dev in clients.items():
             for q in self.pihole.queries(since, ip):
                 t = self._blocked_entry(per_dev.setdefault(dev, {}), q, canary)
-                if t is not None:
-                    newest = max(newest, t)
+                self._query_entry(seen_dev.setdefault(dev, {}), q, canary)
+                qt = q.get("time")
+                if isinstance(qt, (int, float)):
+                    newest = max(newest, float(qt))
         net: dict[str, dict] = {}  # id de rede -> {"name", "ip", "items"}
         mine = local_ips()
         for q in self.pihole.queries(since, None, max_pages=NET_PAGES):
@@ -432,9 +464,12 @@ class Executor:
             nid = net_id(ip)
             if nid is None:
                 continue
-            t = self._blocked_entry(net.setdefault(nid, {"name": str(c.get("name") or ip)[:60], "ip": ip, "items": {}})["items"], q, None)
-            if t is not None:
-                newest = max(newest, t)
+            n = net.setdefault(nid, {"name": str(c.get("name") or ip)[:60], "ip": ip, "items": {}, "seen": {}})
+            self._blocked_entry(n["items"], q, None)
+            self._query_entry(n["seen"], q, None)
+            qt = q.get("time")
+            if isinstance(qt, (int, float)):
+                newest = max(newest, float(qt))
         total = 0
         for dev in sorted(per_dev):
             items = sorted(per_dev[dev].values(), key=lambda x: x["last"], reverse=True)
@@ -447,10 +482,19 @@ class Executor:
             for i in range(0, len(items), BLOCKS_CHUNK):
                 self.gw.call("POST", f"/v1/devices/{self.dev}/blocked", {"dev": nid, "name": n["name"], "ip": n["ip"], "items": items[i:i + BLOCKS_CHUNK]})
             total += len(items)
+        for dev in sorted(seen_dev):
+            self._send_queried({"dev": dev}, seen_dev[dev])
+        for nid in sorted(net):
+            self._send_queried({"dev": nid, "name": net[nid]["name"], "ip": net[nid]["ip"]}, net[nid]["seen"])
         if newest > since:
             self.state.data["blocked_since"] = newest + 0.000001
             self.state.save()
         return total
+
+    def _send_queried(self, head: dict, per: dict) -> None:
+        items = sorted(per.values(), key=lambda x: x["last"], reverse=True)[:QUERIED_MAX]
+        for i in range(0, len(items), BLOCKS_CHUNK):
+            self.gw.call("POST", f"/v1/devices/{self.dev}/queried", {**head, "items": items[i:i + BLOCKS_CHUNK]})
 
     def _blocks_loop(self, stop) -> None:
         while not stop.is_set():

@@ -751,6 +751,8 @@ function avancadoNodes(d, now) {
 let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
 let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que liberou/bloqueou ('' = todos)
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
+let qryDev = '', qryState = '', qrySearch = '';   // Consultas: aparelho, resultado ('' tudo | 'ok' | 'blk') e pesquisa
+const qrySel = new Set();
 let blkDev = '';             // filtro do log: aparelho ('' = todos)
 let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
 let advOpen = false;         // seção Avançado de Liberados aberta
@@ -771,7 +773,7 @@ async function domainsView(tab) {
   const unb = reqs.filter((q) => q.kind === 'unblock');
   const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
   tab = tab === 'pedidos' ? 'solicitacoes' : tab === 'meus' ? 'liberados' : tab;  // endereços antigos
-  if (!(admin ? ['solicitacoes', 'bloqueios', 'liberados', 'vetos'] : ['solicitacoes', 'bloqueios', 'liberados', 'recusados']).includes(tab)) tab = admin && !reqs.length ? 'bloqueios' : 'solicitacoes';
+  if (!(admin ? ['solicitacoes', 'bloqueios', 'consultas', 'liberados', 'vetos'] : ['solicitacoes', 'bloqueios', 'consultas', 'liberados', 'recusados']).includes(tab)) tab = admin && !reqs.length ? 'bloqueios' : 'solicitacoes';
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
   const protectedDevs = devices.filter((x) => x.kind === 'device');
   const temp = new Map((r.temp || []).map((t) => [`${t.list}:${t.domain}`, t.expires]));
@@ -784,9 +786,9 @@ async function domainsView(tab) {
   if (domGuardian && !(me.trust || {})[domGuardian]) domGuardian = '';
   const send = (type, args, spec) => act(() => confirmSend(ex.id, type, args, spec).then((ok) => ok && route()));
   const veto = r.veto || {};
-  const tabs = admin ? [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados'],
+  const tabs = admin ? [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/consultas', 'Consultas', 'consultas'], ['#/domains/liberados', 'Liberados', 'liberados'],
     ['#/domains/vetos', veto.audit_total ? `Vetos · ${veto.audit_total}` : 'Vetos', 'vetos']] :
-    [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/liberados', 'Liberados', 'liberados'], ['#/domains/recusados', 'Recusados', 'recusados']];
+    [['#/domains/solicitacoes', `Solicitações · ${reqs.length}`, 'solicitacoes'], ['#/domains/bloqueios', 'Bloqueios', 'bloqueios'], ['#/domains/consultas', 'Consultas', 'consultas'], ['#/domains/liberados', 'Liberados', 'liberados'], ['#/domains/recusados', 'Recusados', 'recusados']];
   const flags = (x) => [x.domain.split('.').some((l) => l.startsWith('xn--')) ? chip('punycode: confira o nome', 'warn') : null,
     x.cname ? chip('via CNAME') : null,
     x.src === 'list' ? chip('lista de conteúdo adulto: confira antes de liberar', 'warn') : null,
@@ -968,6 +970,86 @@ async function domainsView(tab) {
         TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, s]) => pill(label, blkTtl === s, () => { blkTtl = s; route(); }))),
       h('div', { class: 'sec' }, 'Últimas 24 horas'),
       selectBar, items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map(blockRow)) : empty('Nada bloqueado com esses filtros.')];
+  } else if (tab === 'consultas') {
+    const resp = await api('GET', '/v1/queried');
+    const netDevs = resp.net || [];
+    const nameOf = (id) => (netDevs.find((x) => x.id === id) || {}).name || devName(id);
+    const all = resp.items;
+    if (qryDev && !protectedDevs.some((x) => x.id === qryDev) && !netDevs.some((x) => x.id === qryDev)) qryDev = '';
+    const perDev = new Map();
+    all.forEach((x) => perDev.set(x.dev, (perDev.get(x.dev) || 0) + 1));
+    const netPills = netDevs.filter((x) => perDev.get(x.id)).sort((a, b) => perDev.get(b.id) - perDev.get(a.id));
+    const denyBy = r.deny_by || {};
+    const stateOf = (x) => (x.blocked === 0 ? 'ok' : x.blocked >= x.count ? 'blk' : 'mix');
+    const visible = () => {
+      const q = qrySearch.trim().toLowerCase();
+      return all.filter((x) => (!qryDev || x.dev === qryDev) && (!qryState || stateOf(x) === qryState || (qryState === 'blk' && stateOf(x) === 'mix')) && (!q || x.domain.includes(q)));
+    };
+    const keyOf = (x) => x.domain;  // a liberação ou o bloqueio vale para a casa toda, então marca o domínio, não a linha
+    const boxes = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
+    const relBtn = h('button', { class: 'btn pri', type: 'button' }), blkBtn = h('button', { class: 'btn', type: 'button' });
+    const box = h('div');
+    const shownDomains = () => [...new Set(visible().map(keyOf))];
+    const sync = () => {
+      for (const [d, els] of boxes) els.forEach((e) => { e.checked = qrySel.has(d); });
+      const sh = shownDomains();
+      allBox.checked = sh.length > 0 && sh.every((d) => qrySel.has(d));
+      relBtn.textContent = qrySel.size ? `Liberar ${qrySel.size}` : 'Liberar marcados';
+      blkBtn.textContent = qrySel.size ? `Bloquear ${qrySel.size}` : 'Bloquear marcados';
+      relBtn.disabled = blkBtn.disabled = qrySel.size === 0;
+    };
+    const draw = () => {
+      boxes.clear();
+      const rows = visible();
+      box.replaceChildren(rows.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, rows.slice(0, 400).map((x) => {
+        const st = stateOf(x), d = x.domain;
+        const e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${d}`, onchange: (ev) => { if (ev.target.checked) qrySel.add(d); else qrySel.delete(d); sync(); } });
+        boxes.set(d, [...(boxes.get(d) || []), e]);
+        return h('div', { class: 'li' }, e,
+          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, d),
+            h('div', { class: 'muted' }, `${nameOf(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)}`, ' ',
+              st === 'ok' ? chip('permitido', 'ok') : st === 'blk' ? chip('bloqueado', 'bad') : chip(`${x.blocked} de ${x.count} bloqueadas`, 'warn'),
+              covers(d) ? chip(coverBy(d) ? `liberado por ${gname(coverBy(d))}` : 'liberado', 'ok') : null,
+              denyBy[d] ? chip(`bloqueado por ${gname(denyBy[d])}`, 'bad') : null)));
+      })) : empty('Nenhuma consulta com esses filtros.'));
+      if (rows.length > 400) box.append(h('div', { class: 'muted pad' }, `Mostrando 400 de ${rows.length}. Use a pesquisa para achar o resto.`));
+      sync();
+    };
+    allBox.addEventListener('change', () => { const sh = shownDomains(); if (allBox.checked) sh.forEach((d) => qrySel.add(d)); else sh.forEach((d) => qrySel.delete(d)); sync(); });
+    const denySpec = (its) => ({ title: `Bloquear ${its.length} domínio${its.length > 1 ? 's' : ''}?`, rows: its.map((i) => [i.domain, 'bloquear']),
+      effect: 'vale na hora', effectKind: 'ok', note: 'Vale para a casa toda, com os subdomínios. Tira da lista de liberados, se estiver lá.', noteKind: 'warn', danger: true, confirm: 'Bloquear com passkey' });
+    const doBatch = (deny) => act(async () => {  // um só comando (até 50 domínios) e um só passkey
+      const its = [...qrySel].slice(0, 50).map((domain) => (deny ? { domain, deny: true } : { domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
+      if (!its.length) return;
+      if (!deny) {
+        const listed = (await api('GET', '/v1/blocked?src=list')).items;
+        if (!(await confirmAdult(its.map((x) => x.domain), listed))) return;
+      }
+      const sent = await confirmSend(ex.id, 'pihole_batch', { items: its }, deny ? denySpec(its) : batchSpec(its));
+      if (!sent) return;
+      qrySel.clear();
+      route();
+    });
+    relBtn.addEventListener('click', doBatch(false));
+    blkBtn.addEventListener('click', doBatch(true));
+    const search = h('input', { class: 'inp', type: 'search', placeholder: 'Pesquisar domínio consultado', 'aria-label': 'Pesquisar domínio consultado', value: qrySearch,
+      autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', oninput: () => { qrySearch = search.value; draw(); } });
+    draw();
+    body = [h('div', { class: 'sec' }, 'Aparelho'),
+      pillGroup('Filtrar por aparelho', [['', `Todos · ${all.length}`], ...protectedDevs.map((x) => [x.id, `${x.name} · ${perDev.get(x.id) || 0}`])], qryDev, (k) => { qryDev = k; route(); }),
+      netPills.length ? [h('div', { class: 'sec' }, 'Outros da rede'),
+        pillGroup('Filtrar por cliente da rede', netPills.map((x) => [x.id, `${x.name === x.ip ? x.ip : `${x.name} (${x.ip})`} · ${perDev.get(x.id)}`]), qryDev, (k) => { qryDev = k; route(); })] : null,
+      h('div', { class: 'sec' }, 'Resultado'),
+      pillGroup('Filtrar por resultado', [['', 'Tudo'], ['ok', 'Permitidos'], ['blk', 'Bloqueados']], qryState, (k) => { qryState = k; route(); }),
+      h('div', { class: 'sec' }, 'Liberar por'),
+      h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
+        TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, sec]) => h('button', { type: 'button', 'aria-pressed': String(blkTtl === sec), onclick: () => { blkTtl = sec; route(); } }, label))),
+      h('div', { class: 'sec' }, 'Últimas 24 horas'),
+      h('div', { class: 'pad', style: 'margin:12px 0' }, search),
+      h('div', { class: 'card', style: 'margin-bottom:12px' }, h('div', { class: 'row', style: 'gap:10px' },
+        h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), relBtn, blkBtn),
+        h('div', { class: 'muted', style: 'margin-top:8px' }, 'Cada ação leva até 50 domínios e um só passkey. Vale para a casa toda.')),
+      box];
   } else if (tab === 'liberados' && !admin) {
     const myId = me.guardian.id;
     const by = r.allow_by || {};

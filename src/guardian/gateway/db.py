@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TE
 CREATE TABLE IF NOT EXISTS blocked(dev TEXT NOT NULL, domain TEXT NOT NULL, src TEXT NOT NULL, list TEXT NOT NULL DEFAULT '',
   cname INTEGER NOT NULL DEFAULT 0, count INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(dev, domain));
 CREATE INDEX IF NOT EXISTS blocked_last ON blocked(dev, last);
+CREATE TABLE IF NOT EXISTS queried(dev TEXT NOT NULL, domain TEXT NOT NULL, count INTEGER NOT NULL, blocked INTEGER NOT NULL,
+  first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY(dev, domain));
+CREATE INDEX IF NOT EXISTS queried_last ON queried(dev, last);
 CREATE TABLE IF NOT EXISTS net_clients(id TEXT PRIMARY KEY, name TEXT NOT NULL, ip TEXT NOT NULL, seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
@@ -172,7 +175,7 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests", "blocked", "app_refusals", "app_approvals", "app_asks"):
+            for t in ("commands", "ctrs", "requests", "blocked", "queried", "app_refusals", "app_approvals", "app_asks"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
             self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -227,7 +230,8 @@ class Store:
         cutoff = int(time.time()) - DELIVERED_KEEP_S
         self.x("DELETE FROM commands WHERE created<?", (cutoff,))
         self.x("DELETE FROM blocked WHERE last<?", (int(time.time()) - BLOCKED_KEEP_S,))
-        self.x("DELETE FROM net_clients WHERE id NOT IN (SELECT dev FROM blocked)")
+        self.x("DELETE FROM queried WHERE last<?", (int(time.time()) - BLOCKED_KEEP_S,))
+        self.x("DELETE FROM net_clients WHERE id NOT IN (SELECT dev FROM blocked) AND id NOT IN (SELECT dev FROM queried)")
         self.x("DELETE FROM requests WHERE status<>'open' AND ts<?", (cutoff,))
         self.x("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
         self.x("DELETE FROM app_refusals WHERE ts<?", (int(time.time()) - 90 * 24 * 3600,))
@@ -370,6 +374,31 @@ class Store:
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
+
+    def merge_queried(self, dev: str, items: list[dict]) -> None:
+        """Soma as consultas recebidas (todas, não só bloqueios) e mantém só os BLOCKED_MAX_PER_DEV domínios mais recentes."""
+        with self.lock:
+            self.db.execute("BEGIN")
+            try:
+                for it in items:
+                    self.db.execute(
+                        "INSERT INTO queried(dev,domain,count,blocked,first,last) VALUES(?,?,?,?,?,?) "
+                        "ON CONFLICT(dev,domain) DO UPDATE SET count=count+excluded.count, blocked=blocked+excluded.blocked, "
+                        "last=MAX(last,excluded.last), first=MIN(first,excluded.first)",
+                        (dev, it["domain"], it["count"], it["blocked"], it["first"], it["last"]))
+                self.db.execute("DELETE FROM queried WHERE dev=? AND last<?", (dev, int(time.time()) - BLOCKED_KEEP_S))
+                self.db.execute("DELETE FROM queried WHERE dev=? AND domain NOT IN "
+                                "(SELECT domain FROM queried WHERE dev=? ORDER BY last DESC LIMIT ?)", (dev, dev, BLOCKED_MAX_PER_DEV))
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def queried_list(self, dev: str | None = None, per_dev: int = 300):
+        """As consultas mais recentes de cada aparelho (ou só de um), do mais novo para o mais antigo."""
+        sql = ("SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY dev ORDER BY last DESC) rn FROM queried WHERE last>=?"
+               + (" AND dev=?" if dev else "") + ") WHERE rn<=? ORDER BY last DESC")
+        return self.q(sql, [int(time.time()) - BLOCKED_KEEP_S] + ([dev] if dev else []) + [per_dev if not dev else BLOCKED_MAX_PER_DEV])
 
     def put_net_client(self, id_: str, name: str, ip: str) -> None:
         """Cliente da rede que não é aparelho pareado: o Pi-hole o vê (nome e IP), mas ele não tem passkey nem pede liberação."""
