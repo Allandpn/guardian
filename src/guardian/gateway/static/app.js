@@ -752,7 +752,7 @@ let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
 let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que liberou/bloqueou ('' = todos)
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let qryDev = '', qryState = '', qrySearch = '';   // Consultas: aparelho, resultado ('' tudo | 'ok' | 'blk') e pesquisa
-const qrySel = new Set();
+const qrySel = new Set(), qryLvl = new Map();
 let blkDev = '';             // filtro do log: aparelho ('' = todos)
 let blkSrc = 'own';          // filtro do log: 'own' (regras próprias) | 'list' (listas) | '' (tudo)
 let advOpen = false;         // seção Avançado de Liberados aberta
@@ -985,32 +985,51 @@ async function domainsView(tab) {
       const q = qrySearch.trim().toLowerCase();
       return all.filter((x) => (!qryDev || x.dev === qryDev) && (!qryState || stateOf(x) === qryState || (qryState === 'blk' && stateOf(x) === 'mix')) && (!q || x.domain.includes(q)));
     };
-    const keyOf = (x) => x.domain;  // a liberação ou o bloqueio vale para a casa toda, então marca o domínio, não a linha
-    const boxes = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
+    const optsOf = (d) => [d, ...parentsOf(d)];
+    const eff = (d) => { const o = optsOf(d); return o[Math.min(qryLvl.get(d) || 0, o.length - 1)]; };  // o domínio como está encurtado na tela
+    const boxes = new Map(), names = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
     const relBtn = h('button', { class: 'btn pri', type: 'button' }), blkBtn = h('button', { class: 'btn', type: 'button' });
     const box = h('div');
-    const shownDomains = () => [...new Set(visible().map(keyOf))];
+    const shownDomains = () => [...new Set(visible().map((x) => eff(x.domain)))];
     const sync = () => {
-      for (const [d, els] of boxes) els.forEach((e) => { e.checked = qrySel.has(d); });
+      for (const [d, r] of names) {
+        const o = optsOf(d), at = Math.min(qryLvl.get(d) || 0, o.length - 1);
+        r.name.forEach((e) => { e.textContent = o[at]; });
+        r.box.forEach((e) => { e.checked = qrySel.has(o[at]); });
+        r.less.forEach((e) => { e.disabled = at >= o.length - 1; });
+        r.more.forEach((e) => { e.disabled = at === 0; });
+      }
       const sh = shownDomains();
       allBox.checked = sh.length > 0 && sh.every((d) => qrySel.has(d));
       relBtn.textContent = qrySel.size ? `Liberar ${qrySel.size}` : 'Liberar marcados';
       blkBtn.textContent = qrySel.size ? `Bloquear ${qrySel.size}` : 'Bloquear marcados';
       relBtn.disabled = blkBtn.disabled = qrySel.size === 0;
     };
+    const step = (d, delta) => {  // « encurta um nível, » devolve um; a marcação acompanha o nome
+      const old = eff(d), was = qrySel.has(old);
+      qryLvl.set(d, Math.max(0, Math.min(optsOf(d).length - 1, (qryLvl.get(d) || 0) + delta)));
+      if (was) { qrySel.delete(old); qrySel.add(eff(d)); }
+      sync();
+    };
+    const stepBtn = (label, aria, fn) => h('button', { class: 'btn', type: 'button', 'aria-label': aria, style: 'padding:0 10px;min-width:40px', onclick: fn }, label);
     const draw = () => {
-      boxes.clear();
+      names.clear();
       const rows = visible();
       box.replaceChildren(rows.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, rows.slice(0, 400).map((x) => {
         const st = stateOf(x), d = x.domain;
-        const e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${d}`, onchange: (ev) => { if (ev.target.checked) qrySel.add(d); else qrySel.delete(d); sync(); } });
-        boxes.set(d, [...(boxes.get(d) || []), e]);
+        const e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${d}`, onchange: (ev) => { const n = eff(d); if (ev.target.checked) qrySel.add(n); else qrySel.delete(n); sync(); } });
+        const nm = h('span', { class: 'mono', style: 'font-weight:600' }, d);
+        const less = stepBtn('«', 'Encurtar um nível', () => step(d, 1)), more = stepBtn('»', 'Voltar um nível', () => step(d, -1));
+        const r = names.get(d) || { name: [], box: [], less: [], more: [] };
+        r.name.push(nm); r.box.push(e); r.less.push(less); r.more.push(more);
+        names.set(d, r);
         return h('div', { class: 'li' }, e,
-          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, d),
+          h('div', { class: 'sp' }, nm,
             h('div', { class: 'muted' }, `${nameOf(x.dev)} · ${x.count} vez${x.count > 1 ? 'es' : ''} · ${ago(x.last, now)}`, ' ',
               st === 'ok' ? chip('permitido', 'ok') : st === 'blk' ? chip('bloqueado', 'bad') : chip(`${x.blocked} de ${x.count} bloqueadas`, 'warn'),
               covers(d) ? chip(coverBy(d) ? `liberado por ${gname(coverBy(d))}` : 'liberado', 'ok') : null,
-              denyBy[d] ? chip(`bloqueado por ${gname(denyBy[d])}`, 'bad') : null)));
+              denyBy[d] ? chip(`bloqueado por ${gname(denyBy[d])}`, 'bad') : null)),
+          parentsOf(d).length ? h('div', { class: 'acts' }, less, more) : null);
       })) : empty('Nenhuma consulta com esses filtros.'));
       if (rows.length > 400) box.append(h('div', { class: 'muted pad' }, `Mostrando 400 de ${rows.length}. Use a pesquisa para achar o resto.`));
       sync();
@@ -1028,6 +1047,7 @@ async function domainsView(tab) {
       const sent = await confirmSend(ex.id, 'pihole_batch', { items: its }, deny ? denySpec(its) : batchSpec(its));
       if (!sent) return;
       qrySel.clear();
+      qryLvl.clear();
       route();
     });
     relBtn.addEventListener('click', doBatch(false));
@@ -1679,7 +1699,7 @@ async function route() {
   if (!me) { nav.hidden = true; return loginView(); }
   try {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
-    const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|liberados|recusados|vetos|meus)$/) || hash.match(/^#\/(domains)$/);
+    const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|consultas|liberados|recusados|vetos|meus)$/) || hash.match(/^#\/(domains)$/);
     const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados))?$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
