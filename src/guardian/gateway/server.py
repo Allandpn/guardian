@@ -791,8 +791,11 @@ class Gateway:
                     dom = normalize_domain(it.get("domain"))
                 except (ValueError, AttributeError):
                     continue
-                if dom in open_domains:
-                    states[dom] = ("allowed", it.get("ttl_s") if isinstance(it.get("ttl_s"), int) else None)
+                if it.get("deny") is True:
+                    continue
+                for od in open_domains:  # liberar o domínio ou um pai dele (o guardião pode encurtar antes de assinar)
+                    if od == dom or od.endswith("." + dom):
+                        states[od] = ("allowed", it.get("ttl_s") if isinstance(it.get("ttl_s"), int) else None)
         deny = d.get("deny", [])
         if not isinstance(deny, list) or len(deny) > REQUEST_DOMAINS_MAX:
             raise HttpError(400, "lista de negados inválida")

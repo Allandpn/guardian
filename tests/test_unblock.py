@@ -125,6 +125,20 @@ class UnblockFlow(unittest.TestCase):
         self.assertEqual(rq["requests"][0]["status"], "done")
         self.assertEqual(self.c.call("POST", f"/v1/requests/{r['id']}/resolve", {"deny": ["x.com"]})[0], 404)
 
+    def test_06b_releasing_a_parent_closes_the_request_of_the_subdomain(self):
+        import time
+        t = int(time.time()) - 5
+        self.env.store.merge_blocked(self.dev, [{"domain": "cdn.pai-novo.net", "src": "own", "list": "", "cname": 0, "count": 1, "first": t, "last": t}])
+        st, r, _ = self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests", {"kind": "unblock", "domains": ["cdn.pai-novo.net"]})
+        self.assertEqual(st, 200, r)
+        (st, resp, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.ex.dev, "pihole_batch", {"items": [{"domain": "pai-novo.net"}]})
+        self.assertEqual(st, 200, resp)
+        st, rr, _ = self.c.call("POST", f"/v1/requests/{r['id']}/resolve", {"cmd": resp["id"]})
+        self.assertEqual(st, 200, rr)
+        st, rq, _ = self.env.client().signed(self.devkey, "GET", f"/v1/devices/{self.dev}/requests")
+        mine = next(x for x in rq["requests"] if x["id"] == r["id"])
+        self.assertEqual({i["domain"]: i["state"] for i in mine["items"]}, {"cdn.pai-novo.net": "allowed"})
+
     def test_07_resolve_rejects_foreign_or_wrong_commands(self):
         post = lambda d: self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests",  # noqa: E731
                                                   {"kind": "unblock", "domains": d})

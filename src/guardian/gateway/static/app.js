@@ -827,6 +827,7 @@ function avancadoNodes(d, now) {
 // ---------- domínios ----------
 let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
 let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que liberou/bloqueou ('' = todos)
+const reqLvl = new Map();   // Solicitações: quanto cada domínio foi encurtado («)
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let qryDev = '', qryState = '', qrySearch = '';   // Consultas: aparelho, resultado ('' tudo | 'ok' | 'blk') e pesquisa
 const qrySel = new Set(), qryLvl = new Map();
@@ -923,9 +924,22 @@ async function domainsView(tab) {
         await api('POST', `/v1/requests/${q.id}/resolve`, cmd ? { cmd, deny: [] } : { deny: all.filter((x) => x.q.id === q.id && set.has(x.i.domain)).map((x) => x.i.domain) });
       }
     };
+    const optsOf = (d) => [d, ...parentsOf(d)];
+    const eff = (d) => { const o = optsOf(d); return o[Math.min(reqLvl.get(d) || 0, o.length - 1)]; };  // o domínio como está encurtado na tela
+    const nameEls = new Map();
+    const syncNames = () => {
+      for (const [d, r] of nameEls) {
+        const o = optsOf(d), at = Math.min(reqLvl.get(d) || 0, o.length - 1);
+        r.name.forEach((e) => { e.textContent = o[at]; });
+        r.less.forEach((e) => { e.disabled = at >= o.length - 1; });
+        r.more.forEach((e) => { e.disabled = at === 0; });
+      }
+    };
+    const stepReq = (d, delta) => { reqLvl.set(d, Math.max(0, Math.min(optsOf(d).length - 1, (reqLvl.get(d) || 0) + delta))); syncNames(); };
+    const stepBtn = (label, aria, fn) => h('button', { class: 'btn', type: 'button', 'aria-label': aria, style: 'padding:0 10px;min-width:40px', onclick: fn }, label);
     const releaseOne = (x) => act(async () => {
-      const items = [{ domain: x.i.domain, ...ttl }];
-      if (!(await confirmAdult([x.i.domain], blocked))) return;
+      const items = [{ domain: eff(x.i.domain), ...ttl }];
+      if (!(await confirmAdult([items[0].domain], blocked))) return;
       const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
       if (!sent) return;
       await resolveAll([x.i.domain], sent.id);
@@ -936,15 +950,18 @@ async function domainsView(tab) {
       route();
     });
     const doms = [...new Set(shown.map((x) => x.i.domain))];
-    const items50 = doms.slice(0, 50).map((domain) => ({ domain, ...ttl }));
     const releaseAll = act(async () => {  // um só comando (até 50 domínios) e um só passkey
+      const first = doms.slice(0, 50);
+      const items50 = [...new Set(first.map(eff))].map((domain) => ({ domain, ...ttl }));
       if (!(await confirmAdult(items50.map((x) => x.domain), blocked))) return;
       const sent = await confirmSend(ex.id, 'pihole_batch', { items: items50 }, batchSpec(items50));
       if (!sent) return;
-      await resolveAll(items50.map((x) => x.domain), sent.id);
+      await resolveAll(first, sent.id);
+      reqLvl.clear();
       route();
     });
     const refuseAll = act(async () => { await resolveAll(doms, null); route(); });
+    setTimeout(syncNames, 0);  // as setas começam desativadas até o desenho terminar
     body = [phonesFilter(protectedDevs, reqDev, (k) => { reqDev = k; route(); }),
       h('div', { class: 'sec' }, 'Liberar por'), pillGroup('Duração da liberação', REQ_TTLS, reqTtl, (k) => { reqTtl = k; route(); }),
       doms.length > 1 ? h('div', { class: 'card', style: 'margin-top:12px' }, h('div', { class: 'row', style: 'gap:8px' },
@@ -954,10 +971,16 @@ async function domainsView(tab) {
       h('div', { class: 'sec' }, `Solicitações · ${shown.length}`),
       shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => {
         const b = info.get(`${x.q.dev}|${x.i.domain}`);
+        const d0 = x.i.domain, nm = h('span', { class: 'mono', style: 'font-weight:600' }, d0);
+        const less = stepBtn('«', 'Encurtar um nível', () => stepReq(d0, 1)), more = stepBtn('»', 'Voltar um nível', () => stepReq(d0, -1));
+        const nr = nameEls.get(d0) || { name: [], less: [], more: [] };
+        nr.name.push(nm); nr.less.push(less); nr.more.push(more);
+        nameEls.set(d0, nr);
         return h('div', { class: 'li', style: 'flex-wrap:wrap' },
-          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.i.domain),
+          h('div', { class: 'sp' }, nm,
             h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${srcLabel(b)}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
           h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'),
+            parentsOf(d0).length ? [less, more] : null,
             h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
       })) : empty('Nenhuma solicitação de liberação.'),
       otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
@@ -1161,7 +1184,10 @@ async function domainsView(tab) {
     body = [h('div', { class: 'sec' }, `Recusei · ${denied.length}`),
       denied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, denied.map((x) => h('div', { class: 'li' },
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, `${devName(x.dev)} · ${ago(x.ts, now)}`)),
-        h('button', { class: 'btn pri', type: 'button', onclick: send('pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }])) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
+        h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+          if (!(await confirmAdult([x.domain], (await api('GET', '/v1/blocked?src=list')).items))) return;
+          if (await confirmSend(ex.id, 'pihole_batch', { items: [{ domain: x.domain }] }, batchSpec([{ domain: x.domain }]))) route();
+        }) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
   } else if (tab === 'vetos') {
     const parents = veto.parents || [], audit = veto.audit || [], master = isMaster();
     const pdom = h('textarea', { class: 'ta', rows: '3', placeholder: 'reddit.com, x.com, discord.com (um ou vários, separados por espaço, vírgula ou linha)', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Sites para vetar' });
@@ -1222,7 +1248,10 @@ async function domainsView(tab) {
         h('div', { class: 'row', style: 'margin-top:12px' },
           h('button', { class: 'btn grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_deny', args(), { title: `Bloquear ${args().domain} ${domDur ? `por ${durLabel(domDur)}` : ''}?`,
             rows: [['Ação', 'Bloquear domínio'], ['Domínio', args().domain], ['Duração', durLabel(domDur)]], effect: 'vale na hora', effectKind: 'ok' }).then((ok) => ok && route())) }, 'Bloquear'),
-          h('button', { class: 'btn pri grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_allow', args(), batchSpec([{ domain: args().domain, ttl_s: domDur }])).then((ok) => ok && route())) }, 'Liberar')),
+          h('button', { class: 'btn pri grow', type: 'button', onclick: need(async () => {
+            if (!(await confirmAdult([args().domain], (await api('GET', '/v1/blocked?src=list')).items))) return;
+            if (await confirmSend(ex.id, 'pihole_allow', args(), batchSpec([{ domain: args().domain, ttl_s: domDur }]))) route();
+          }) }, 'Liberar')),
         h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Curinga e regex ficam de fora desta versão.')),
       h('details', { class: 'card flat', style: 'margin-top:12px', open: advOpen, ontoggle: (e) => { advOpen = e.target.open; } }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Avançado: bloqueados pelo guardião'),
         h('div', { class: 'sec', style: 'padding-left:0' }, `Bloqueados pelo guardião · ${denyMine.length}`), listCard('deny', denyMine),
