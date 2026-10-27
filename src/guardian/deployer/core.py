@@ -57,6 +57,8 @@ class Deployer:
         self.inbox_uid = inbox_uid
         for d in ("mirrors", "inbox", "done"):
             os.makedirs(os.path.join(state_dir, d), exist_ok=True)
+        with open(self._path("gitconfig"), "w") as f:
+            f.write("[safe]\n\tdirectory = *\n")
         self.status = self._load("status.json", {"history": []})
 
     # --- apoio -----------------------------------------------------------------
@@ -75,7 +77,8 @@ class Deployer:
         if proj.get("ssh_key"):
             env["GIT_SSH_COMMAND"] = f"ssh -i {proj['ssh_key']} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
         env["GIT_TERMINAL_PROMPT"] = "0"
-        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0="*")  # o diretório pode ser de outro usuário
+        env["GIT_CONFIG_GLOBAL"] = self._path("gitconfig")  # só do deployer: aceita repositórios de outro usuário (inclusive em git-upload-pack)
+        env.setdefault("HOME", self.state_dir)
         return env
 
     def _git(self, name: str, *args, cwd=None) -> tuple[int, str]:
