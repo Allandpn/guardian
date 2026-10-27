@@ -172,6 +172,7 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/queried", self.post_queried),
             ("GET", r"/v1/queried", self.queried),
             ("POST", r"/v1/history/clear", self.clear_history),
+            ("GET", r"/v1/allow-origins", self.allow_origins),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/resolve", self.resolve),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
             ("GET", r"/v1/push/key", self.push_key),
@@ -624,10 +625,29 @@ class Gateway:
                 self.store.record_approval(dev, pkg, gid)  # para o guardião ver o que aprovou e poder revogar
             elif cmd["type"] == "revoke_app":
                 self.store.drop_approval(dev, pkg)
+        if ready and cmd["type"] == "pihole_batch":
+            self._note_origins(cmd["args"])
         if ready:
             self._after_ready(cmd, gid)
             self._wake()
         return 200, {"id": cid, "status": "ready" if ready else "awaiting"}, {}
+
+    def _note_origins(self, args: dict) -> None:
+        """Itens do lote podem trazer `devs`: de quais aparelhos veio a vontade de liberar (só para exibir; o executor ignora)."""
+        for it in (args.get("items") if isinstance(args.get("items"), list) else []):
+            if not isinstance(it, dict) or it.get("deny") is True or not isinstance(it.get("devs"), list):
+                continue
+            try:
+                dom = normalize_domain(it.get("domain"))
+            except (ValueError, AttributeError):
+                continue
+            for dv in it["devs"][:5]:
+                if isinstance(dv, str) and (re.fullmatch(NET_ID, dv) or (re.fullmatch(r"[a-z2-7]{20}", dv) and self.store.device(dv))):
+                    self.store.note_origin(dom, dv)
+
+    def allow_origins(self, req):
+        self.guardian(req)
+        return 200, {"origins": self.store.allow_origins(), "net": [dict(r) for r in self.store.net_clients()]}, {}
 
     def _after_ready(self, cmd: dict, by: str) -> None:
         """Efeitos no próprio gateway de um comando que já tem as assinaturas: o gateway guarda o papel de cada guardião."""
@@ -808,6 +828,9 @@ class Gateway:
         if not states:
             raise HttpError(400, "nada para resolver")
         self.store.resolve_domains(row["id"], states, gid)
+        for od, (state, _) in states.items():
+            if state == "allowed":
+                self.store.note_origin(od, row["dev"])
         self.store.audit(row["dev"], "request", f"{gid}: " + ", ".join(f"{k} {v[0]}" for k, v in sorted(states.items()))[:250])
         return 200, {"ok": True}, {}
 

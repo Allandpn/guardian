@@ -139,6 +139,17 @@ class UnblockFlow(unittest.TestCase):
         mine = next(x for x in rq["requests"] if x["id"] == r["id"])
         self.assertEqual({i["domain"]: i["state"] for i in mine["items"]}, {"cdn.pai-novo.net": "allowed"})
 
+    def test_06c_allowed_domains_remember_the_device_that_asked(self):
+        o = self.c.call("GET", "/v1/allow-origins")[1]["origins"]
+        self.assertIn(self.dev, o.get("cdn.exemplo.com", []))      # veio de um pedido
+        self.assertIn(self.dev, o.get("cdn.pai-novo.net", []))
+        (st, resp, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.ex.dev, "pihole_batch",
+                                              {"items": [{"domain": "direto.exemplo.net", "devs": [self.dev, "net-192-168-2-9", "../x"]}]})
+        self.assertEqual(st, 200, resp)
+        o = self.c.call("GET", "/v1/allow-origins")[1]["origins"]
+        self.assertEqual(sorted(o["direto.exemplo.net"]), sorted([self.dev, "net-192-168-2-9"]))   # veio da tela de bloqueios
+        self.assertEqual(self.env.client().call("GET", "/v1/allow-origins")[0], 401)
+
     def test_07_resolve_rejects_foreign_or_wrong_commands(self):
         post = lambda d: self.env.client().signed(self.devkey, "POST", f"/v1/devices/{self.dev}/requests",  # noqa: E731
                                                   {"kind": "unblock", "domains": d})

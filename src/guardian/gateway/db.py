@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS net_clients(id TEXT PRIMARY KEY, name TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, guardian TEXT NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_vetos(dev TEXT NOT NULL, pkg TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
+CREATE TABLE IF NOT EXISTS allow_origins(domain TEXT NOT NULL, dev TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(domain, dev));
 CREATE TABLE IF NOT EXISTS app_asks(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS analyses(dev TEXT NOT NULL, ctr INTEGER NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL,
   model TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', PRIMARY KEY(dev, ctr));
@@ -65,6 +66,9 @@ class Store:
                     self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
+            # liberações de pedidos que já existiam: de qual aparelho veio cada uma
+            self.db.execute("INSERT OR IGNORE INTO allow_origins(domain,dev,ts) SELECT rd.domain, r.dev, MAX(rd.ts) FROM request_domains rd "
+                            "JOIN requests r ON r.id=rd.rid WHERE rd.state='allowed' GROUP BY rd.domain, r.dev")
 
     def q(self, sql: str, args=()):
         with self.lock:
@@ -176,7 +180,7 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests", "blocked", "queried", "app_vetos", "app_refusals", "app_approvals", "app_asks"):
+            for t in ("commands", "ctrs", "requests", "blocked", "queried", "allow_origins", "app_vetos", "app_refusals", "app_approvals", "app_asks"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
             self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -419,6 +423,17 @@ class Store:
         sql = ("SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY dev ORDER BY last DESC) rn FROM queried WHERE last>=?"
                + (" AND dev=?" if dev else "") + ") WHERE rn<=? ORDER BY last DESC")
         return self.q(sql, [int(time.time()) - BLOCKED_KEEP_S] + ([dev] if dev else []) + [per_dev if not dev else BLOCKED_MAX_PER_DEV])
+
+    def note_origin(self, domain: str, dev: str) -> None:
+        """Guarda para qual aparelho (ou cliente da rede) uma liberação foi feita; a lista de Liberados mostra isso."""
+        self.x("INSERT INTO allow_origins(domain,dev,ts) VALUES(?,?,?) ON CONFLICT(domain,dev) DO UPDATE SET ts=excluded.ts", (domain, dev, int(time.time())))
+        self.x("DELETE FROM allow_origins WHERE rowid IN (SELECT rowid FROM allow_origins ORDER BY ts DESC LIMIT -1 OFFSET 20000)")
+
+    def allow_origins(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for r in self.q("SELECT domain, dev FROM allow_origins ORDER BY ts DESC"):
+            out.setdefault(r["domain"], []).append(r["dev"])
+        return out
 
     def clear_history(self, what: str, dev: str | None = None) -> int:
         """Zera o histórico guardado no gateway ('blocked', 'queried' ou 'both'), de um aparelho ou de todos. Não toca no Pi-hole."""

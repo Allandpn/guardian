@@ -912,6 +912,19 @@ async function domainsView(tab) {
   const removeManySpec = (xs) => ({ title: `Bloquear de novo ${xs.length} domínio${xs.length > 1 ? 's' : ''}?`,
     rows: xs.slice(0, 8).map((x) => ['Domínio', x]).concat(xs.length > 8 ? [['…', `mais ${xs.length - 8}`]] : []), effect: 'vale na hora', effectKind: 'ok',
     note: 'Volta a valer a regra do Pi-hole para estes domínios.' });
+  // Para qual aparelho cada liberação foi feita: vem dos pedidos e das telas de Bloqueios e Consultas (o pai cobre os subdomínios).
+  const forDevs = new Map();
+  if (tab === 'liberados') {
+    const og = await api('GET', '/v1/allow-origins');
+    const netName = (id) => (og.net.find((n) => n.id === id) || {}).name || id;
+    for (const [dom, devs] of Object.entries(og.origins)) {
+      for (const anc of [dom, ...parentsOf(dom)]) {
+        const set = forDevs.get(anc) || new Set();
+        devs.forEach((dv) => set.add(dv.startsWith('net-') ? netName(dv) : devName(dv)));
+        forDevs.set(anc, set);
+      }
+    }
+  }
   const atOf = (d) => (r.allow_at || {})[d] || 0;  // quando a liberação foi criada no Pi-hole (0 = sem data)
   // Lista de liberados: mais recentes primeiro, com data e hora, e uma pesquisa por domínio (também acha o pai que cobre o domínio digitado).
   const allowCard = (list, emptyText, withBy) => {
@@ -928,7 +941,7 @@ async function domainsView(tab) {
       picker.reset();
       box.replaceChildren(shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => h('div', { class: 'li' }, picker.box(x),
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
-          h('div', { class: 'muted' }, atOf(x) ? `${fmtWhen(atOf(x))} · ${ago(atOf(x), now)}` : 'sem data', withBy && by[x] ? ` · liberado por ${gname(by[x])}` : '', ' ',
+          h('div', { class: 'muted' }, forDevs.has(x) ? `para ${[...forDevs.get(x)].join(', ')} · ` : '', atOf(x) ? `${fmtWhen(atOf(x))} · ${ago(atOf(x), now)}` : 'sem data', withBy && by[x] ? ` · liberado por ${gname(by[x])}` : '', ' ',
             temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
         h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) :
         empty(q ? 'Nenhum liberado combina com a pesquisa.' : emptyText));
@@ -1088,7 +1101,7 @@ async function domainsView(tab) {
     const checkFor = (d) => h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${d}`, onchange: (ev) => { const e = eff(d); if (ev.target.checked) blkSel.add(e); else blkSel.delete(e); sync(); } });
     allBox.addEventListener('change', () => { if (allBox.checked) pickNow().forEach((d) => blkSel.add(d)); else pickNow().forEach((d) => blkSel.delete(d)); sync(); });
     goBtn.addEventListener('click', act(async () => {  // um só comando (até 50 domínios) e um só passkey
-      const its = [...blkSel].slice(0, 50).map((domain) => ({ domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
+      const its = [...blkSel].slice(0, 50).map((domain) => ({ domain, devs: [...new Set(everyone.filter((x) => eff(x.domain) === domain).map((x) => x.dev))].slice(0, 5), ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
       if (!its.length) return;
       if (!(await confirmAdult(its.map((x) => x.domain), everyone))) return;
       const sent = await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its));
@@ -1110,7 +1123,7 @@ async function domainsView(tab) {
         covers(x.domain) ? chip(coverBy(x.domain) ? `liberado por ${gname(coverBy(x.domain))}` : 'liberado', 'ok') : x.src === 'veto' ? null : h('div', { class: 'acts' },
           parentsOf(x.domain).length ? [r.less, r.more] : null,
           h('button', { class: 'btn', type: 'button', onclick: act(async () => {
-            const its = [{ domain: eff(x.domain), ...(blkTtl ? { ttl_s: blkTtl } : {}) }];
+            const its = [{ domain: eff(x.domain), devs: [x.dev], ...(blkTtl ? { ttl_s: blkTtl } : {}) }];
             if (!(await confirmAdult([its[0].domain], everyone))) return;
             if (await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its))) { blkLvl.delete(x.domain); route(); }
           }) }, 'Liberar')));
@@ -1200,7 +1213,8 @@ async function domainsView(tab) {
     const denySpec = (its) => ({ title: `Bloquear ${its.length} domínio${its.length > 1 ? 's' : ''}?`, rows: its.map((i) => [i.domain, 'bloquear']),
       effect: 'vale na hora', effectKind: 'ok', note: 'Vale para a casa toda, com os subdomínios. Tira da lista de liberados, se estiver lá.', noteKind: 'warn', danger: true, confirm: 'Bloquear com passkey' });
     const doBatch = (deny) => act(async () => {  // um só comando (até 50 domínios) e um só passkey
-      const its = [...qrySel].slice(0, 50).map((domain) => (deny ? { domain, deny: true } : { domain, ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
+      const its = [...qrySel].slice(0, 50).map((domain) => (deny ? { domain, deny: true }
+        : { domain, devs: [...new Set(all.filter((x) => eff(x.domain) === domain).map((x) => x.dev))].slice(0, 5), ...(blkTtl ? { ttl_s: blkTtl } : {}) }));
       if (!its.length) return;
       if (!deny) {
         const listed = (await api('GET', '/v1/blocked?src=list')).items;
