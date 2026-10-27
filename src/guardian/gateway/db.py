@@ -420,6 +420,16 @@ class Store:
                + (" AND dev=?" if dev else "") + ") WHERE rn<=? ORDER BY last DESC")
         return self.q(sql, [int(time.time()) - BLOCKED_KEEP_S] + ([dev] if dev else []) + [per_dev if not dev else BLOCKED_MAX_PER_DEV])
 
+    def clear_history(self, what: str, dev: str | None = None) -> int:
+        """Zera o histórico guardado no gateway ('blocked', 'queried' ou 'both'), de um aparelho ou de todos. Não toca no Pi-hole."""
+        n = 0
+        with self.lock:
+            for t in (("blocked", "queried") if what == "both" else (what,)):
+                cur = self.db.execute(f"DELETE FROM {t}" + (" WHERE dev=?" if dev else ""), (dev,) if dev else ())
+                n += cur.rowcount
+        self.x("DELETE FROM net_clients WHERE id NOT IN (SELECT dev FROM blocked) AND id NOT IN (SELECT dev FROM queried)")
+        return n
+
     def put_net_client(self, id_: str, name: str, ip: str) -> None:
         """Cliente da rede que não é aparelho pareado: o Pi-hole o vê (nome e IP), mas ele não tem passkey nem pede liberação."""
         self.x("INSERT INTO net_clients(id,name,ip,seen) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, ip=excluded.ip, seen=excluded.seen",

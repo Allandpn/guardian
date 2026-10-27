@@ -96,6 +96,20 @@ class AutoClients(unittest.TestCase):
         st, _, _ = self.env.client().signed(self.k1, "POST", f"/v1/devices/{self.d1}/unblock", {"domains": ["tv.exemplo.com"]})
         self.assertNotEqual(st, 200)
 
+    def test_02d_admin_clears_history_without_touching_pihole(self):
+        self.fake.queries += [{"time": NOW - 5, "domain": "limpar.exemplo.com", "status": "REGEX", "client": {"ip": "192.168.2.77", "name": "x"}}]
+        self.ex.collect_blocks()
+        self.assertEqual(self.c.call("POST", "/v1/history/clear", {"what": "nada"})[0], 400)
+        self.assertEqual(self.c.call("POST", "/v1/history/clear", {"what": "both", "dev": "../x"})[0], 400)
+        self.assertEqual(self.env.client().call("POST", "/v1/history/clear", {"what": "both"})[0], 401)
+        st, r, _ = self.c.call("POST", "/v1/history/clear", {"what": "both", "dev": "net-192-168-2-77"})
+        self.assertEqual((st, r["removed"] >= 2), (200, True), r)
+        self.assertFalse([i for i in self.c.call("GET", "/v1/blocked")[1]["items"] if i["dev"] == "net-192-168-2-77"])
+        self.assertFalse([i for i in self.c.call("GET", "/v1/queried")[1]["items"] if i["dev"] == "net-192-168-2-77"])
+        self.assertTrue(self.c.call("GET", "/v1/blocked")[1]["items"])  # os outros aparelhos ficam
+        self.assertEqual(self.c.call("POST", "/v1/history/clear", {"what": "both"})[0], 200)
+        self.assertEqual(self.c.call("GET", "/v1/blocked")[1]["items"], [])
+
     def test_02c_own_machine_addresses_are_not_network_clients(self):
         from unittest import mock
         self.fake.queries.append({"time": NOW - 10, "domain": "eu-mesmo.exemplo.com", "status": "REGEX", "client": {"ip": "100.99.99.1", "name": "pi.hole"}})

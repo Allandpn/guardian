@@ -912,6 +912,16 @@ async function domainsView(tab) {
       rows: adult.slice(0, 8).map((d) => ['Domínio', d]).concat(adult.length > 8 ? [['…', `mais ${adult.length - 8}`]] : []),
       note: 'Estes domínios estão em lista de conteúdo adulto. Confirme de novo que quer liberar.', noteKind: 'warn', confirm: 'Sim, liberar mesmo', danger: true });
   };
+  // Limpar o histórico que a tela mostra (Bloqueios ou Consultas), do aparelho filtrado ou de todos. Só o guardião-mor; não mexe no Pi-hole.
+  const clearHist = (what, dev, devName_) => (admin ? h('div', { class: 'pad', style: 'margin:8px 0' }, h('button', { class: 'btn', type: 'button', onclick: act(async () => {
+    if (!(await sheet({ title: what === 'blocked' ? 'Limpar o histórico de bloqueios?' : 'Limpar o histórico de consultas?',
+      rows: [['O que', what === 'blocked' ? 'Bloqueios das últimas 24 h' : 'Consultas das últimas 24 h'], ['Aparelho', dev ? devName_ : 'todos']],
+      note: 'Só zera o que esta tela mostra; não mexe em nenhuma regra do Pi-hole. A lista volta a encher com as próximas consultas.' + (what === 'blocked' ? ' Um aparelho só consegue pedir liberação de um domínio depois que ele for bloqueado de novo.' : ''),
+      noteKind: 'warn', confirm: 'Limpar', danger: true }))) return;
+    const r2 = await api('POST', '/v1/history/clear', { what, ...(dev ? { dev } : {}) });
+    toast(`${r2.removed} linha${r2.removed === 1 ? '' : 's'} removida${r2.removed === 1 ? '' : 's'}.`);
+    route();
+  }) }, dev ? `Limpar histórico de ${devName_}` : 'Limpar histórico de todos')) : null);
   let body;
   if (tab === 'solicitacoes') {
     const blocked = unb.length ? (await api('GET', '/v1/blocked')).items : [];
@@ -1073,6 +1083,7 @@ async function domainsView(tab) {
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
         TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, s]) => pill(label, blkTtl === s, () => { blkTtl = s; route(); }))),
       h('div', { class: 'sec' }, 'Últimas 24 horas'),
+      clearHist('blocked', blkDev, nameOf(blkDev)),
       selectBar, items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map(blockRow)) : empty('Nada bloqueado com esses filtros.')];
   } else if (tab === 'consultas') {
     const resp = await api('GET', '/v1/queried');
@@ -1169,6 +1180,7 @@ async function domainsView(tab) {
       h('div', { class: 'durs', style: 'padding:0 14px', role: 'group', 'aria-label': 'Duração da liberação' },
         TTL_CHOICES.filter((c) => c[2] !== null).map(([, label, sec]) => h('button', { type: 'button', 'aria-pressed': String(blkTtl === sec), onclick: () => { blkTtl = sec; route(); } }, label))),
       h('div', { class: 'sec' }, 'Últimas 24 horas'),
+      clearHist('queried', qryDev, nameOf(qryDev)),
       h('div', { class: 'pad', style: 'margin:12px 0' }, search),
       h('div', { class: 'card', style: 'margin-bottom:12px' }, h('div', { class: 'row', style: 'gap:10px' },
         h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), relBtn, blkBtn),

@@ -171,6 +171,7 @@ class Gateway:
             ("GET", r"/v1/blocked", self.blocked),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/queried", self.post_queried),
             ("GET", r"/v1/queried", self.queried),
+            ("POST", r"/v1/history/clear", self.clear_history),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/resolve", self.resolve),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
             ("GET", r"/v1/push/key", self.push_key),
@@ -1062,6 +1063,23 @@ class Gateway:
                 continue
         self.store.drop_blocked(target, veto)
         return 200, {"ok": True, "accepted": len(items)}, {}
+
+    def clear_history(self, req):
+        """Limpar o que as telas Bloqueios e Consultas mostram (só o guardião-mor e o mestre). Não mexe em regras do Pi-hole."""
+        gid, role, _ = self.who(req)
+        if role not in cmds.ADMINISH:
+            raise HttpError(403, "só o guardião-mor limpa o histórico")
+        if not self.l_cmd.allow(gid):
+            raise HttpError(429, "devagar")
+        d = req.json()
+        what, dev = d.get("what"), d.get("dev")
+        if what not in ("blocked", "queried", "both"):
+            raise HttpError(400, "o que limpar?")
+        if dev is not None and not (isinstance(dev, str) and (re.fullmatch(r"[a-z2-7]{20}", dev) or re.fullmatch(NET_ID, dev))):
+            raise HttpError(400, "aparelho inválido")
+        n = self.store.clear_history(what, dev)
+        self.store.audit(None, "history", f"{gid}: limpou o histórico ({what}{', ' + dev if dev else ', todos'}): {n} linhas")
+        return 200, {"ok": True, "removed": n}, {}
 
     def post_queried(self, req, dev):
         row = self.device(req, dev)
