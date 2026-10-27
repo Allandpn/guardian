@@ -18,11 +18,13 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
 
-from . import policy
+from . import apps, policy
 
 _PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+APP_REFRESH_S = 300   # a API do GitHub limita consultas sem token; as Releases mudam devagar
 KEEP_OFFERS = 5
 KEEP_HISTORY = 20
 HEALTH_TIMEOUT_S = 90
@@ -52,10 +54,12 @@ def _run(argv, cwd=None, env=None, timeout=600):
 
 
 class Deployer:
-    def __init__(self, registry: dict, state_dir: str, run=_run, now=time.time, sleep=time.sleep, inbox_uid: int | None = None):
+    def __init__(self, registry: dict, state_dir: str, run=_run, now=time.time, sleep=time.sleep, inbox_uid: int | None = None, github=None):
         self.reg, self.state_dir, self.run, self.now, self.sleep = registry, state_dir, run, now, sleep
+        self.github = github   # fábrica (token) -> cliente do GitHub; trocada nos testes
+        self._app_ts = 0.0
         self.inbox_uid = inbox_uid
-        for d in ("mirrors", "inbox", "done"):
+        for d in ("mirrors", "inbox", "done", "apks"):
             os.makedirs(os.path.join(state_dir, d), exist_ok=True)
         with open(self._path("gitconfig"), "w") as f:
             f.write("[safe]\n\tdirectory = *\n")
@@ -109,7 +113,7 @@ class Deployer:
     def _tagged_commits(self, name: str, m: str) -> dict[str, str]:
         """{commit: etiqueta} das etiquetas de versão (a ponta de cada uma)."""
         pre = self.reg[name].get("tag_prefix", "release/")
-        rc, out = self._git(name, "--git-dir", m, "for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", f"refs/tags/{pre}")
+        rc, out = self._git(name, "--git-dir", m, "for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", f"refs/tags/{pre}*")
         res: dict[str, str] = {}
         for tag in out.split() if rc == 0 else []:
             rc2, c = self._git(name, "--git-dir", m, "rev-list", "-n1", tag)
@@ -132,7 +136,7 @@ class Deployer:
         """Arquivos que a versão muda em relação ao que está no ar. None se não deu para comparar (tratado como sensível)."""
         if not base:
             return None
-        if not self._have(name, m, base):  # o que está no ar pode não ter etiqueta: traz do próprio diretório de trabalho
+        if not self._have(name, m, base) and self.reg[name].get("workdir"):  # o que está no ar pode não ter etiqueta: traz do diretório de trabalho
             self._git(name, "--git-dir", m, "fetch", self.reg[name]["workdir"], base)
         if not self._have(name, m, base):
             return None
@@ -181,9 +185,65 @@ class Deployer:
             shutil.rmtree(tmp, ignore_errors=True)
 
     # --- ofertas: o que o mestre pode aprovar -----------------------------------------------
+    def _code_projects(self) -> list[str]:
+        return [n for n, p in self.reg.items() if p.get("type") != "android_app"]
+
+    # --- apps Android: Releases do GitHub viram ofertas de instalação ---------------------------------
+    def refresh_app_offers(self, force: bool = False) -> list[dict]:
+        names = [n for n, p in self.reg.items() if p.get("type") == "android_app"]
+        if not names or (not force and self.now() - self._app_ts < APP_REFRESH_S):
+            return []
+        self._app_ts = self.now()
+        cache = self._load("apps-cache.json", {})
+        offers, errors, keep = [], [], set()
+        for name in names:
+            proj = self.reg[name]
+            try:
+                token = None
+                if proj.get("token_file") and os.path.isfile(proj["token_file"]):
+                    token = open(proj["token_file"]).read().strip() or None
+                gh = self.github(token) if self.github else apps.GitHub(token)
+                rels = [r for r in gh.releases(proj["github"]) if isinstance(r, dict) and not r.get("draft")
+                        and (proj.get("prerelease") or not r.get("prerelease")) and str(r.get("tag_name", "")).startswith(proj.get("tag_prefix", ""))]
+                commit_of = {}
+                if proj.get("repo"):  # o commit de cada etiqueta, para dizer se a versão mexe em arquivos de segurança
+                    m = self._fetch_tags(name)
+                    commit_of = {tag: c for c, tag in self._tagged_commits(name, m).items()}
+                for i, rel in enumerate(rels[:3]):
+                    asset = apps.pick_asset(rel, proj.get("asset", r"\.apk$"))
+                    if not asset or int(asset.get("size", 0)) > apps.MAX_APK_BYTES:
+                        continue
+                    key = f"{name}:{asset['id']}"
+                    ent = cache.get(key)
+                    path = lambda sha: self._path("apks", sha + ".apk")
+                    if not ent or not os.path.isfile(path(ent["sha256"])):
+                        sha, size = gh.download(proj["github"], asset["id"], self._path("apks", f".dl-{asset['id']}"))
+                        os.replace(self._path("apks", f".dl-{asset['id']}"), path(sha))
+                        ent = cache[key] = {"sha256": sha, "size": size}
+                    keep.add(ent["sha256"])
+                    tag = rel["tag_name"]
+                    base = commit_of.get(rels[i + 1]["tag_name"]) if i + 1 < len(rels) else None
+                    m_ = self._mirror(name) if proj.get("repo") else None
+                    files = self.changed_files(name, m_, base, commit_of[tag]) if m_ and tag in commit_of else None
+                    sens = self.sensitive_of(name, files)
+                    body = (rel.get("body") or "").strip().splitlines()
+                    offers.append({"kind": "app", "app": name, "pkg": proj["pkg"], "tag": tag, "version_name": tag.lstrip("v")[:40],
+                                   "sha256": ent["sha256"], "size": ent["size"], "asset": asset["name"][:80],
+                                   "subject": (rel.get("name") or (body[0] if body else ""))[:80],
+                                   "author": str((rel.get("author") or {}).get("login", ""))[:40], "ts": apps.release_ts(rel),
+                                   "files": len(files) if files is not None else None, "sensitive": sens[:8], "sensitive_n": len(sens)})
+            except (OSError, ValueError, KeyError, RuntimeError, urllib.error.URLError) as e:
+                errors.append({"app": name, "error": str(e)[:200]})
+        for f in os.listdir(self._path("apks")):   # só ficam os APKs das ofertas atuais
+            if f.endswith(".apk") and f[:-4] not in keep and offers:
+                os.remove(self._path("apks", f))
+        _atomic_write(self._path("apps-cache.json"), {k: v for k, v in cache.items() if v["sha256"] in keep})
+        _atomic_write(self._path("apk-offers.json"), {"ts": int(self.now()), "offers": offers, "errors": errors})
+        return offers
+
     def refresh_offers(self) -> list[dict]:
         offers: list[dict] = []
-        for name in self.reg:
+        for name in self._code_projects():
             try:
                 m = self._fetch_tags(name)
             except RuntimeError as e:
@@ -205,7 +265,7 @@ class Deployer:
                 if sum(1 for o in offers if o["project"] == name and "commit" in o) >= KEEP_OFFERS:
                     break
         _atomic_write(self._path("offers.json"), {"ts": int(self.now()), "offers": offers,
-                                                  "current": {n: self._deployed(n) for n in self.reg}})
+                                                  "current": {n: self._deployed(n) for n in self._code_projects()}})
         return offers
 
     # --- instalar ---------------------------------------------------------------------
@@ -319,3 +379,4 @@ class Deployer:
     def tick(self) -> None:
         self.process_inbox()
         self.refresh_offers()
+        self.refresh_app_offers()

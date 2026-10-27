@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS app_refusals(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts
 CREATE TABLE IF NOT EXISTS app_approvals(dev TEXT NOT NULL, pkg TEXT NOT NULL, guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS app_vetos(dev TEXT NOT NULL, pkg TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', guardian TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS allow_origins(domain TEXT NOT NULL, dev TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(domain, dev));
+CREATE TABLE IF NOT EXISTS apks(sha256 TEXT PRIMARY KEY, size INTEGER NOT NULL, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS apk_grants(dev TEXT NOT NULL, sha256 TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, sha256));
 CREATE TABLE IF NOT EXISTS app_asks(dev TEXT NOT NULL, pkg TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(dev, pkg));
 CREATE TABLE IF NOT EXISTS analyses(dev TEXT NOT NULL, ctr INTEGER NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL,
   model TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', PRIMARY KEY(dev, ctr));
@@ -180,7 +182,7 @@ class Store:
 
     def forget_device(self, dev: str):
         with self.lock:
-            for t in ("commands", "ctrs", "requests", "blocked", "queried", "allow_origins", "app_vetos", "app_refusals", "app_approvals", "app_asks"):
+            for t in ("commands", "ctrs", "requests", "blocked", "queried", "apk_grants", "allow_origins", "app_vetos", "app_refusals", "app_approvals", "app_asks"):
                 self.db.execute(f"DELETE FROM {t} WHERE dev=?", (dev,))
             self.db.execute("DELETE FROM request_domains WHERE rid NOT IN (SELECT id FROM requests)")
             self.db.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -423,6 +425,27 @@ class Store:
         sql = ("SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY dev ORDER BY last DESC) rn FROM queried WHERE last>=?"
                + (" AND dev=?" if dev else "") + ") WHERE rn<=? ORDER BY last DESC")
         return self.q(sql, [int(time.time()) - BLOCKED_KEEP_S] + ([dev] if dev else []) + [per_dev if not dev else BLOCKED_MAX_PER_DEV])
+
+    # --- APKs: o Pi os entrega ao gateway; o aparelho só baixa o que um comando install_app assinado citou -------------
+    def add_apk(self, sha256: str, size: int) -> None:
+        self.x("INSERT INTO apks(sha256,size,ts) VALUES(?,?,?) ON CONFLICT(sha256) DO UPDATE SET ts=excluded.ts", (sha256, size, int(time.time())))
+
+    def apk_hashes(self) -> list[str]:
+        return [r["sha256"] for r in self.q("SELECT sha256 FROM apks")]
+
+    def grant_apk(self, dev: str, sha256: str, pkg: str) -> None:
+        self.x("INSERT INTO apk_grants(dev,sha256,pkg,ts) VALUES(?,?,?,?) ON CONFLICT(dev,sha256) DO UPDATE SET ts=excluded.ts", (dev, sha256, pkg, int(time.time())))
+
+    def apk_granted(self, dev: str, sha256: str) -> bool:
+        return bool(self.one("SELECT 1 FROM apk_grants WHERE dev=? AND sha256=?", (dev, sha256)))
+
+    def prune_apks(self, keep: int) -> list[str]:
+        """Guarda só os `keep` APKs mais recentes (os que ainda têm uma instalação autorizada para um aparelho ficam). Devolve os apagados."""
+        rows = self.q("SELECT sha256 FROM apks WHERE sha256 NOT IN (SELECT sha256 FROM apk_grants WHERE ts>?) ORDER BY ts DESC", (int(time.time()) - 7 * 86400,))
+        drop = [r["sha256"] for r in rows][keep:]
+        for h in drop:
+            self.x("DELETE FROM apks WHERE sha256=?", (h,))
+        return drop
 
     def note_origin(self, domain: str, dev: str) -> None:
         """Guarda para qual aparelho (ou cliente da rede) uma liberação foi feita; a lista de Liberados mostra isso."""

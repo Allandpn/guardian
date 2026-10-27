@@ -50,3 +50,35 @@ exige editar esse arquivo como root (ainda não há comando assinado para isso).
 ## Primeiro deploy de teste
 
 A versão `release/2` foi criada só para testar o fluxo (mudança apenas de documentação). Ela aparece em Deploys como "não mexe em segurança".
+
+## Apps Android (loja própria)
+
+Instalar e atualizar apps nos celulares sem a janela de dev. O aparelho **nunca fala com o GitHub**.
+
+1. No registro (`/etc/guardian-deploy/projects.json`) o app é uma entrada `"type": "android_app"`:
+
+   ```json
+   "filtro-chamadas": {
+     "type": "android_app",
+     "github": "Allandpn/FiltroChamadasIndesejadas",
+     "pkg": "com.exemplo.filtro",
+     "tag_prefix": "v",
+     "asset": "\\.apk$",
+     "token_file": "/etc/guardian-deploy/github_token",
+     "repo": "git@github.com:Allandpn/FiltroChamadasIndesejadas.git",
+     "ssh_key": "/etc/guardian-deploy/filtro_deploy_key",
+     "sensitive": ["app/src/main/java/*/policy/*", "app/src/main/AndroidManifest.xml"]
+   }
+   ```
+
+   `token_file` (token do GitHub só de leitura de *Contents*) e `ssh_key` só são necessários em repositório privado. Sem `repo`, o Pi não
+   calcula a linha de risco. Cadastrar um app novo exige editar esse arquivo como root.
+2. A cada 5 minutos o deployer lê as Releases, baixa o APK (guardado em `/var/lib/guardian-deploy/apks/<sha256>.apk`) e publica `apk-offers.json`
+   com pacote, versão, SHA-256, tamanho e quais arquivos de segurança a versão toca (comparada com a Release anterior).
+3. O executor envia os APKs novos ao gateway (`POST /v1/devices/{executor}/apks/{sha256}`, em pedaços, conferido contra o hash da URL).
+4. O mestre abre **Apps > Catálogo** e toca em **Instalar em <aparelho>**: comando `install_app {pkg, sha256, size}` assinado, só dele e só na janela dele.
+5. O gateway só libera o download (`GET /v1/devices/{dev}/apk/{sha256}`) para o aparelho cujo comando assinado citou aquele hash.
+6. O aparelho confere o hash e o certificado e instala em silêncio (Device Owner). Contrato completo para o app: `docs/APP-INSTALL.md`.
+
+Limite: o mestre aprova um arquivo, não código. Para o NotToday, o recomendado é gerar o APK num repositório de CI da conta do mestre (sem escrita
+para quem desenvolve), que compila a etiqueta e publica a Release.

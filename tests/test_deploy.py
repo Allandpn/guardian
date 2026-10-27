@@ -248,6 +248,87 @@ class DeployerCompose(unittest.TestCase):
         self.assertTrue(self.d.deploy({"project": "p", "commit": c})["ok"])
 
 
+class FakeGitHub:
+    def __init__(self, releases, blobs):
+        self.rels, self.blobs, self.downloads = releases, blobs, 0
+
+    def releases(self, repo):
+        return self.rels
+
+    def download(self, repo, asset_id, dest, max_bytes=0):
+        import hashlib
+        self.downloads += 1
+        data = self.blobs[asset_id]
+        with open(dest, "wb") as f:
+            f.write(data)
+        return hashlib.sha256(data).hexdigest(), len(data)
+
+
+class AppOffers(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.origin, self.state = os.path.join(t, "o"), os.path.join(t, "s")
+        os.makedirs(self.origin)
+        git(self.origin, "init", "-q", "-b", "main")
+        for path, content, tag in (("a.txt", "1", "v1.0"), ("sec/policy.kt", "2", "v1.1")):
+            full = os.path.join(self.origin, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            open(full, "w").write(content)
+            git(self.origin, "add", "-A")
+            git(self.origin, "commit", "-q", "-m", "c " + tag)
+            git(self.origin, "tag", tag)
+        rel = lambda tag, aid, ts: {"tag_name": tag, "name": "Versão " + tag, "body": "notas\nlinha 2", "draft": False, "prerelease": False,
+                                    "published_at": ts, "author": {"login": "allan"}, "assets": [{"id": aid, "name": "app.apk", "size": 10}]}
+        self.gh = FakeGitHub([rel("v1.1", 12, "2026-10-27T10:00:00Z"), rel("v1.0", 11, "2026-10-20T10:00:00Z"),
+                              {**rel("v0.9", 10, "2026-10-01T10:00:00Z"), "prerelease": True}],
+                             {11: b"apk-um", 12: b"apk-dois"})
+        self.reg = {"filtro": {"type": "android_app", "github": "o/filtro", "repo": self.origin, "tag_prefix": "v", "pkg": "com.exemplo.filtro",
+                               "sensitive": ["sec/*"]}}
+        self.d = Deployer(self.reg, self.state, sleep=lambda s: None, github=lambda token: self.gh)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_01_releases_become_offers_with_hash_and_risk(self):
+        offers = {o["tag"]: o for o in self.d.refresh_app_offers(force=True)}
+        self.assertEqual(sorted(offers), ["v1.0", "v1.1"])              # pré-lançamento fica de fora
+        import hashlib
+        self.assertEqual(offers["v1.1"]["sha256"], hashlib.sha256(b"apk-dois").hexdigest())
+        self.assertEqual(offers["v1.1"]["size"], 8)
+        self.assertEqual(offers["v1.1"]["pkg"], "com.exemplo.filtro")
+        self.assertEqual(offers["v1.1"]["sensitive"], ["sec/policy.kt"])    # mexe em arquivo de segurança em relação à v1.0
+        self.assertEqual(offers["v1.1"]["subject"], "Versão v1.1")
+        self.assertEqual(offers["v1.1"]["author"], "allan")
+        self.assertGreater(offers["v1.1"]["ts"], 0)
+        self.assertEqual(offers["v1.0"]["sensitive_n"], 1)               # a primeira não tem com o que comparar: sempre exige atenção
+        for o in offers.values():
+            self.assertTrue(os.path.isfile(os.path.join(self.state, "apks", o["sha256"] + ".apk")))
+        data = json.load(open(os.path.join(self.state, "apk-offers.json")))
+        self.assertEqual(len(data["offers"]), 2)
+
+    def test_02_does_not_download_again_and_is_throttled(self):
+        self.d.refresh_app_offers(force=True)
+        n = self.gh.downloads
+        self.d.refresh_app_offers(force=True)
+        self.assertEqual(self.gh.downloads, n)                            # já tinha o arquivo
+        self.assertEqual(self.d.refresh_app_offers(), [])                 # sem force, dentro do intervalo: não consulta
+
+    def test_03_errors_are_reported_not_raised(self):
+        class Boom(FakeGitHub):
+            def releases(self, repo):
+                raise OSError("sem rede")
+        self.d.github = lambda token: Boom([], {})
+        self.d.refresh_app_offers(force=True)
+        data = json.load(open(os.path.join(self.state, "apk-offers.json")))
+        self.assertEqual(data["errors"][0]["app"], "filtro")
+        self.assertIn("sem rede", data["errors"][0]["error"])
+
+    def test_04_android_app_entries_are_not_treated_as_code_projects(self):
+        self.assertEqual(self.d.refresh_offers(), [])                     # sem workdir nem passos: não quebra
+        self.assertEqual(json.load(open(os.path.join(self.state, "offers.json")))["current"], {})
+
+
 class ExecutorQueuesDeploy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

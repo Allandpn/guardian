@@ -43,9 +43,34 @@ T_PARENT_BLOCK = "pihole_parent_block"
 # Colocar uma versão de um projeto em produção no Pi: só o mestre, sozinho, dentro do horário dele. O comando leva só o projeto e o hash do
 # commit (e a confirmação de que a versão mexe em áreas de segurança); quem instala é o "deployer" do Pi, que roda como root e confere tudo de novo.
 T_DEPLOY = "deploy"
-MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY}
+# Instalar ou atualizar um app no aparelho (também o próprio NotToday): só o mestre. O comando leva o pacote e o SHA-256 do APK; o aparelho baixa
+# o arquivo do gateway, confere o hash (e o certificado do app) e instala em silêncio como Device Owner. Um APK sem comando assinado nunca é instalado.
+T_INSTALL_APP = "install_app"
+EXECUTOR_MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY}   # os que o executor do Pi executa
+MASTER_TYPES = EXECUTOR_MASTER_TYPES | {T_INSTALL_APP}
+MAX_APK_BYTES = 150 * 1024 * 1024
+_PKG = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def check_install_args(args: dict) -> None:
+    """pkg (nome do pacote Android), sha256 e size do APK; version_name e version_code são opcionais e só informativos."""
+    if not isinstance(args, dict) or set(args) - {"pkg", "sha256", "size", "version_name", "version_code"}:
+        raise CommandError("argumentos da instalação inválidos")
+    if not isinstance(args.get("pkg"), str) or len(args["pkg"]) > 200 or not _PKG.match(args["pkg"]):
+        raise CommandError("pacote inválido")
+    if not isinstance(args.get("sha256"), str) or not _SHA256.match(args["sha256"]):
+        raise CommandError("sha256 inválido")
+    sz = args.get("size")
+    if not isinstance(sz, int) or isinstance(sz, bool) or not 1 <= sz <= MAX_APK_BYTES:
+        raise CommandError("tamanho do APK inválido")
+    if "version_name" in args and (not isinstance(args["version_name"], str) or len(args["version_name"]) > 40):
+        raise CommandError("versão inválida")
+    vc = args.get("version_code")
+    if "version_code" in args and (not isinstance(vc, int) or isinstance(vc, bool) or vc < 1):
+        raise CommandError("version_code inválido")
 
 
 def check_deploy_args(args: dict) -> None:
@@ -306,7 +331,7 @@ def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
     if author.role not in ADMINISH:
         raise CommandError("o guardião não pode mandar este comando")
     if t in MASTER_TYPES and author.role != ROLE_MASTER:
-        raise CommandError("só o guardião-mestre veta sites e coloca versões em produção")
+        raise CommandError("só o guardião-mestre veta sites, coloca versões em produção e instala apps")
     if t in TRUST_TYPES and author.role != ROLE_MASTER:
         tg = trust.guardians.get(cmd["args"].get("id"))
         target = tg.role if tg else None

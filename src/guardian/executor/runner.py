@@ -84,6 +84,35 @@ class GatewayClient:
             raise GatewayError(0, str(e)) from e
 
 
+def _upload_file(gw: "GatewayClient", path: str, file: str, sha: str, size: int) -> None:
+    """Envia um arquivo grande em pedaços (o gateway confere o SHA-256 da URL). A assinatura cobre esse SHA-256."""
+    import http.client
+    import urllib.parse
+    u = urllib.parse.urlsplit(gw.base)
+    conn = (http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection)(u.netloc, timeout=300)
+    h = devauth.headers_digest(gw.key, "POST", path, sha, int(time.time()), os.urandom(9).hex())
+    h["Content-Length"] = str(size)
+    try:
+        conn.putrequest("POST", u.path.rstrip("/") + path)
+        for k, v in h.items():
+            conn.putheader(k, v)
+        conn.endheaders()
+        with open(file, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                conn.send(chunk)
+        r = conn.getresponse()
+        body = r.read(2000).decode("utf-8", "replace")
+        if r.status != 200:
+            raise GatewayError(r.status, body)
+    except OSError as e:
+        raise GatewayError(0, str(e)) from e
+    finally:
+        conn.close()
+
+
 class GatewayError(Exception):
     def __init__(self, status: int, msg: str):
         super().__init__(f"gateway {status}: {msg}")
@@ -332,12 +361,38 @@ class Executor:
             raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
         return f"deploy pedido: {a['project']} {a['commit'][:8]}"
 
+    def sync_apks(self) -> int:
+        """Leva ao gateway os APKs que o deployer baixou e ainda não estão lá (o aparelho os baixa do gateway depois do comando assinado)."""
+        if not self.cfg.deploy_dir:
+            return 0
+        try:
+            with open(os.path.join(self.cfg.deploy_dir, "apk-offers.json")) as f:
+                offers = json.load(f).get("offers", [])
+        except (OSError, ValueError):
+            return 0
+        want = {o["sha256"]: o for o in offers if isinstance(o, dict) and isinstance(o.get("sha256"), str) and len(o["sha256"]) == 64}
+        if not want:
+            return 0
+        have = set(self.gw.call("GET", f"/v1/devices/{self.dev}/apks").get("have", []))
+        sent = 0
+        for sha, o in want.items():
+            if sha in have:
+                continue
+            file = os.path.join(self.cfg.deploy_dir, "apks", sha + ".apk")
+            try:
+                size = os.path.getsize(file)
+            except OSError:
+                continue
+            _upload_file(self.gw, f"/v1/devices/{self.dev}/apks/{sha}", file, sha, size)
+            sent += 1
+        return sent
+
     def _deploy_report(self) -> dict | None:
         """O que o deployer publicou: versões que o mestre pode aprovar e o resultado dos últimos deploys."""
         if not self.cfg.deploy_dir:
             return None
         out: dict = {}
-        for key, name in (("offers", "offers.json"), ("status", "status.json")):
+        for key, name in (("offers", "offers.json"), ("status", "status.json"), ("apps", "apk-offers.json")):
             try:
                 with open(os.path.join(self.cfg.deploy_dir, name)) as f:
                     out[key] = json.load(f)
@@ -385,6 +440,10 @@ class Executor:
         dr = self._deploy_report()
         if dr is not None:
             r["deploy"] = dr
+            try:
+                self.sync_apks()
+            except (GatewayError, OSError) as e:
+                print("apks:", e, file=sys.stderr)
         try:
             allow, deny = self._entries("allow"), self._entries("deny")
             # As entradas do Guardian vêm primeiro: com centenas de entradas suas no Pi-hole, o corte alfabético escondia as liberações dele.

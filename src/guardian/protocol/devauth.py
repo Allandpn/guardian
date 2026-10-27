@@ -30,8 +30,12 @@ def spki_of(priv: ec.EllipticCurvePrivateKey) -> bytes:
     return priv.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
+def signing_string_digest(method: str, path: str, ts: str, nonce: str, body_sha256_hex: str) -> bytes:
+    return f"{method}\n{path}\n{ts}\n{nonce}\n{body_sha256_hex}".encode()
+
+
 def signing_string(method: str, path: str, ts: str, nonce: str, body: bytes) -> bytes:
-    return f"{method}\n{path}\n{ts}\n{nonce}\n{hashlib.sha256(body).hexdigest()}".encode()
+    return signing_string_digest(method, path, ts, nonce, hashlib.sha256(body).hexdigest())
 
 
 def sign(priv: ec.EllipticCurvePrivateKey, message: bytes) -> bytes:
@@ -44,6 +48,13 @@ def verify(spki: bytes, message: bytes, signature: bytes) -> bool:
         return True
     except (InvalidSignature, ValueError, TypeError):
         return False
+
+
+def headers_digest(priv: ec.EllipticCurvePrivateKey, method: str, path: str, body_sha256_hex: str, ts: int, nonce: str) -> dict:
+    """Como `headers`, para corpo grande já resumido (envio de APK em pedaços): o SHA-256 do corpo entra na assinatura."""
+    spki = spki_of(priv)
+    msg = signing_string_digest(method, path, str(ts), nonce, body_sha256_hex)
+    return {"X-Dev": device_id(spki), "X-Ts": str(ts), "X-Nonce": nonce, "X-Sig": b64.enc(sign(priv, msg))}
 
 
 def headers(priv: ec.EllipticCurvePrivateKey, method: str, path: str, body: bytes, ts: int, nonce: str) -> dict:

@@ -23,8 +23,11 @@ from .db import REQUEST_DOMAINS_MAX, Store
 from .limits import Limiter, NonceCache
 
 DEVICE_TYPES = {"set_config", "confirm", "cancel", "approve_app", "revoke_app", "request_maintenance",
-                "set_dev_policy", "set_pin", "set_dev_pin", "activate"} | cmds.TRUST_TYPES
-EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.MASTER_TYPES | cmds.TRUST_TYPES
+                "set_dev_policy", "set_pin", "set_dev_pin", "activate", cmds.T_INSTALL_APP} | cmds.TRUST_TYPES
+EXECUTOR_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"} | cmds.EXECUTOR_MASTER_TYPES | cmds.TRUST_TYPES
+APK_UP = re.compile(r"/v1/devices/(?P<dev>[a-z2-7]{20})/apks/(?P<sha>[0-9a-f]{64})")
+APK_KEEP = 6                       # APKs guardados no gateway (os com instalação autorizada nos últimos 7 dias ficam além disto)
+CHUNK = 64 * 1024
 SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um guardião ver
 STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet", "platform"}
 RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows", "pkgNames"}
@@ -84,9 +87,10 @@ class HttpError(Exception):
 
 
 class Req:
-    def __init__(self, method, path, query, headers, body, ip, raw_target):
+    def __init__(self, method, path, query, headers, body, ip, raw_target, body_digest=None):
         self.method, self.path, self.query, self.headers, self.body = method, path, query, headers, body
         self.ip, self.raw_target = ip, raw_target
+        self.body_digest = body_digest   # SHA-256 (hex) do corpo quando ele é lido em pedaços e não fica na memória
 
     def json(self) -> dict:
         try:
@@ -96,6 +100,12 @@ class Req:
         if not isinstance(d, dict):
             raise HttpError(400, "esperado um objeto JSON")
         return d
+
+
+class StreamFile:
+    """Resposta que sai do disco em pedaços (APK), em vez de ser montada na memória."""
+    def __init__(self, path: str, size: int):
+        self.path, self.size = path, size
 
 
 def _str(d: dict, k: str, maxlen: int = 512) -> str:
@@ -173,6 +183,8 @@ class Gateway:
             ("GET", r"/v1/queried", self.queried),
             ("POST", r"/v1/history/clear", self.clear_history),
             ("GET", r"/v1/allow-origins", self.allow_origins),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apks", self.list_apks),
+            ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apk/(?P<sha>[0-9a-f]{64})", self.get_apk),
             ("POST", r"/v1/requests/(?P<rid>[0-9]{1,12})/resolve", self.resolve),
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/forget", self.forget),
             ("GET", r"/v1/push/key", self.push_key),
@@ -386,7 +398,8 @@ class Gateway:
             sigb = b64.dec(sig)
         except ValueError:
             raise HttpError(401, "assinatura inválida")
-        msg = devauth.signing_string(req.method, req.raw_target, ts, nonce, req.body)
+        msg = (devauth.signing_string_digest(req.method, req.raw_target, ts, nonce, req.body_digest) if req.body_digest
+               else devauth.signing_string(req.method, req.raw_target, ts, nonce, req.body))
         if not devauth.verify(spki, msg, sigb):
             raise HttpError(401, "assinatura inválida")
         if self.nonces.seen(f"{dev}:{nonce}"):
@@ -610,6 +623,13 @@ class Gateway:
                 cmds.check_deploy_args(cmd["args"])
             except cmds.CommandError as e:
                 raise HttpError(400, str(e))
+        if cmd["type"] == cmds.T_INSTALL_APP:
+            try:
+                cmds.check_install_args(cmd["args"])
+            except cmds.CommandError as e:
+                raise HttpError(400, str(e))
+            if row["kind"] != "device" or self._is_windows(row):
+                raise HttpError(400, "só aparelhos Android recebem instalação de app")
         if cmd["type"] in cmds.WIN_TYPES:
             try:
                 cmds.check_win_args(cmd["type"], cmd["args"], time.time(), creating=True)
@@ -632,10 +652,78 @@ class Gateway:
                 self.store.drop_approval(dev, pkg)
         if ready and cmd["type"] == "pihole_batch":
             self._note_origins(cmd["args"])
+        if ready and cmd["type"] == cmds.T_INSTALL_APP:
+            self.store.grant_apk(dev, cmd["args"]["sha256"], cmd["args"]["pkg"])   # a partir daqui este aparelho pode baixar este APK
         if ready:
             self._after_ready(cmd, gid)
             self._wake()
         return 200, {"id": cid, "status": "ready" if ready else "awaiting"}, {}
+
+    # --- APKs ---------------------------------------------------------------------------------------
+    @property
+    def apk_dir(self) -> str:
+        d = os.path.join(os.path.dirname(self.cfg.db_path) or ".", "apks")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def list_apks(self, req, dev):
+        row = self.device(req, dev)
+        if row["kind"] != "executor":
+            raise HttpError(403, "só o executor lista os APKs")
+        return 200, {"have": self.store.apk_hashes()}, {}
+
+    def upload_apk(self, headers, rfile, ip: str, raw_target: str, dev: str, sha: str):
+        """O executor envia um APK em pedaços. A assinatura cobre o SHA-256 da URL e o corpo é conferido contra ele."""
+        row = self.store.device(dev)
+        if not row:
+            raise HttpError(404, "aparelho desconhecido")
+        req = Req("POST", f"/v1/devices/{dev}/apks/{sha}", "", headers, b"", ip, raw_target, body_digest=sha)
+        self._device_headers(req, b64.dec(row["spki"]), dev)
+        if row["kind"] != "executor":
+            raise HttpError(403, "só o executor envia APKs")
+        try:
+            n = int(headers.get("Content-Length", "0"))
+        except ValueError:
+            raise HttpError(400, "Content-Length inválido")
+        if not 1 <= n <= cmds.MAX_APK_BYTES:
+            raise HttpError(413, "APK grande demais")
+        final = os.path.join(self.apk_dir, sha + ".apk")
+        tmp = final + ".part"
+        h, left = hashlib.sha256(), n
+        try:
+            with open(tmp, "wb") as f:
+                while left:
+                    chunk = rfile.read(min(CHUNK, left))
+                    if not chunk:
+                        raise HttpError(400, "corpo incompleto")
+                    h.update(chunk)
+                    f.write(chunk)
+                    left -= len(chunk)
+            if h.hexdigest() != sha:
+                raise HttpError(400, "o conteúdo não bate com o SHA-256 da URL")
+            os.replace(tmp, final)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        self.store.add_apk(sha, n)
+        for old in self.store.prune_apks(APK_KEEP):
+            try:
+                os.remove(os.path.join(self.apk_dir, old + ".apk"))
+            except OSError:
+                pass
+        self.store.audit(dev, "apk", f"APK {sha[:12]} guardado ({n // 1024} KB)")
+        return 200, {"ok": True}, {}
+
+    def get_apk(self, req, dev, sha):
+        row = self.device(req, dev)
+        if row["kind"] != "device":
+            raise HttpError(403, "só aparelhos baixam APKs")
+        if not self.store.apk_granted(dev, sha):
+            raise HttpError(403, "nenhuma instalação assinada autoriza este APK neste aparelho")
+        path = os.path.join(self.apk_dir, sha + ".apk")
+        if not os.path.isfile(path):
+            raise HttpError(404, "o APK ainda não chegou ao gateway")
+        return 200, StreamFile(path, os.path.getsize(path)), {"Content-Type": "application/vnd.android.package-archive"}
 
     def _note_origins(self, args: dict) -> None:
         """Itens do lote podem trazer `devs`: de quais aparelhos veio a vontade de liberar (só para exibir; o executor ignora)."""
@@ -1313,11 +1401,12 @@ class Handler(BaseHTTPRequestHandler):
         return peer
 
     def _send(self, status, body, headers):
-        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        stream = body if isinstance(body, StreamFile) else None
+        data = b"" if stream else body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(status)
         ctype = headers.pop("Content-Type", "application/json")
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(stream.size if stream else len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", CSP)
@@ -1330,7 +1419,14 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
-        if self.command != "HEAD":
+        if stream:
+            with open(stream.path, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        elif self.command != "HEAD":
             self.wfile.write(data)
 
     def _handle(self):
@@ -1340,6 +1436,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(self.path) > 2048:
                 raise HttpError(414, "endereço grande demais")
             body = b""
+            up = APK_UP.fullmatch(parts.path) if self.command == "POST" else None
+            if up:
+                status, payload, headers = gw.upload_apk(self.headers, self.rfile, self._ip(), self.path, up.group("dev"), up.group("sha"))
+                self._send(status, payload, dict(headers))
+                return
             if self.command == "POST":
                 if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
                     raise HttpError(411, "use Content-Length")
