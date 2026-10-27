@@ -829,6 +829,7 @@ function avancadoNodes(d, now) {
 // ---------- domínios ----------
 let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
 let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que liberou/bloqueou ('' = todos)
+const alwSel = new Set(), recSel = new Set(), reqSel = new Set(), vetoSel = new Set();   // marcados para uma ação em lote (um comando, um passkey)
 const reqLvl = new Map();   // Solicitações: quanto cada domínio foi encurtado («)
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let qryDev = '', qryState = '', qrySearch = '';   // Consultas: aparelho, resultado ('' tudo | 'ok' | 'blk') e pesquisa
@@ -884,25 +885,58 @@ async function domainsView(tab) {
     rows: [['Ação', name === 'allow' ? 'Bloquear de novo' : 'Remover domínio'], ['Domínio', x]], effect: 'vale na hora', effectKind: 'ok',
     note: name === 'allow' ? 'Volta a valer a regra do Pi-hole para este domínio.' : null });
 
+  // Seleção em lote: caixas, "marcar todos" e um botão por ação. Cada ação recebe as chaves marcadas (até 50) e roda um comando só.
+  const makePicker = (sel, keysNow, actions) => {
+    const boxes = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
+    const btns = actions.map((a) => h('button', { class: `btn ${a.cls || ''}`, type: 'button', onclick: act(async () => {
+      const ks = [...sel].slice(0, 50);
+      if (ks.length) await a.run(ks, () => sel.clear());
+    }) }));
+    const sync = () => {
+      const keys = keysNow();
+      [...sel].forEach((k) => { if (!keys.includes(k)) sel.delete(k); });  // só fica marcado o que está à vista
+      for (const [k, els] of boxes) els.forEach((e) => { e.checked = sel.has(k); });
+      allBox.checked = keys.length > 0 && keys.every((k) => sel.has(k));
+      btns.forEach((b, i) => { b.textContent = sel.size ? `${actions[i].label} ${sel.size}` : actions[i].label; b.disabled = sel.size === 0; });
+    };
+    allBox.addEventListener('change', () => { const keys = keysNow(); if (allBox.checked) keys.forEach((k) => sel.add(k)); else keys.forEach((k) => sel.delete(k)); sync(); });
+    return {
+      reset: () => boxes.clear(), sync,
+      box: (k) => { const e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${k}`, onchange: (ev) => { if (ev.target.checked) sel.add(k); else sel.delete(k); sync(); } });
+        boxes.set(k, [...(boxes.get(k) || []), e]); return e; },
+      bar: h('div', { class: 'card', style: 'margin:12px 0' }, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' },
+        h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), btns),
+        h('div', { class: 'muted', style: 'margin-top:8px' }, 'Cada ação leva até 50 itens e um só passkey.')),
+    };
+  };
+  const removeManySpec = (xs) => ({ title: `Bloquear de novo ${xs.length} domínio${xs.length > 1 ? 's' : ''}?`,
+    rows: xs.slice(0, 8).map((x) => ['Domínio', x]).concat(xs.length > 8 ? [['…', `mais ${xs.length - 8}`]] : []), effect: 'vale na hora', effectKind: 'ok',
+    note: 'Volta a valer a regra do Pi-hole para estes domínios.' });
   const atOf = (d) => (r.allow_at || {})[d] || 0;  // quando a liberação foi criada no Pi-hole (0 = sem data)
   // Lista de liberados: mais recentes primeiro, com data e hora, e uma pesquisa por domínio (também acha o pai que cobre o domínio digitado).
   const allowCard = (list, emptyText, withBy) => {
     const sorted = [...list].sort((a, b) => atOf(b) - atOf(a) || a.localeCompare(b));
     const by = r.allow_by || {};
     const box = h('div');
+    let shown = sorted;
+    const picker = makePicker(alwSel, () => shown, [{ label: 'Bloquear de novo', cls: 'danger', run: async (ks, done) => {
+      if (await confirmSend(ex.id, 'pihole_remove', { list: 'allow', domains: ks }, removeManySpec(ks))) { done(); route(); }
+    } }]);
     const draw = () => {
       const q = search.value.trim().toLowerCase().replace(/^\.+/, '');
-      const shown = q ? sorted.filter((x) => x.includes(q) || q.endsWith(`.${x}`)) : sorted;
-      box.replaceChildren(shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => h('div', { class: 'li' },
+      shown = q ? sorted.filter((x) => x.includes(q) || q.endsWith(`.${x}`)) : sorted;
+      picker.reset();
+      box.replaceChildren(shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => h('div', { class: 'li' }, picker.box(x),
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x),
           h('div', { class: 'muted' }, atOf(x) ? `${fmtWhen(atOf(x))} · ${ago(atOf(x), now)}` : 'sem data', withBy && by[x] ? ` · liberado por ${gname(by[x])}` : '', ' ',
             temp.has(`allow:${x}`) ? chip(`expira ${fmtWhen(temp.get(`allow:${x}`))}`, 'warn') : chip('sem prazo'))),
         h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x }, removeSpec('allow', x)) }, 'Bloquear de novo')))) :
         empty(q ? 'Nenhum liberado combina com a pesquisa.' : emptyText));
+      picker.sync();
     };
     const search = h('input', { class: 'inp', type: 'search', placeholder: 'Pesquisar domínio liberado', 'aria-label': 'Pesquisar domínio liberado', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', oninput: draw });
     draw();
-    return [h('div', { class: 'pad', style: 'margin:12px 0' }, search), box];
+    return [h('div', { class: 'pad', style: 'margin:12px 0' }, search), sorted.length ? picker.bar : null, box];
   };
   // Domínio de lista de conteúdo adulto: pede uma segunda confirmação do mesmo guardião, antes da folha de assinatura (individual ou em lote).
   const confirmAdult = async (domains, blockedItems) => {
@@ -973,6 +1007,19 @@ async function domainsView(tab) {
       route();
     });
     const refuseAll = act(async () => { await resolveAll(doms, null); route(); });
+    const reqPick = makePicker(reqSel, () => doms, [
+      { label: 'Recusar', run: async (ks, done) => { await resolveAll(ks, null); done(); route(); } },  // recusar não solta nada: sem passkey
+      { label: 'Liberar', cls: 'pri', run: async (ks, done) => {
+        const items = [...new Set(ks.map(eff))].map((domain) => ({ domain, ...ttl }));
+        if (!(await confirmAdult(items.map((x) => x.domain), blocked))) return;
+        const sent = await confirmSend(ex.id, 'pihole_batch', { items }, batchSpec(items));
+        if (!sent) return;
+        await resolveAll(ks, sent.id);
+        ks.forEach((k) => reqLvl.delete(k));
+        done();
+        route();
+      } }]);
+    setTimeout(reqPick.sync, 0);
     setTimeout(syncNames, 0);  // as setas começam desativadas até o desenho terminar
     body = [phonesFilter(protectedDevs, reqDev, (k) => { reqDev = k; route(); }),
       h('div', { class: 'sec' }, 'Liberar por'), pillGroup('Duração da liberação', REQ_TTLS, reqTtl, (k) => { reqTtl = k; route(); }),
@@ -980,7 +1027,7 @@ async function domainsView(tab) {
         h('button', { class: 'btn grow', type: 'button', onclick: refuseAll }, `Recusar todos (${doms.length})`),
         h('button', { class: 'btn pri grow', type: 'button', onclick: releaseAll }, `Liberar todos (${doms.length}) com um passkey`)),
         h('div', { class: 'muted', style: 'margin-top:8px' }, 'A folha mostra tudo antes de assinar.' + (doms.length > 50 ? ' Só os 50 primeiros entram; os outros continuam pedindo.' : ''))) : null,
-      h('div', { class: 'sec' }, `Solicitações · ${shown.length}`),
+      h('div', { class: 'sec' }, `Solicitações · ${shown.length}`), shown.length ? reqPick.bar : null,
       shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => {
         const b = info.get(`${x.q.dev}|${x.i.domain}`);
         const d0 = x.i.domain, nm = h('span', { class: 'mono', style: 'font-weight:600' }, d0);
@@ -988,7 +1035,7 @@ async function domainsView(tab) {
         const nr = nameEls.get(d0) || { name: [], less: [], more: [] };
         nr.name.push(nm); nr.less.push(less); nr.more.push(more);
         nameEls.set(d0, nr);
-        return h('div', { class: 'li', style: 'flex-wrap:wrap' },
+        return h('div', { class: 'li', style: 'flex-wrap:wrap' }, reqPick.box(d0),
           h('div', { class: 'sp' }, nm,
             h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${srcLabel(b)}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
           h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'),
@@ -1195,8 +1242,15 @@ async function domainsView(tab) {
     const dec = await api('GET', '/v1/my/decisions');
     const openDomains = new Set(unb.flatMap((q) => q.items.filter((i) => i.state === 'open').map((i) => i.domain)));
     const denied = dec.denied.filter((x) => !covers(x.domain) && !openDomains.has(x.domain));
-    body = [h('div', { class: 'sec' }, `Recusei · ${denied.length}`),
-      denied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, denied.map((x) => h('div', { class: 'li' },
+    const recKeys = [...new Set(denied.map((x) => x.domain))];
+    const recPick = makePicker(recSel, () => recKeys, [{ label: 'Liberar', cls: 'pri', run: async (ks, done) => {
+      if (!(await confirmAdult(ks, (await api('GET', '/v1/blocked?src=list')).items))) return;
+      const its = ks.map((domain) => ({ domain }));
+      if (await confirmSend(ex.id, 'pihole_batch', { items: its }, batchSpec(its))) { done(); route(); }
+    } }]);
+    setTimeout(recPick.sync, 0);
+    body = [h('div', { class: 'sec' }, `Recusei · ${denied.length}`), denied.length ? recPick.bar : null,
+      denied.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, denied.map((x) => h('div', { class: 'li' }, recPick.box(x.domain),
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, `${devName(x.dev)} · ${ago(x.ts, now)}`)),
         h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
           if (!(await confirmAdult([x.domain], (await api('GET', '/v1/blocked?src=list')).items))) return;
@@ -1212,6 +1266,11 @@ async function domainsView(tab) {
         effect: 'vale na hora', effectKind: add ? 'warn' : 'ok',
         note: add ? 'Ninguém libera estes sites nem o que está abaixo deles (como www. e outros subdomínios). Liberações que já existem continuam até você bloquear de novo.' : 'Os guardiões voltam a poder liberar.' };
     };
+    const vetoKeys = [...new Set(audit.map((x) => x.domain))];
+    const vetoPick = makePicker(vetoSel, () => vetoKeys, [{ label: 'Bloquear de novo', cls: 'danger', run: async (ks, done) => {
+      if (await confirmSend(ex.id, 'pihole_remove', { list: 'allow', domains: ks }, removeManySpec(ks))) { done(); route(); }
+    } }]);
+    setTimeout(vetoPick.sync, 0);
     body = [
       veto.on === false ? h('div', { class: 'note bad' }, 'O veto das listas de conteúdo adulto está desligado: o executor não lê o gravity.db do Pi-hole.') : null,
       // O campo para vetar fica no topo; a lista de vetados e o histórico (liberações em conflito) ficam embaixo.
@@ -1229,7 +1288,8 @@ async function domainsView(tab) {
         master ? h('button', { class: 'btn', type: 'button', onclick: send('pihole_parent_block', { action: 'remove', domains: [p] }, parentSpec(false, [p])) }, 'Tirar veto') : null))) :
         empty('Nenhum site vetado.'),
       h('div', { class: 'sec' }, `Liberações vetadas hoje · ${veto.audit_total || 0}`),
-      audit.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, audit.map((x) => h('div', { class: 'li' },
+      audit.length ? vetoPick.bar : null,
+      audit.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, audit.map((x) => h('div', { class: 'li' }, vetoPick.box(x.domain),
         h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.domain), h('div', { class: 'muted' }, x.why, x.by ? ` · liberado por ${gname(x.by)}` : '')),
         h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: 'allow', domain: x.domain }, removeSpec('allow', x.domain)) }, 'Bloquear de novo')))) :
         empty('Nenhuma liberação em conflito com as listas de conteúdo adulto.'),

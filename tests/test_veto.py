@@ -169,6 +169,17 @@ class ExecutorVeto(unittest.TestCase):
         self.assertIn("bloqueados: trocar.example", out)
         self.assertIn("trocar.example", {e["domain"] for e in self.ex._entries("deny")})
 
+    def test_03c_remove_accepts_many_domains_in_one_command(self):
+        for d in ("um.example", "dois.example", "tres.example"):
+            self.ex.apply(self.cmd("pihole_allow", {"domain": d}))
+        out = self.ex.apply(self.cmd("pihole_remove", {"list": "allow", "domains": ["um.example", "dois.example"]}))
+        self.assertEqual(self.rx_allowed() & {"um.example", "dois.example", "tres.example"}, {"tres.example"})
+        self.assertIn("um.example, dois.example", out)
+        with self.assertRaises(ValueError):
+            self.ex.apply(self.cmd("pihole_remove", {"list": "allow", "domains": []}))
+        out = self.ex.apply(self.cmd("pihole_remove", {"list": "allow", "domain": "tres.example"}))  # forma antiga continua
+        self.assertEqual(out, "removido de liberados: tres.example")
+
     def test_04_master_parent_list_persists_and_is_enforced(self):
         self.ex.apply(self.cmd(cmds.T_PARENT_BLOCK, {"action": "add", "domain": "reddit.com"}))
         with self.assertRaisesRegex(ValueError, "vetado pelo mestre"):

@@ -293,10 +293,21 @@ class Executor:
         if t == "pihole_remove":
             if a.get("list") not in ("allow", "deny"):
                 raise ValueError("lista inválida")
-            d = self._guard(a.get("domain"))
-            self._del(a["list"], d)
-            self._drop_temp(a["list"], d)
-            return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {d}"
+            raw = a["domains"] if "domains" in a else [a.get("domain")]  # vários numa assinatura só
+            if not isinstance(raw, list) or not 1 <= len(raw) <= BATCH_MAX:
+                raise ValueError("lote inválido")
+            done, bad = [], []
+            for x in raw:
+                try:
+                    d = self._guard(x)
+                    self._del(a["list"], d)
+                    self._drop_temp(a["list"], d)
+                    done.append(d)
+                except (ValueError, PiholeError) as e:  # um item que falha não derruba os outros
+                    bad.append(f"{str(x)[:60]}: {e}")
+            if bad and not done:
+                raise ValueError("; ".join(bad))
+            return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {', '.join(done)}" + (f" | falharam: {'; '.join(bad)}" if bad else "")
         raise ValueError(f"comando desconhecido: {t}")
 
     def expire_temp(self) -> None:
