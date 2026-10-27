@@ -824,7 +824,7 @@ async function appsView(tab) {
           h('div', { class: 'muted' }, `${o.subject || ''} · ${o.author || '?'} · ${kb(o.size)} · ${o.ts ? ago(o.ts, Math.floor(Date.now() / 1000)) : ''}`),
           h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;margin-top:6px' }, o.sensitive_n > 0 ? chip(`mexe em segurança (${o.sensitive_n})`, 'bad') : chip('não mexe em segurança', 'ok'),
             o.files != null ? chip(`${o.files} arquivo${o.files === 1 ? '' : 's'}`) : null)),
-        ready.has(o.sha256) ? h('div', { class: 'acts' }, phones.map((d) => h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, `Instalar em ${d.name}`))) : h('span', { class: 'muted' }, 'o Pi ainda está enviando o APK'))))) :
+        ready.has(o.sha256) ? h('div', { class: 'acts' }, phones.map((d) => h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, `Instalar em ${d.name}`))) : h('span', { class: 'muted' }, 'o Pi ainda está enviando o APK')))) :
         empty('Nenhuma versão no catálogo.'),
       errs.map((e) => h('div', { class: 'note warn' }, `${e.app}: ${e.error}`)),
     ];
