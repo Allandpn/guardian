@@ -46,3 +46,7 @@ exige editar esse arquivo como root (ainda não há comando assinado para isso).
 - Os testes automáticos rodam fora do Pi (GitHub Actions ou na sessão); o deployer não os executa. A saúde pós-deploy e a reversão
   automática cobrem uma versão que não sobe.
 - Isolamento de cada projeto (usuário próprio, contêiner sem root) e retirada do `sudo` do desenvolvedor são etapas seguintes.
+
+## Primeiro deploy de teste
+
+A versão `release/2` foi criada só para testar o fluxo (mudança apenas de documentação). Ela aparece em Deploys como "não mexe em segurança".
