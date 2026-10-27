@@ -605,6 +605,11 @@ class Gateway:
             cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
         except cmds.CommandError as e:
             raise HttpError(403, str(e))
+        if cmd["type"] == cmds.T_DEPLOY:
+            try:
+                cmds.check_deploy_args(cmd["args"])
+            except cmds.CommandError as e:
+                raise HttpError(400, str(e))
         if cmd["type"] in cmds.WIN_TYPES:
             try:
                 cmds.check_win_args(cmd["type"], cmd["args"], time.time(), creating=True)

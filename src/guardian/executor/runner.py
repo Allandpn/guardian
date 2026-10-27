@@ -40,6 +40,7 @@ class ExecConfig:
     clients: dict | None = None       # {IP do aparelho na Tailscale: id do aparelho protegido}
     allow_mode: str = "exact"         # "regex": grava domínio + subdomínios como regex no Pi-hole (o guardião só vê o domínio)
     gravity_db: str | None = None     # gravity.db do Pi-hole: o que está nas listas dele (conteúdo adulto) não pode ser liberado; None desliga
+    deploy_dir: str | None = None     # pasta do deployer (root): o executor deixa pedidos em inbox/ e lê offers.json e status.json; None = sem deploy
 
 
 def local_ips() -> set[str]:
@@ -267,6 +268,8 @@ class Executor:
             parts = [f"liberados: {', '.join(ok)}" if ok else "", f"bloqueados: {', '.join(blocked_now)}" if blocked_now else "",
                      f"falharam: {'; '.join(bad)}" if bad else ""]
             return " | ".join(p for p in parts if p)
+        if t == cmds.T_DEPLOY:
+            return self._queue_deploy(a, who, cmd["ctr"])
         if t == cmds.T_PARENT_BLOCK:
             action = a.get("action")
             if action not in ("add", "remove"):
@@ -310,6 +313,38 @@ class Executor:
             return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {', '.join(done)}" + (f" | falharam: {'; '.join(bad)}" if bad else "")
         raise ValueError(f"comando desconhecido: {t}")
 
+    def _queue_deploy(self, a: dict, who: str, ctr: int) -> str:
+        """Deixa o pedido (já com assinatura, horário e papel conferidos) na caixa do deployer, que roda como root e confere tudo de novo."""
+        try:
+            cmds.check_deploy_args(a)
+        except cmds.CommandError as e:
+            raise ValueError(str(e))
+        if not self.cfg.deploy_dir:
+            raise ValueError("este executor não está ligado a um deployer")
+        inbox = os.path.join(self.cfg.deploy_dir, "inbox")
+        req = {"project": a["project"], "commit": a["commit"], "sensitive_ok": bool(a.get("sensitive_ok")), "guardian": who, "ts": int(self.now())}
+        tmp = os.path.join(inbox, f".tmp-{ctr}")
+        try:
+            with open(tmp, "w") as f:
+                json.dump(req, f)
+            os.replace(tmp, os.path.join(inbox, f"{int(self.now())}-{ctr}-{a['project']}.json"))
+        except OSError as e:
+            raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
+        return f"deploy pedido: {a['project']} {a['commit'][:8]}"
+
+    def _deploy_report(self) -> dict | None:
+        """O que o deployer publicou: versões que o mestre pode aprovar e o resultado dos últimos deploys."""
+        if not self.cfg.deploy_dir:
+            return None
+        out: dict = {}
+        for key, name in (("offers", "offers.json"), ("status", "status.json")):
+            try:
+                with open(os.path.join(self.cfg.deploy_dir, name)) as f:
+                    out[key] = json.load(f)
+            except (OSError, ValueError):
+                out[key] = None
+        return out
+
     def expire_temp(self) -> None:
         keep, now = [], int(self.now())
         for t in self.state.data["temp"]:
@@ -347,6 +382,9 @@ class Executor:
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
              "roles": {g: v.role for g, v in self.consumer.trust.guardians.items()},
              "executed": self.executed[-50:]}
+        dr = self._deploy_report()
+        if dr is not None:
+            r["deploy"] = dr
         try:
             allow, deny = self._entries("allow"), self._entries("deny")
             # As entradas do Guardian vêm primeiro: com centenas de entradas suas no Pi-hole, o corte alfabético escondia as liberações dele.

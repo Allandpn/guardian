@@ -1,0 +1,62 @@
+{
+  "guardian": {
+    "repo": "git@github.com:Allandpn/guardian.git",
+    "ssh_key": "/etc/guardian-deploy/guardian_deploy_key",
+    "tag_prefix": "release/",
+    "workdir": "/opt/guardian",
+    "sensitive": [
+      "src/guardian/protocol/*",
+      "src/guardian/executor/*",
+      "src/guardian/deployer/*",
+      "src/guardian/gateway/server.py",
+      "src/guardian/gateway/db.py",
+      "src/guardian/gateway/limits.py",
+      "deploy/*",
+      "tests/gwharness.py"
+    ],
+    "steps": [
+      [
+        "docker",
+        "compose",
+        "--env-file",
+        "deploy/gateway.env",
+        "-f",
+        "deploy/docker-compose.yml",
+        "up",
+        "-d",
+        "--build",
+        "gateway"
+      ],
+      [
+        "systemctl",
+        "restart",
+        "guardian-executor"
+      ]
+    ],
+    "health": [
+      [
+        "docker",
+        "exec",
+        "deploy-gateway-1",
+        "python",
+        "-c",
+        "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"
+      ],
+      [
+        "systemctl",
+        "is-active",
+        "--quiet",
+        "guardian-executor"
+      ],
+      [
+        "docker",
+        "exec",
+        "deploy-gateway-1",
+        "python",
+        "-c",
+        "import sqlite3,sys; d=sqlite3.connect('/data/gateway.db'); sys.exit(0 if d.execute(\"select 1 from devices where kind='executor' and report_ts>strftime('%s','now')-120\").fetchone() else 1)"
+      ]
+    ],
+    "health_timeout_s": 180
+  }
+}

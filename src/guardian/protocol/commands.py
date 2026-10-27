@@ -40,7 +40,24 @@ DOMAIN_TYPES = {"pihole_allow", "pihole_deny", "pihole_remove", "pihole_batch"}
 GUARDIAN_TYPES = DOMAIN_TYPES | {"approve_app", "revoke_app"}
 # Vetar (ou desvetar) um site pai: nenhum guardião pode liberar o domínio nem o que está abaixo dele. Só o mestre, sozinho.
 T_PARENT_BLOCK = "pihole_parent_block"
-MASTER_TYPES = {T_PARENT_BLOCK}
+# Colocar uma versão de um projeto em produção no Pi: só o mestre, sozinho, dentro do horário dele. O comando leva só o projeto e o hash do
+# commit (e a confirmação de que a versão mexe em áreas de segurança); quem instala é o "deployer" do Pi, que roda como root e confere tudo de novo.
+T_DEPLOY = "deploy"
+MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY}
+_PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def check_deploy_args(args: dict) -> None:
+    """project (nome do projeto no registro do Pi), commit (hash completo) e sensitive_ok (o mestre viu o aviso de segurança)."""
+    if not isinstance(args, dict) or set(args) - {"project", "commit", "sensitive_ok"}:
+        raise CommandError("argumentos do deploy inválidos")
+    if not isinstance(args.get("project"), str) or not _PROJECT.match(args["project"]):
+        raise CommandError("projeto inválido")
+    if not isinstance(args.get("commit"), str) or not _COMMIT.match(args["commit"]):
+        raise CommandError("commit inválido: use o hash completo")
+    if "sensitive_ok" in args and not isinstance(args["sensitive_ok"], bool):
+        raise CommandError("sensitive_ok inválido")
 
 # Comandos para o agente do Windows (o computador deixa de ter senha de administrador na mão de quem o usa).
 # Só guardião-mor ou mestre, com uma passkey; o guardião comum fica só com domínios. Veja docs/AGENTE.md.
@@ -289,7 +306,7 @@ def check_author(trust: Trust, cmd: dict, now: float | None = None) -> Guardian:
     if author.role not in ADMINISH:
         raise CommandError("o guardião não pode mandar este comando")
     if t in MASTER_TYPES and author.role != ROLE_MASTER:
-        raise CommandError("só o guardião-mestre veta sites")
+        raise CommandError("só o guardião-mestre veta sites e coloca versões em produção")
     if t in TRUST_TYPES and author.role != ROLE_MASTER:
         tg = trust.guardians.get(cmd["args"].get("id"))
         target = tg.role if tg else None

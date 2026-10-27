@@ -35,7 +35,8 @@ def cfg_from_env() -> ExecConfig:
     return ExecConfig(e.get("EXECUTOR_STATE", "/var/lib/guardian-executor"), e.get("PIHOLE_URL", "http://127.0.0.1:8080"),
                       pw, e.get("CANARY", ""), e.get("PIHOLE_CA"), clients,
                       "exact" if e.get("ALLOW_MODE", "regex").strip().lower() == "exact" else "regex",
-                      e.get("GRAVITY_DB", default_gravity).strip() or None)
+                      e.get("GRAVITY_DB", default_gravity).strip() or None,
+                      e.get("DEPLOY_DIR", "").strip() or None)
 
 
 def main(argv=None) -> int:

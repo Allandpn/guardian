@@ -1,0 +1,17 @@
+[Unit]
+Description=Deployer do guardião (instala só versões aprovadas pelo mestre)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+# Roda como root: é a única peça que troca o código do Guardian. Este serviço, o pacote em /usr/local/lib/guardian-deployer e o registro
+# de projetos em /etc/guardian-deploy são instalados à mão (deploy/install-deployer.sh, docs/DEPLOY.md) e NÃO são atualizados por um deploy.
+# Quem edita o repositório não alcança nada disto.
+User=root
+Environment=PYTHONPATH=/usr/local/lib/guardian-deployer PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m guardian_deployer run --registry /etc/guardian-deploy/projects.json --state /var/lib/guardian-deploy --inbox-uid @EXEC_UID@
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

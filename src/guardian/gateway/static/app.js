@@ -7,7 +7,7 @@ const nav = document.getElementById('nav');
 const SILENT_S = 300;
 let me = null;               // { guardian, trust, rp_id, origin }
 let timer = null;
-let counts = { apps: 0, reqs: 0, cosign: 0, pc: 0 };
+let counts = { apps: 0, reqs: 0, cosign: 0, pc: 0, deploys: 0 };
 const drafts = new Map();    // aparelho -> { chave: novoValor } (regras ainda não assinadas)
 const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regras abertos
 let selected = null;         // aparelho aberto no painel (computador)
@@ -84,7 +84,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
+  deploy: 'colocar versão no ar', remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -170,7 +170,9 @@ async function loadAll() {
   const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).length, 0);
   const pcReqs = r.items.filter((q) => q.kind === 'install' || q.kind === 'command');   // pedidos do computador: tela PC
   const reqs = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command');
-  counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length };
+  const dep = d.devices.filter((x) => x.kind === 'executor').map((x) => ((x.report || {}).deploy || {}).offers).filter(Boolean)[0];
+  const deploys = dep ? (dep.offers || []).filter((o) => o.commit).length : 0;
+  counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length, deploys };
   return { devices: d.devices, now: d.now, reqs, pcReqs, aw: a.commands };
 }
 
@@ -213,7 +215,8 @@ function renderNav(active) {
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/apps', 'Apps', 'grid', 'apps', counts.apps), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
-    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), item('#/history', 'Histórico', 'clock', 'history', 0)] :
+    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), isMaster() ? item('#/deploys', 'Deploys', 'box', 'deploys', counts.deploys) : null,
+    item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
@@ -370,6 +373,7 @@ async function inicioView() {
   const todos = [];
   const cos = aw.filter((c) => c.can_cosign);
   if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/guardians' });
+  if (isMaster() && counts.deploys) todos.push({ n: counts.deploys, title: 'Versões prontas para colocar no ar', sub: 'Deploys', href: '#/deploys' });
   if (reqs.length) todos.push({ n: reqs.length, title: 'Solicitações dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains/solicitacoes' });
   for (const d of isAdmin() ? devices : []) {
     const r = d.report || {};
@@ -1394,6 +1398,43 @@ function winSpec(pcName, p) {
     note: 'Roda como administrador no computador, uma vez. Leia o texto acima por inteiro: o que você assina é exatamente isto.' };
 }
 
+/** Deploys: o mestre vê as versões prontas para entrar no ar (o Pi as calcula) e aprova uma por vez com o passkey. */
+async function deploysView() {
+  const { devices, now } = await loadAll();
+  renderNav('deploys');
+  const ex = devices.find((d) => d.kind === 'executor');
+  const dep = ((ex && ex.report) || {}).deploy || null;
+  const offers = ((dep && dep.offers && dep.offers.offers) || []).filter((o) => o.commit);
+  const errs = ((dep && dep.offers && dep.offers.offers) || []).filter((o) => o.error);
+  const hist = (dep && dep.status && dep.status.history) || [];
+  const approve = (o) => act(async () => {
+    const sens = o.sensitive_n > 0;
+    if (sens && !(await sheet({ title: 'Esta versão mexe em áreas de segurança', rows: [['Projeto', o.project], ['Versão', o.tag], ['Arquivos de segurança', String(o.sensitive_n)]],
+      note: 'Ela altera papéis, assinaturas, horários, vetos ou o próprio deploy. Só continue se você conhece e confia em quem pediu.', noteKind: 'bad', confirm: 'Estou ciente, continuar', danger: true }))) return;
+    const args = { project: o.project, commit: o.commit, ...(sens ? { sensitive_ok: true } : {}) };
+    if (await confirmSend(ex.id, 'deploy', args, { title: `Colocar ${o.project} ${o.tag} no ar?`,
+      rows: [['Projeto', o.project], ['Versão', o.tag], ['Commit', o.commit.slice(0, 8)], ['Pedido por', o.author || '?'], ['Resumo', o.subject || '']],
+      effect: 'vale na hora', effectKind: sens ? 'warn' : 'ok',
+      note: 'O Pi confere a versão, instala, testa e volta sozinho para a anterior se algo falhar.', noteKind: 'warn', confirm: 'Colocar no ar' })) route();
+  });
+  const body = [
+    !ex ? h('div', { class: 'card badb' }, 'Nenhum executor pareado.') : !dep ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O deployer ainda não está ligado a este executor (veja docs/DEPLOY.md).')) : null,
+    h('div', { class: 'sec' }, `Versões prontas · ${offers.length}`),
+    offers.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, offers.map((o) => h('div', { class: 'li', style: 'flex-wrap:wrap' },
+      h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, `${o.project} · ${o.tag}`), h('div', { class: 'muted' }, `${o.subject || ''} · ${o.author || '?'} · ${o.ts ? ago(o.ts, now) : ''}`),
+        h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;margin-top:6px' }, o.sensitive_n > 0 ? chip(`mexe em segurança (${o.sensitive_n})`, 'bad') : chip('não mexe em segurança', 'ok'),
+          o.files != null ? chip(`${o.files} arquivo${o.files === 1 ? '' : 's'}`) : null)),
+      h('button', { class: 'btn pri', type: 'button', onclick: approve(o) }, 'Colocar no ar')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhuma versão nova aguardando.')),
+    errs.length ? errs.map((o) => h('div', { class: 'note warn' }, `${o.project}: ${o.error}`)) : null,
+    h('div', { class: 'sec' }, 'Últimos deploys'),
+    hist.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, hist.slice(0, 10).map((x) => h('div', { class: 'li' },
+      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, `${x.project} ${String(x.commit).slice(0, 8)}`), h('div', { class: 'muted' }, x.msg || '', x.ts ? ` · ${ago(x.ts, now)}` : '')),
+      x.ok ? chip('no ar', 'ok') : x.rolled_back ? chip('revertido', 'warn') : chip('recusado', 'bad')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum deploy ainda.')),
+  ];
+  show(top('Deploys'), h('div', { class: 'wrap wide' }, body));
+  timer = setTimeout(autoRefresh, 20000);
+}
+
 async function pcView() {
   me = await api('GET', '/v1/me');
   const { devices, now, pcReqs } = await loadAll();
@@ -1905,6 +1946,7 @@ async function route() {
     else if (hash === '#/guardians/novo' && isAdmin()) await guardianInviteView();
     else if (hash === '#/devices' && isAdmin()) await devicesView();
     else if (hash === '#/pc' && isAdmin()) await pcView();
+    else if (hash === '#/deploys' && isMaster()) await deploysView();
     else if (his) await (isAdmin() || canSee('history') ? historyView(his[1]) : domainsView());
     else if (hash === '#/pair' && isAdmin()) await pairView();
     else if (ap) await appsView(ap[1]);
