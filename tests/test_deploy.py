@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fakepihole import FakePihole  # noqa: E402
 from gwharness import Env  # noqa: E402
-from guardian.deployer.core import Deployer  # noqa: E402
+from guardian.deployer import policy  # noqa: E402
+from guardian.deployer.core import Deployer, _run  # noqa: E402
 from guardian.executor.runner import ExecConfig, Executor, pair  # noqa: E402
 from guardian.protocol import commands as cmds  # noqa: E402
 from test_executor import pairing_string  # noqa: E402
@@ -147,6 +148,93 @@ class DeployerFlow(unittest.TestCase):
         st = json.load(open(os.path.join(self.state, "status.json")))
         self.assertEqual(len(st["history"]), 2)
         self.assertEqual(self.d.process_inbox(), [])
+
+
+class ComposePolicy(unittest.TestCase):
+    P = "/tmp/proj"
+
+    def cfg(self, **svc):
+        return {"services": {"app": svc}}
+
+    def test_normal_project_passes(self):
+        cfg = {"services": {"app": {"image": "x", "volumes": [{"type": "bind", "source": "/mnt/ssd/dados", "target": "/d"},
+                                                                {"type": "bind", "source": "/tmp/proj/conf", "target": "/c"},
+                                                                {"type": "volume", "source": "dados", "target": "/v"}],
+                                    "build": {"context": "/tmp/proj"}, "env_file": [{"path": "/tmp/proj/.env"}]}},
+               "volumes": {"dados": {"name": "p_dados"}}, "networks": {"default": {"name": "p_default"}}}
+        self.assertEqual(policy.violations(cfg, self.P, ["/mnt/ssd"]), [])
+
+    def test_each_escape_hatch_is_a_violation(self):
+        bad = [dict(privileged=True), dict(cap_add=["SYS_ADMIN"]), dict(devices=["/dev/mem:/dev/mem"]), dict(network_mode="host"),
+               dict(pid="host"), dict(ipc="host"), dict(userns_mode="host"), dict(security_opt=["seccomp=unconfined"]),
+               dict(group_add=["docker"]), dict(volumes_from=["x"]), dict(runtime="runc"),
+               dict(volumes=[{"type": "bind", "source": "/var/run/docker.sock", "target": "/s"}]),
+               dict(volumes=[{"type": "bind", "source": "/opt/guardian", "target": "/g"}]),
+               dict(volumes=[{"type": "bind", "source": "/mnt/ssd/../etc", "target": "/g"}]),
+               dict(env_file=[{"path": "/etc/guardian-executor.env"}]),
+               dict(build={"context": "/etc"}), dict(build={"context": "/tmp/proj", "privileged": True})]
+        for svc in bad:
+            self.assertTrue(policy.violations(self.cfg(**svc), self.P, ["/mnt/ssd"]), svc)
+
+    def test_external_volumes_and_networks_are_refused(self):
+        for top in ({"volumes": {"gw": {"external": True, "name": "deploy_gateway-data"}}},
+                    {"networks": {"g": {"external": True, "name": "guardian_net"}}},
+                    {"volumes": {"v": {"driver_opts": {"type": "none", "o": "bind", "device": "/etc"}}}},
+                    {"secrets": {"s": {"file": "/etc/shadow"}}}):
+            self.assertTrue(policy.violations({"services": {"app": {"image": "x"}}, **top}, self.P), top)
+
+    def test_allowed_context_and_network_none(self):
+        cfg = self.cfg(build={"context": "/opt/outro"}, network_mode="none")
+        self.assertEqual(policy.violations(cfg, self.P, [], ["/opt/outro"]), [])
+        self.assertTrue(policy.violations(cfg, self.P, [], []))
+
+
+class DeployerCompose(unittest.TestCase):
+    """O deployer recusa, antes de instalar, uma versão cujo compose viola a política (o `docker compose config` é simulado)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.origin, self.work, self.state = os.path.join(t, "o"), os.path.join(t, "w"), os.path.join(t, "s")
+        os.makedirs(self.origin)
+        git(self.origin, "init", "-q", "-b", "main")
+        open(os.path.join(self.origin, "docker-compose.yml"), "w").write("services: {}\n")
+        git(self.origin, "add", "-A")
+        git(self.origin, "commit", "-q", "-m", "v1")
+        git(self.origin, "tag", "release/1")
+        git(t, "clone", "-q", self.origin, self.work)
+        self.bad = False
+
+        def run(argv, cwd=None, env=None, timeout=600):
+            if argv[0] == "docker" and "config" in argv:
+                svc = {"image": "x", "privileged": True} if self.bad else {"image": "x"}
+                return 0, json.dumps({"services": {"app": svc}})
+            if argv[0] == "docker":
+                return 0, ""
+            return _run(argv, cwd, env, timeout)
+        self.reg = {"p": {"repo": self.origin, "workdir": self.work, "type": "compose", "steps": [["docker", "compose", "up", "-d"]],
+                          "health": [], "tag_prefix": "release/"}}
+        self.d = Deployer(self.reg, self.state, run=run, sleep=lambda s: None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_violating_version_is_flagged_in_the_offer_and_refused(self):
+        open(os.path.join(self.origin, "x.txt"), "w").write("2")
+        git(self.origin, "add", "-A")
+        git(self.origin, "commit", "-q", "-m", "v2 com privileged")
+        c = git(self.origin, "rev-parse", "HEAD")
+        git(self.origin, "tag", "release/2")
+        self.bad = True
+        (offer,) = [o for o in self.d.refresh_offers() if o.get("commit") == c]
+        self.assertEqual(offer["policy_n"], 1)
+        self.assertIn("privileged", offer["policy"][0])
+        before = git(self.work, "rev-parse", "HEAD")
+        r = self.d.deploy({"project": "p", "commit": c, "sensitive_ok": True})
+        self.assertFalse(r["ok"])
+        self.assertIn("política de isolamento", r["msg"])
+        self.assertEqual(git(self.work, "rev-parse", "HEAD"), before)       # nada foi instalado
+        self.bad = False
+        self.assertTrue(self.d.deploy({"project": "p", "commit": c})["ok"])
 
 
 class ExecutorQueuesDeploy(unittest.TestCase):

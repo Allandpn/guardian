@@ -12,10 +12,14 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import time
+
+from . import policy
 
 _PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -130,6 +134,41 @@ class Deployer:
             return ["(não deu para comparar com a versão atual)"]
         return [f for f in files if any(fnmatch.fnmatch(f, p) for p in pats)]
 
+    def compose_violations(self, name: str, m: str, commit: str) -> list[str]:
+        """Projetos em contêiner: confere o docker-compose da versão contra a política de isolamento ANTES de qualquer instalação."""
+        proj = self.reg[name]
+        if proj.get("type") != "compose":
+            return []
+        tmp = tempfile.mkdtemp(prefix="guardian-policy-")
+        try:
+            tar = os.path.join(tmp, "src.tar")
+            rc, out = self._git(name, "--git-dir", m, "archive", "--format=tar", "-o", tar, commit)
+            if rc != 0:
+                return [f"não consegui ler a versão: {out[-100:]}"]
+            pdir = os.path.join(tmp, "p")
+            os.makedirs(pdir)
+            with tarfile.open(tar) as t:
+                for mem in t.getmembers():  # só arquivos e pastas dentro do projeto (sem links nem caminhos absolutos)
+                    n = os.path.normpath(mem.name)
+                    if not (mem.isfile() or mem.isdir()) or n.startswith(("/", "..")):
+                        continue
+                    t.extract(mem, pdir)
+            env = os.path.join(proj["workdir"], ".env")
+            if os.path.isfile(env):
+                shutil.copy(env, os.path.join(pdir, ".env"))
+            cfile = os.path.join(pdir, proj.get("compose_file", "docker-compose.yml"))
+            rc, out = self.run(["docker", "compose", "--project-directory", pdir, "-f", cfile, "config", "--format", "json", "--no-env-resolution"],
+                               cwd=pdir, env=self._env(proj), timeout=120)
+            if rc != 0:
+                return [f"não consegui validar o compose: {out[-120:]}"]
+            try:
+                cfg = json.loads(out)
+            except ValueError:
+                return ["saída do compose ilegível"]
+            return policy.violations(cfg, pdir, proj.get("allowed_binds"), proj.get("allowed_contexts"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     # --- ofertas: o que o mestre pode aprovar -----------------------------------------------
     def refresh_offers(self) -> list[dict]:
         offers: list[dict] = []
@@ -145,12 +184,13 @@ class Deployer:
                     continue
                 files = self.changed_files(name, m, cur, commit)
                 sens = self.sensitive_of(name, files)
+                viol = self.compose_violations(name, m, commit)
                 _, subj = self._git(name, "--git-dir", m, "log", "-1", "--format=%s", commit)
                 _, who = self._git(name, "--git-dir", m, "log", "-1", "--format=%an", commit)
                 _, ts = self._git(name, "--git-dir", m, "log", "-1", "--format=%ct", commit)
                 offers.append({"project": name, "tag": tag, "commit": commit, "subject": subj[:80], "author": who[:40],
                                "ts": int(ts) if ts.isdigit() else 0, "files": len(files) if files is not None else None,
-                               "sensitive": sens[:8], "sensitive_n": len(sens)})
+                               "sensitive": sens[:8], "sensitive_n": len(sens), "policy": viol[:6], "policy_n": len(viol)})
                 if sum(1 for o in offers if o["project"] == name and "commit" in o) >= KEEP_OFFERS:
                     break
         _atomic_write(self._path("offers.json"), {"ts": int(self.now()), "offers": offers,
@@ -207,6 +247,9 @@ class Deployer:
             if prev == commit:
                 res.update(ok=True, msg="já estava nessa versão")
                 return res
+            viol = self.compose_violations(name, m, commit)
+            if viol:
+                raise RuntimeError("a versão viola a política de isolamento: " + "; ".join(viol[:4]))
             sens = self.sensitive_of(name, self.changed_files(name, m, prev, commit))
             if sens and not req.get("sensitive_ok"):
                 raise RuntimeError("a versão mexe em áreas de segurança e o mestre não confirmou o aviso")

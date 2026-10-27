@@ -57,5 +57,85 @@
       ]
     ],
     "health_timeout_s": 180
+  },
+  "estudos": {
+    "repo": "https://github.com/Allandpn/SGE-Concursos.git",
+    "tag_prefix": "release/",
+    "type": "compose",
+    "workdir": "/opt/estudos",
+    "allowed_binds": [
+      "/mnt/ssd",
+      "/var/log/estudos"
+    ],
+    "allowed_contexts": [
+      "/opt/Plano-de-Estudos-Automatizado"
+    ],
+    "sensitive": [
+      "docker-compose*.yml",
+      "Dockerfile",
+      "*.env",
+      ".env*",
+      "deploy/*"
+    ],
+    "steps": [
+      [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+        "--build"
+      ]
+    ],
+    "health": [
+      [
+        "sh",
+        "-c",
+        "[ \"$(docker inspect -f '{{.State.Health.Status}}' estudos-app-1)\" = healthy ]"
+      ]
+    ],
+    "health_timeout_s": 300
+  },
+  "imagineer": {
+    "repo": "https://github.com/Allandpn/Imagineer.git",
+    "tag_prefix": "release/",
+    "type": "compose",
+    "workdir": "/home/allan/Imagineer",
+    "allowed_binds": [
+      "/home/allan/Imagineer"
+    ],
+    "sensitive": [
+      "docker-compose*.yml",
+      "Dockerfile",
+      "*.env",
+      ".env*"
+    ],
+    "steps": [
+      [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+        "--build"
+      ]
+    ],
+    "health": [
+      [
+        "sh",
+        "-c",
+        "[ \"$(docker inspect -f '{{.State.Running}}' imagineer-api-1)\" = true ]"
+      ]
+    ],
+    "health_timeout_s": 180
+  },
+  "plano-de-estudos": {
+    "repo": "https://github.com/Allandpn/Plano-de-Estudos-Automatizado.git",
+    "tag_prefix": "release/",
+    "workdir": "/opt/Plano-de-Estudos-Automatizado",
+    "sensitive": [
+      "Dockerfile",
+      ".env*"
+    ],
+    "steps": [],
+    "health": []
   }
 }

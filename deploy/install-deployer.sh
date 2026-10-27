@@ -10,7 +10,7 @@ EXEC_UID="$(id -u guardian-exec)"
 
 install -d -m 0755 -o root -g root "$LIB/guardian_deployer"
 install -m 0644 -o root -g root "$SRC/src/guardian/deployer/__init__.py" "$SRC/src/guardian/deployer/core.py" \
-  "$SRC/src/guardian/deployer/__main__.py" "$LIB/guardian_deployer/"
+  "$SRC/src/guardian/deployer/__main__.py" "$SRC/src/guardian/deployer/policy.py" "$LIB/guardian_deployer/"
 
 install -d -m 0755 -o root -g root /etc/guardian-deploy
 [ -f /etc/guardian-deploy/projects.json ] || install -m 0644 -o root -g root "$SRC/deploy/deploy-projects.example.json" /etc/guardian-deploy/projects.json
