@@ -27,8 +27,9 @@ que fica com o guardião. O código do executor e do gateway muda por deploy, ma
 ## Instalar (uma vez, como root)
 
 1. `sudo sh deploy/install-deployer.sh`
-2. Chave de leitura do GitHub (uma por repositório privado), só leitura:
-   `ssh-keygen -t ed25519 -N '' -f /etc/guardian-deploy/guardian_deploy_key` e cadastre a `.pub` como *deploy key* (sem escrita) no repositório.
+2. Repositório público (como o do Guardian): nada a fazer, o Pi lê por https. Repositório privado: gere uma chave só de leitura
+   (`ssh-keygen -t ed25519 -N '' -f /etc/guardian-deploy/<projeto>_deploy_key`), cadastre a `.pub` como *deploy key* (sem escrita)
+   e aponte `ssh_key` no registro.
 3. Confira `/etc/guardian-deploy/projects.json` (repositório, `workdir`, passos, checagens, lista `sensitive`).
 4. `systemctl restart guardian-executor` e `systemctl start guardian-deployer`.
 5. Crie uma etiqueta `release/…` no repositório: ela aparece em **Deploys** em até 20 s.

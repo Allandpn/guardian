@@ -1,7 +1,6 @@
 {
   "guardian": {
-    "repo": "git@github.com:Allandpn/guardian.git",
-    "ssh_key": "/etc/guardian-deploy/guardian_deploy_key",
+    "repo": "https://github.com/Allandpn/guardian.git",
     "tag_prefix": "release/",
     "workdir": "/opt/guardian",
     "sensitive": [
