@@ -324,6 +324,19 @@ class AppOffers(unittest.TestCase):
         self.assertEqual(data["errors"][0]["app"], "filtro")
         self.assertIn("sem rede", data["errors"][0]["error"])
 
+    def test_03b_local_directory_source(self):
+        d = os.path.join(self.tmp.name, "local")
+        os.makedirs(d)
+        open(os.path.join(d, "nottoday-0.2.1.apk"), "wb").write(b"apk local")
+        open(os.path.join(d, "leia-me.txt"), "w").write("ignorado")
+        self.d.reg["nt"] = {"type": "android_app", "source": "dir", "dir": d, "pkg": "com.allan.nottoday"}
+        offers = [o for o in self.d.refresh_app_offers(force=True) if o["app"] == "nt"]
+        self.assertEqual(len(offers), 1)
+        import hashlib
+        self.assertEqual(offers[0]["sha256"], hashlib.sha256(b"apk local").hexdigest())
+        self.assertEqual((offers[0]["tag"], offers[0]["pkg"], offers[0]["author"], offers[0]["sensitive_n"]), ("nottoday-0.2.1", "com.allan.nottoday", "local", 1))
+        self.assertTrue(os.path.isfile(os.path.join(self.state, "apks", offers[0]["sha256"] + ".apk")))
+
     def test_04_android_app_entries_are_not_treated_as_code_projects(self):
         self.assertEqual(self.d.refresh_offers(), [])                     # sem workdir nem passos: não quebra
         self.assertEqual(json.load(open(os.path.join(self.state, "offers.json")))["current"], {})

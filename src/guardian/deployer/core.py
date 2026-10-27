@@ -9,6 +9,7 @@ Roda como root, fora do repositório que os desenvolvedores editam: este arquivo
 Voltar para uma versão que já estava no ar não afrouxa nada, então não pede assinatura.
 """
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -189,6 +190,32 @@ class Deployer:
         return [n for n, p in self.reg.items() if p.get("type") != "android_app"]
 
     # --- apps Android: Releases do GitHub viram ofertas de instalação ---------------------------------
+    def _dir_offers(self, name: str, proj: dict, keep: set) -> list[dict]:
+        """Pasta local (só root escreve): cada .apk vira uma oferta. A etiqueta é o nome do arquivo; não há código para comparar, então exige atenção."""
+        out = []
+        d = proj["dir"]
+        files = sorted((f for f in os.listdir(d) if f.endswith(".apk")), key=lambda f: -os.path.getmtime(os.path.join(d, f)))[:3]
+        for f in files:
+            src = os.path.join(d, f)
+            size = os.path.getsize(src)
+            if not 1 <= size <= apps.MAX_APK_BYTES:
+                continue
+            h = hashlib.sha256()
+            with open(src, "rb") as fh:
+                for chunk in iter(lambda: fh.read(64 * 1024), b""):
+                    h.update(chunk)
+            sha = h.hexdigest()
+            dest = self._path("apks", sha + ".apk")
+            if not os.path.isfile(dest):
+                shutil.copyfile(src, dest + ".part")
+                os.replace(dest + ".part", dest)
+            keep.add(sha)
+            stem = f[:-4]
+            out.append({"kind": "app", "app": name, "pkg": proj["pkg"], "tag": stem[:40], "version_name": stem[:40], "sha256": sha, "size": size,
+                        "asset": f[:80], "subject": "arquivo local no Pi", "author": "local", "ts": int(os.path.getmtime(src)), "files": None,
+                        "sensitive": ["(origem local: sem código para comparar)"], "sensitive_n": 1})
+        return out
+
     def refresh_app_offers(self, force: bool = False) -> list[dict]:
         names = [n for n, p in self.reg.items() if p.get("type") == "android_app"]
         if not names or (not force and self.now() - self._app_ts < APP_REFRESH_S):
@@ -198,6 +225,12 @@ class Deployer:
         offers, errors, keep = [], [], set()
         for name in names:
             proj = self.reg[name]
+            if proj.get("source") == "dir":   # APKs deixados à mão por root numa pasta do Pi (fora do GitHub)
+                try:
+                    offers.extend(self._dir_offers(name, proj, keep))
+                except OSError as e:
+                    errors.append({"app": name, "error": str(e)[:200]})
+                continue
             try:
                 token = None
                 if proj.get("token_file") and os.path.isfile(proj["token_file"]):
