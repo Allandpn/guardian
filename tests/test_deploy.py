@@ -337,6 +337,15 @@ class AppOffers(unittest.TestCase):
         self.assertEqual((offers[0]["tag"], offers[0]["pkg"], offers[0]["author"], offers[0]["sensitive_n"]), ("nottoday-0.2.1", "com.allan.nottoday", "local", 1))
         self.assertTrue(os.path.isfile(os.path.join(self.state, "apks", offers[0]["sha256"] + ".apk")))
 
+    def test_03c_private_https_repo_uses_the_token_for_git(self):
+        tf = os.path.join(self.tmp.name, "tok")
+        open(tf, "w").write("ghp_segredo\n")
+        env = self.d._env({"repo": "https://github.com/x/y.git", "token_file": tf})
+        self.assertIn("Authorization: Basic ", env["GIT_CONFIG_VALUE_0"])
+        self.assertNotIn("ghp_segredo", env["GIT_CONFIG_VALUE_0"])        # vai em base64, não em texto
+        env2 = self.d._env({"repo": "git@github.com:x/y.git", "token_file": tf})
+        self.assertNotIn("GIT_CONFIG_VALUE_0", env2)                      # ssh usa a chave, não o token
+
     def test_04_android_app_entries_are_not_treated_as_code_projects(self):
         self.assertEqual(self.d.refresh_offers(), [])                     # sem workdir nem passos: não quebra
         self.assertEqual(json.load(open(os.path.join(self.state, "offers.json")))["current"], {})

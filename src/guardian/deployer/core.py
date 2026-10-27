@@ -82,6 +82,13 @@ class Deployer:
         if proj.get("ssh_key"):
             env["GIT_SSH_COMMAND"] = f"ssh -i {proj['ssh_key']} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
         env["GIT_TERMINAL_PROMPT"] = "0"
+        tf = proj.get("token_file")
+        if tf and str(proj.get("repo", "")).startswith("https://") and os.path.isfile(tf):  # repositório privado por https: o mesmo token da API
+            import base64
+            tok = open(tf).read().strip()
+            if tok:
+                env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraheader",
+                           GIT_CONFIG_VALUE_0="Authorization: Basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode())
         env["GIT_CONFIG_GLOBAL"] = self._path("gitconfig")  # só do deployer: aceita repositórios de outro usuário (inclusive em git-upload-pack)
         env.setdefault("HOME", self.state_dir)
         return env
