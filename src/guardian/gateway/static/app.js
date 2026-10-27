@@ -799,7 +799,9 @@ async function appsView(tab) {
         h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), goBtn)), list];
   } else if (tab === 'catalogo') {
     // Versões de apps publicadas no GitHub que o Pi já baixou: o mestre escolhe em qual aparelho instalar (o aparelho só instala com o passkey dele).
-    const ex = (await loadAll()).devices.find((d) => d.kind === 'executor');
+    const all = await loadAll();
+    const ex = all.devices.find((d) => d.kind === 'executor');
+    const ready = new Set((await api('GET', '/v1/devices')).apks || []);   // APKs que já estão no gateway
     const cat = (((ex && ex.report) || {}).deploy || {}).apps || null;
     const offers = (cat && cat.offers) || [];
     const errs = (cat && cat.errors) || [];
@@ -807,7 +809,7 @@ async function appsView(tab) {
     const install = (o, d) => act(async () => {
       if (o.sensitive_n > 0 && !(await sheet({ title: 'Esta versão mexe em áreas de segurança', rows: [['App', o.app], ['Versão', o.tag], ['Arquivos de segurança', String(o.sensitive_n)]],
         note: 'Ela altera arquivos de política, restrições ou assinatura do app. Só continue se você conhece e confia em quem publicou.', noteKind: 'bad', confirm: 'Estou ciente, continuar', danger: true }))) return;
-      const args = { pkg: o.pkg, sha256: o.sha256, size: o.size, version_name: o.version_name };
+      const args = { pkg: o.pkg, sha256: o.sha256, size: o.size };   // a versão é só informativa: não vai no comando (o aparelho recusa chave desconhecida)
       if (await confirmSend(d.id, 'install_app', args, { title: `Instalar ${o.app} ${o.tag} em ${d.name}?`,
         rows: [['Aparelho', d.name], ['App', o.pkg], ['Versão', o.tag], ['Tamanho', kb(o.size)], ['Impressão', o.sha256.slice(0, 16)], ['Publicado por', o.author || '?']],
         effect: 'vale na hora', effectKind: o.sensitive_n > 0 ? 'warn' : 'ok',
@@ -822,7 +824,7 @@ async function appsView(tab) {
           h('div', { class: 'muted' }, `${o.subject || ''} · ${o.author || '?'} · ${kb(o.size)} · ${o.ts ? ago(o.ts, Math.floor(Date.now() / 1000)) : ''}`),
           h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;margin-top:6px' }, o.sensitive_n > 0 ? chip(`mexe em segurança (${o.sensitive_n})`, 'bad') : chip('não mexe em segurança', 'ok'),
             o.files != null ? chip(`${o.files} arquivo${o.files === 1 ? '' : 's'}`) : null)),
-        h('div', { class: 'acts' }, phones.map((d) => h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, `Instalar em ${d.name}`)))))) :
+        ready.has(o.sha256) ? h('div', { class: 'acts' }, phones.map((d) => h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, `Instalar em ${d.name}`))) : h('span', { class: 'muted' }, 'o Pi ainda está enviando o APK'))))) :
         empty('Nenhuma versão no catálogo.'),
       errs.map((e) => h('div', { class: 'note warn' }, `${e.app}: ${e.error}`)),
     ];

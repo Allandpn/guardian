@@ -430,6 +430,9 @@ class Store:
     def add_apk(self, sha256: str, size: int) -> None:
         self.x("INSERT INTO apks(sha256,size,ts) VALUES(?,?,?) ON CONFLICT(sha256) DO UPDATE SET ts=excluded.ts", (sha256, size, int(time.time())))
 
+    def has_apk(self, sha256: str) -> bool:
+        return bool(self.one("SELECT 1 FROM apks WHERE sha256=?", (sha256,)))
+
     def apk_hashes(self) -> list[str]:
         return [r["sha256"] for r in self.q("SELECT sha256 FROM apks")]
 

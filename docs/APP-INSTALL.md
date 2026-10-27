@@ -12,6 +12,17 @@ Mesmo envelope dos outros comandos (assinado por passkey, `dev` = este aparelho,
 assinatura válida, autor com papel **mestre** (só ele assina `install_app`), janela de horário do autor, contador, `dev`. Em Python: `protocol/commands.py`
 (`T_INSTALL_APP`, `check_install_args`, `MASTER_TYPES`). Argumentos fora do formato acima: recusar.
 
+## Formato exato dos argumentos (igual ao Python, `check_install_args`)
+
+- Só estas chaves: `pkg`, `sha256`, `size` (obrigatórias) e `version_name`, `version_code` (opcionais). Qualquer outra: recusar.
+- `pkg`: texto, até 200 caracteres, `^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$`.
+- `sha256`: `^[0-9a-f]{64}$` (minúsculas).
+- `size`: inteiro (não booleano) de 1 a 157286400 (150 MiB). O gateway nunca guarda arquivo maior.
+- `version_name`: texto até 40 caracteres. `version_code`: inteiro >= 1.
+
+O site hoje manda só `pkg`, `sha256` e `size`. O gateway só aceita o comando se o APK **já está** guardado nele (resposta 409 "o APK ainda não chegou"), então o
+aparelho não deve encontrar 404 em condições normais; trate 404 como falha rápida, sem esperar.
+
 ## Baixar
 
 `GET /v1/devices/{dev}/apk/{sha256}` com os cabeçalhos assinados de sempre (`X-Dev`, `X-Ts`, `X-Nonce`, `X-Sig`; corpo vazio).

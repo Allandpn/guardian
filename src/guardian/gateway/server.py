@@ -575,7 +575,7 @@ class Gateway:
                 if not see["devices"]:
                     d.update(last_seen=0, report_ts=0, pending=0)
             out.append(d)
-        return 200, {"devices": out, "now": int(time.time())}, {}
+        return 200, {"devices": out, "now": int(time.time()), "apks": self.store.apk_hashes() if role in cmds.ADMINISH else []}, {}
 
     def next_ctr(self, req, dev):
         gid = self.guardian(req)
@@ -630,6 +630,8 @@ class Gateway:
                 raise HttpError(400, str(e))
             if row["kind"] != "device" or self._is_windows(row):
                 raise HttpError(400, "só aparelhos Android recebem instalação de app")
+            if not self.store.has_apk(cmd["args"]["sha256"]):  # evita gastar o contador e travar a fila do aparelho esperando um arquivo que não chegou
+                raise HttpError(409, "o APK ainda não chegou ao gateway: espere o Pi enviá-lo (até ~1 min) e tente de novo")
         if cmd["type"] in cmds.WIN_TYPES:
             try:
                 cmds.check_win_args(cmd["type"], cmd["args"], time.time(), creating=True)

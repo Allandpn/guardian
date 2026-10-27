@@ -101,6 +101,13 @@ class ApkThroughTheGateway(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.env.tmp.name, "apks", bad_sha + ".apk")))
         self.assertFalse([n for n in os.listdir(os.path.join(self.env.tmp.name, "apks")) if n.endswith(".part")])
 
+    def test_02b_install_waits_until_the_apk_is_at_the_gateway(self):
+        missing = hashlib.sha256(b"ainda nao chegou").hexdigest()
+        (st, r, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.phone, cmds.T_INSTALL_APP, {"pkg": PKG, "sha256": missing, "size": 5})
+        self.assertEqual(st, 409, r)                                  # o contador não foi gasto: o comando nem entrou na fila
+        self.assertEqual(self.c.call("GET", f"/v1/devices/{self.phone}/ctr")[1]["next"], 1)
+        self.assertIn(SHA, self.c.call("GET", "/v1/devices")[1]["apks"])
+
     def test_03_phone_downloads_only_after_a_signed_install_command(self):
         self.assertEqual(self.get(self.phone_key, self.phone, SHA)[0], 403)         # sem comando assinado
         args = {"pkg": PKG, "sha256": SHA, "size": len(APK), "version_name": "1.0"}
