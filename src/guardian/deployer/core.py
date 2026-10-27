@@ -117,6 +117,14 @@ class Deployer:
     def _have(self, name: str, m: str, commit: str) -> bool:
         return self._git(name, "--git-dir", m, "cat-file", "-e", commit + "^{commit}")[0] == 0
 
+    def _older(self, name: str, m: str, commit: str, cur: str | None) -> bool:
+        """A versão já faz parte do que está no ar (é antepassada da atual)? Voltar a ela seria um downgrade, que o mestre não aprova por aqui."""
+        if not cur or commit == cur:
+            return False
+        if not self._have(name, m, cur):
+            self._git(name, "--git-dir", m, "fetch", self.reg[name]["workdir"], cur)
+        return self._git(name, "--git-dir", m, "merge-base", "--is-ancestor", commit, cur)[0] == 0
+
     def changed_files(self, name: str, m: str, base: str | None, commit: str) -> list[str] | None:
         """Arquivos que a versão muda em relação ao que está no ar. None se não deu para comparar (tratado como sensível)."""
         if not base:
@@ -180,7 +188,7 @@ class Deployer:
                 continue
             cur = self._deployed(name)
             for commit, tag in list(self._tagged_commits(name, m).items())[:KEEP_OFFERS + 1]:
-                if commit == cur:
+                if commit == cur or self._older(name, m, commit, cur):
                     continue
                 files = self.changed_files(name, m, cur, commit)
                 sens = self.sensitive_of(name, files)
@@ -247,6 +255,8 @@ class Deployer:
             if prev == commit:
                 res.update(ok=True, msg="já estava nessa versão")
                 return res
+            if self._older(name, m, commit, prev):
+                raise RuntimeError("essa versão é mais antiga que a que está no ar (downgrade não é aceito)")
             viol = self.compose_violations(name, m, commit)
             if viol:
                 raise RuntimeError("a versão viola a política de isolamento: " + "; ".join(viol[:4]))

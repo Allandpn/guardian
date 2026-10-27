@@ -115,6 +115,17 @@ class DeployerFlow(unittest.TestCase):
         self.assertEqual(open(self.marker).read(), "ok v2")
         self.assertEqual(r["by"], "g_gandalf")
 
+    def test_03b_older_versions_are_not_offered_and_not_installed(self):
+        c = self._commit("app.txt", "ok v2", "v2")
+        git(self.origin, "tag", "release/2")
+        self.assertTrue(self.d.deploy({"project": "demo", "commit": c})["ok"])
+        self.assertEqual([o["tag"] for o in self.d.refresh_offers() if "commit" in o], [])      # release/1 ficou para trás
+        first = git(self.origin, "rev-parse", "release/1^{commit}")
+        r = self.d.deploy({"project": "demo", "commit": first})
+        self.assertFalse(r["ok"])
+        self.assertIn("mais antiga", r["msg"])
+        self.assertEqual(git(self.work, "rev-parse", "HEAD"), c)
+
     def test_04_sensitive_version_needs_the_masters_confirmation(self):
         c = self._commit("sec/x.py", "ok", "mexe em segurança")
         git(self.origin, "tag", "release/2")
