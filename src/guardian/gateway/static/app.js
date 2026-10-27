@@ -726,8 +726,10 @@ async function appsView(tab) {
     body = [h('div', { class: 'pad', style: 'margin-top:12px' }, h('input', { class: 'inp', type: 'search', placeholder: 'Buscar app aprovado', 'aria-label': 'Buscar app aprovado', oninput: (e) => draw(e.target.value) })), listBox];
   } else if (tab === 'instalados') {
     // Tudo que se sabe de cada aparelho: a lista completa de instalados (quando o app a envia) mais aprovados, pendentes, recusados e vetados.
+    // Aprovado, mas o aparelho já informa a lista completa e o pacote não está nela: foi desinstalado e a aprovação continua valendo.
+    const gone = (d, pkg) => Array.isArray((d.report || {}).installedApps) && !d.report.installedApps.some((a) => a.pkg === pkg);
     const stateOf = (d, pkg) => ((d.vetoed || {})[pkg] ? (((d.report || {}).approvedApps || []).some((a) => a.pkg === pkg) ? 'vetoact' : 'veto')
-      : ((d.report || {}).approvedApps || []).some((a) => a.pkg === pkg) ? 'ok' : (d.refusedApps || []).some((a) => a.pkg === pkg) ? 'refused'
+      : ((d.report || {}).approvedApps || []).some((a) => a.pkg === pkg) ? (gone(d, pkg) ? 'gone' : 'ok') : (d.refusedApps || []).some((a) => a.pkg === pkg) ? 'refused'
       : ((d.report || {}).pendingApps || []).some((a) => a.pkg === pkg) ? 'pending' : 'inst');
     const rows = shown.flatMap((d) => {
       const m = new Map(), put = (a) => { if (a && a.pkg && !m.has(a.pkg)) m.set(a.pkg, { pkg: a.pkg, label: a.label || a.pkg }); };
@@ -737,11 +739,11 @@ async function appsView(tab) {
       return [...m.values()].map((a) => ({ d, a, st: stateOf(d, a.pkg) }));
     }).sort((x, y) => x.a.label.localeCompare(y.a.label, 'pt-BR') || x.d.name.localeCompare(y.d.name));
     const hasFull = shown.some((d) => Array.isArray((d.report || {}).installedApps));
-    const STATES = { ok: ['aprovado', 'ok'], pending: ['pendente', 'warn'], refused: ['recusado', ''], veto: ['vetado', 'bad'], vetoact: ['vetado, ainda ativo', 'bad'], inst: ['instalado', ''] };
+    const STATES = { ok: ['aprovado', 'ok'], gone: ['desinstalado, ainda aprovado', 'warn'], pending: ['pendente', 'warn'], refused: ['recusado', ''], veto: ['vetado', 'bad'], vetoact: ['vetado, ainda ativo', 'bad'], inst: ['instalado', ''] };
     const keyOf = ({ d, a }) => `${d.id}|${a.pkg}`;
     const canVeto = (x) => x.st !== 'veto';
     const vis = () => { const q = appSearch.trim().toLowerCase();
-      return rows.filter((x) => (!appState || x.st === appState || (appState === 'veto' && x.st === 'vetoact')) && (!q || `${x.a.label} ${x.a.pkg}`.toLowerCase().includes(q))); };
+      return rows.filter((x) => (!appState || x.st === appState || (appState === 'veto' && x.st === 'vetoact') || (appState === 'ok' && x.st === 'gone')) && (!q || `${x.a.label} ${x.a.pkg}`.toLowerCase().includes(q))); };
     const boxes = new Map(), allBox = h('input', { type: 'checkbox', class: 'chk', 'aria-label': 'Marcar todos' });
     const goBtn = h('button', { class: 'btn pri danger', type: 'button' }), list = h('div');
     const sync = () => {
@@ -767,7 +769,7 @@ async function appsView(tab) {
     goBtn.addEventListener('click', act(async () => {
       const chosen = rows.filter((x) => appSel.has(keyOf(x)));
       if (!chosen.length) return;
-      const live = chosen.filter((x) => x.st === 'ok' || x.st === 'vetoact');  // aprovados: precisam da revogação assinada para suspender
+      const live = chosen.filter((x) => x.st === 'ok' || x.st === 'gone' || x.st === 'vetoact');  // aprovados: precisam da revogação assinada para suspender
       if (!(await sheet({ title: `Vetar ${chosen.length} app${chosen.length > 1 ? 's' : ''}?`,
         rows: chosen.slice(0, 8).map((x) => [x.d.name, x.a.label]).concat(chosen.length > 8 ? [['…', `mais ${chosen.length - 8}`]] : []),
         note: `Veto permanente: o app fica suspenso e ninguém o aprova nem o pede até você tirar o veto.${live.length ? ` ${live.length} já aprovado${live.length > 1 ? 's' : ''}: serão pedidos ${live.length} passkey${live.length > 1 ? 's' : ''} para revogar.` : ''}`,
