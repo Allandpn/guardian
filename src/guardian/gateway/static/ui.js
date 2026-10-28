@@ -121,9 +121,15 @@ export function sheet({ title, rows = [], effect, effectKind = 'ok', note, noteK
       overlay.remove();
       document.removeEventListener('keydown', onKey);
       removeEventListener('popstate', onPop);
-      if (pushed) { pushed = false; history.back(); }
       if (prev && prev.focus) prev.focus();
-      resolve(v);
+      if (!pushed) { resolve(v); return; }
+      // history.back() só termina depois: se outra folha abrisse já, o popstate desta a fecharia sem ninguém ver (ex.: aviso + confirmação).
+      pushed = false;
+      let done = false;
+      const fin = () => { if (done) return; done = true; removeEventListener('popstate', fin); resolve(v); };
+      addEventListener('popstate', fin);
+      setTimeout(fin, 400);
+      history.back();
     };
     const ok = h('button', { class: 'btn pri' + (danger ? ' danger' : ''), type: 'button', onclick: () => close(true) }, confirm);
     overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(false); } },
