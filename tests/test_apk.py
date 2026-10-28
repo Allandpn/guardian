@@ -113,6 +113,8 @@ class ApkThroughTheGateway(unittest.TestCase):
         args = {"pkg": PKG, "sha256": SHA, "size": len(APK), "version_name": "1.0"}
         (st, r, _), _ = self.env.sign_post(self.c, self.a, self.gid, self.phone, cmds.T_INSTALL_APP, args)
         self.assertEqual(st, 200, r)
+        grants = self.c.call("GET", "/v1/devices")[1]["apk_grants"]
+        self.assertEqual(grants, {self.phone: [SHA]})                                # o painel sabe o que já foi mandado instalar e onde
         st, body = self.get(self.phone_key, self.phone, SHA)
         self.assertEqual(st, 200)
         self.assertEqual(hashlib.sha256(body).hexdigest(), SHA)                      # o arquivo inteiro, sem corromper

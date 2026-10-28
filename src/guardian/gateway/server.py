@@ -575,7 +575,8 @@ class Gateway:
                 if not see["devices"]:
                     d.update(last_seen=0, report_ts=0, pending=0)
             out.append(d)
-        return 200, {"devices": out, "now": int(time.time()), "apks": self.store.apk_hashes() if role in cmds.ADMINISH else []}, {}
+        return 200, {"devices": out, "now": int(time.time()), "apks": self.store.apk_hashes() if role in cmds.ADMINISH else [],
+                     "apk_grants": self.store.apk_grants_by_dev() if role in cmds.ADMINISH else {}}, {}
 
     def next_ctr(self, req, dev):
         gid = self.guardian(req)

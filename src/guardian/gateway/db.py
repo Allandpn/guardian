@@ -439,6 +439,13 @@ class Store:
     def grant_apk(self, dev: str, sha256: str, pkg: str) -> None:
         self.x("INSERT INTO apk_grants(dev,sha256,pkg,ts) VALUES(?,?,?,?) ON CONFLICT(dev,sha256) DO UPDATE SET ts=excluded.ts", (dev, sha256, pkg, int(time.time())))
 
+    def apk_grants_by_dev(self) -> dict:
+        """{aparelho: [sha256, ...]}: instalações que o mestre já assinou (o aparelho pode baixar; instalar ou não é com ele)."""
+        out: dict = {}
+        for r in self.q("SELECT dev, sha256 FROM apk_grants ORDER BY ts"):
+            out.setdefault(r["dev"], []).append(r["sha256"])
+        return out
+
     def apk_granted(self, dev: str, sha256: str) -> bool:
         return bool(self.one("SELECT 1 FROM apk_grants WHERE dev=? AND sha256=?", (dev, sha256)))
 

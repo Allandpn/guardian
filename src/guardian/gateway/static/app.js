@@ -7,7 +7,7 @@ const nav = document.getElementById('nav');
 const SILENT_S = 300;
 let me = null;               // { guardian, trust, rp_id, origin }
 let timer = null;
-let counts = { apps: 0, reqs: 0, cosign: 0, pc: 0, deploys: 0 };
+let counts = { apps: 0, reqs: 0, cosign: 0, pc: 0, deploys: 0, catalog: 0 };
 const drafts = new Map();    // aparelho -> { chave: novoValor } (regras ainda não assinadas)
 const open = new Set(['Filtro', 'Apps novos', 'Segurança']);  // grupos de regras abertos
 let selected = null;         // aparelho aberto no painel (computador)
@@ -157,6 +157,25 @@ const SEE_LABELS = [['devices', 'Estado dos aparelhos'], ['rules', 'Regras (só 
 /** Confiança que vai na string de pareamento: aparelho e executor conhecem todos os guardiões (o comum aprova apps, o aparelho confere a assinatura). */
 const trustFor = (_kind) => ({ ...me.trust });
 
+// ---------- catálogo de apps: o que falta instalar ----------
+const verParts = (s) => String(s || '').replace(/^[^0-9]*/, '').split(/[.\-+]/).map((x) => parseInt(x, 10) || 0);
+const verCmp = (a, b) => { const x = verParts(a), y = verParts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { const k = (x[i] || 0) - (y[i] || 0); if (k) return k < 0 ? -1 : 1; } return 0; };
+/** Só aparelho Android recebe instalação de app: o computador (Windows) fica de fora. */
+const androidPhones = (devices) => devices.filter((d) => d.kind === 'device' && (d.report || {}).platform !== 'windows');
+/** A versão mais nova publicada de cada app: é a única que pede instalação. */
+const newestOffers = (offers) => { const m = new Map(); for (const o of offers || []) { const c = m.get(o.pkg); if (!c || (o.ts || 0) > (c.ts || 0)) m.set(o.pkg, o); } return [...m.values()]; };
+/** pending: falta o mestre mandar instalar · queued: já assinado, o aparelho ainda não instalou · ok: já está na versão · have: já tem o app (versão não informada) */
+function installState(o, d, grants) {
+  const r = d.report || {};
+  const granted = ((grants || {})[d.id] || []).includes(o.sha256);
+  if (o.pkg === 'com.allan.nottoday' && r.version) return verCmp(r.version, o.tag) >= 0 ? 'ok' : (granted ? 'queued' : 'pending');
+  const has = (r.installedApps || []).some((a) => a.pkg === o.pkg);
+  if (granted) return has ? 'ok' : 'queued';
+  return has ? 'have' : 'pending';
+}
+const catalogOffers = (devices) => { const ex = devices.find((d) => d.kind === 'executor'); return ((((ex || {}).report || {}).deploy || {}).apps || {}).offers || []; };
+const countCatalog = (devices, grants) => { const ph = androidPhones(devices); return newestOffers(catalogOffers(devices)).reduce((n, o) => n + ph.filter((d) => installState(o, d, grants) === 'pending').length, 0); };
+
 // ---------- dados ----------
 async function loadAll() {
   const [d, r, a] = await Promise.all([api('GET', '/v1/devices'), api('GET', '/v1/requests'), api('GET', '/v1/commands/awaiting')]);
@@ -172,8 +191,10 @@ async function loadAll() {
   const reqs = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command');
   const dep = d.devices.filter((x) => x.kind === 'executor').map((x) => ((x.report || {}).deploy || {}).offers).filter(Boolean)[0];
   const deploys = dep ? (dep.offers || []).filter((o) => o.commit).length : 0;
-  counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length, deploys };
-  return { devices: d.devices, now: d.now, reqs, pcReqs, aw: a.commands };
+  const grants = d.apk_grants || {};
+  const catalog = isMaster() ? countCatalog(d.devices, grants) : 0;
+  counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length, deploys, catalog };
+  return { devices: d.devices, now: d.now, reqs, pcReqs, aw: a.commands, grants };
 }
 
 function statusOf(d, now) {
@@ -214,11 +235,11 @@ function renderNav(active) {
   const item = (href, label, ic, key, badge) => h('a', { class: 'navitem' + (active === key ? ' on' : ''), href, 'aria-current': active === key ? 'page' : null },
     icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
-    item('#/apps', 'Apps', 'grid', 'apps', counts.apps), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
+    item('#/apps', 'Apps', 'grid', 'apps', counts.apps + counts.catalog), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
     item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), isMaster() ? item('#/deploys', 'Deploys', 'box', 'deploys', counts.deploys) : null,
     item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
-      item('#/apps', 'Apps', 'grid', 'apps', counts.apps),
+      item('#/apps', 'Apps', 'grid', 'apps', counts.apps + counts.catalog),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
   nav.replaceChildren(h('div', { class: 'brand' }, insignia('master', 28), 'NotToday Guardian'), ...items.filter(Boolean),
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
@@ -374,6 +395,7 @@ async function inicioView() {
   const cos = aw.filter((c) => c.can_cosign);
   if (cos.length) todos.push({ n: cos.length, title: 'Co-assinatura pendente', sub: cos.map((c) => `${TYPE[JSON.parse(new TextDecoder().decode(dec(c.envelope.payload))).type] || 'comando'}`).slice(0, 2).join(' · '), href: '#/guardians' });
   if (isMaster() && counts.deploys) todos.push({ n: counts.deploys, title: 'Versões prontas para colocar no ar', sub: 'Deploys', href: '#/deploys' });
+  if (isMaster() && counts.catalog) todos.push({ n: counts.catalog, title: 'Apps para instalar ou atualizar', sub: 'Apps · Catálogo', href: '#/apps/catalogo' });
   if (reqs.length) todos.push({ n: reqs.length, title: 'Solicitações dos usuários', sub: reqs.slice(0, 2).map((q) => q.text).join(' · '), href: '#/domains/solicitacoes' });
   for (const d of isAdmin() ? devices : []) {
     const r = d.report || {};
@@ -668,7 +690,7 @@ function pillGroup(label, options, current, onPick) {
 
 /** Apps: Solicitações | Aprovados | Recusados, com filtro por aparelho. Serve ao guardião-mor e ao guardião. */
 async function appsView(tab) {
-  const { devices } = await loadAll();
+  const { devices, now, grants } = await loadAll();
   renderNav('apps');
   const phones = devices.filter((x) => x.kind === 'device');
   if (appDev && !phones.some((x) => x.id === appDev)) appDev = '';
@@ -678,7 +700,7 @@ async function appsView(tab) {
   const nPend = shown.reduce((n, d) => n + pendingOf(d).length, 0);
   const nRef = shown.reduce((n, d) => n + (d.refusedApps || []).length, 0);
   const tabs = [['#/apps/solicitacoes', `Solicitações · ${nPend}`, 'solicitacoes'], ['#/apps/aprovados', 'Aprovados', 'aprovados'], ['#/apps/recusados', `Recusados · ${nRef}`, 'recusados'],
-    ...(isMaster() ? [['#/apps/catalogo', 'Catálogo', 'catalogo']] : []),
+    ...(isMaster() ? [['#/apps/catalogo', counts.catalog ? `Catálogo · ${counts.catalog}` : 'Catálogo', 'catalogo']] : []),
     ...(isAdmin() ? [['#/apps/instalados', 'Instalados', 'instalados'], ['#/apps/vetados', `Vetados · ${shown.reduce((n, d) => n + Object.keys(d.vetoed || {}).length, 0)}`, 'vetados']] : [])];
   const filters = phones.length > 1 ? [h('div', { class: 'sec' }, 'Aparelho'),
     pillGroup('Filtrar por aparelho', [['', 'Todos'], ...phones.map((x) => [x.id, x.name])], appDev, (k) => { appDev = k; route(); })] : null;
@@ -799,12 +821,13 @@ async function appsView(tab) {
         h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), goBtn)), list];
   } else if (tab === 'catalogo') {
     // Versões de apps publicadas no GitHub que o Pi já baixou: o mestre escolhe em qual aparelho instalar (o aparelho só instala com o passkey dele).
-    const all = await loadAll();
-    const ex = all.devices.find((d) => d.kind === 'executor');
+    const all = { devices, now, grants };
+    const ph = androidPhones(devices);   // o computador (Windows) não recebe app Android
     const ready = new Set((await api('GET', '/v1/devices')).apks || []);   // APKs que já estão no gateway
-    const cat = (((ex && ex.report) || {}).deploy || {}).apps || null;
+    const cat = (((devices.find((d) => d.kind === 'executor') || {}).report || {}).deploy || {}).apps || null;
     const offers = (cat && cat.offers) || [];
     const errs = (cat && cat.errors) || [];
+    const newest = new Set(newestOffers(offers).map((o) => o.sha256));
     const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
     const install = (o, d) => act(async () => {
       if (o.sensitive_n > 0 && !(await sheet({ title: 'Esta versão mexe em áreas de segurança', rows: [['App', o.app], ['Versão', o.tag], ['Arquivos de segurança', String(o.sensitive_n)]],
@@ -813,18 +836,33 @@ async function appsView(tab) {
       if (await confirmSend(d.id, 'install_app', args, { title: `Instalar ${o.app} ${o.tag} em ${d.name}?`,
         rows: [['Aparelho', d.name], ['App', o.pkg], ['Versão', o.tag], ['Tamanho', kb(o.size)], ['Impressão', o.sha256.slice(0, 16)], ['Publicado por', o.author || '?']],
         effect: 'vale na hora', effectKind: o.sensitive_n > 0 ? 'warn' : 'ok',
-        note: 'O aparelho baixa do gateway, confere o hash e o certificado do app e instala em silêncio. Se o certificado não bater, não instala.', noteKind: 'warn',
+        note: 'O aparelho baixa do gateway, confere o hash e o certificado do app e instala em silêncio. Se o certificado não bater, não instala. Se o aparelho estiver sem rede, o comando espera e vale quando ele voltar.', noteKind: 'warn',
         confirm: 'Instalar' })) route();
     });
+    const offline = (d) => all.now - (d.last_seen || d.created) > SILENT_S;
+    const phoneRow = (o, d) => {
+      const st = installState(o, d, all.grants);
+      const off = offline(d);
+      const status = st === 'ok' ? chip('instalado', 'ok')
+        : st === 'queued' ? chip(off ? 'na fila · aparelho offline: instala quando voltar' : 'na fila · aguardando o aparelho', 'warn')
+        : st === 'have' ? chip('já instalado (versão não informada)')
+        : chip('falta instalar', 'bad');
+      const canSend = ready.has(o.sha256) && st !== 'ok' && st !== 'queued';
+      return h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px' }, h('strong', { style: 'font-size:13px' }, d.name), status,
+        off && st !== 'queued' ? chip('offline: instala quando voltar', 'warn') : null,
+        canSend ? h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, st === 'have' ? 'Atualizar' : 'Instalar') : null);
+    };
     body = [
       !cat ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O Pi ainda não publicou o catálogo (veja docs/DEPLOY.md, apps Android).')) : null,
+      counts.catalog ? h('div', { class: 'note warn', style: 'margin:0 0 12px' }, `${counts.catalog} instalação(ões) pendente(s): escolha o aparelho abaixo.`) : null,
       h('div', { class: 'sec' }, `Versões disponíveis · ${offers.length}`),
-      offers.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, offers.map((o) => h('div', { class: 'li', style: 'flex-wrap:wrap' },
-        h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, `${o.app} · ${o.tag}`), h('div', { class: 'muted mono' }, o.pkg),
+      offers.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:10px' }, offers.map((o) => h('div', { class: 'li', style: 'flex-direction:column;align-items:stretch' },
+        h('div', { class: 'sp' }, h('strong', { style: 'font-size:14px' }, `${o.app} · ${o.tag}`, newest.has(o.sha256) ? null : h('small', { class: 'muted' }, ' (versão anterior)')), h('div', { class: 'muted mono' }, o.pkg),
           h('div', { class: 'muted' }, `${o.subject || ''} · ${o.author || '?'} · ${kb(o.size)} · ${o.ts ? ago(o.ts, Math.floor(Date.now() / 1000)) : ''}`),
           h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;margin-top:6px' }, o.sensitive_n > 0 ? chip(`mexe em segurança (${o.sensitive_n})`, 'bad') : chip('não mexe em segurança', 'ok'),
             o.files != null ? chip(`${o.files} arquivo${o.files === 1 ? '' : 's'}`) : null)),
-        ready.has(o.sha256) ? h('div', { class: 'acts' }, phones.map((d) => h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, `Instalar em ${d.name}`))) : h('span', { class: 'muted' }, 'o Pi ainda está enviando o APK')))) :
+        newest.has(o.sha256) ? (ready.has(o.sha256) ? null : h('div', { class: 'note warn', style: 'margin-top:6px' }, 'o Pi ainda está enviando o APK')) : null,
+        newest.has(o.sha256) ? ph.map((d) => phoneRow(o, d)) : null))) :
         empty('Nenhuma versão no catálogo.'),
       errs.map((e) => h('div', { class: 'note warn' }, `${e.app}: ${e.error}`)),
     ];
