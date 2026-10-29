@@ -1,6 +1,7 @@
 """python -m guardian.deployer run|once --registry /etc/guardian-deploy/projects.json --state /var/lib/guardian-deploy [--inbox-uid N]"""
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -17,7 +18,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     with open(a.registry) as f:
         reg = json.load(f)
-    d = Deployer(reg, a.state, inbox_uid=a.inbox_uid)
+    d = Deployer(reg, a.state, inbox_uid=a.inbox_uid, registry_path=a.registry, policy_path=os.path.join(os.path.dirname(a.registry), "policy.json"))
     while True:
         try:
             d.tick()

@@ -351,6 +351,90 @@ class AppOffers(unittest.TestCase):
         self.assertEqual(json.load(open(os.path.join(self.state, "offers.json")))["current"], {})
 
 
+class ProjectAdd(unittest.TestCase):
+    """O mestre cadastra um app novo pelo site: só app Android de repositório público de um dono permitido, nunca com passos no Pi."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.regfile, self.policy, self.state = os.path.join(t, "projects.json"), os.path.join(t, "policy.json"), os.path.join(t, "s")
+        self.reg = {"guardian": {"repo": "/x", "workdir": "/y", "steps": [], "pkg": "com.guardian.x"}}
+        json.dump(self.reg, open(self.regfile, "w"))
+        json.dump({"allowed_owners": ["Allan"]}, open(self.policy, "w"))
+        self.gh = FakeGitHub([], {})
+        self.d = Deployer(self.reg, self.state, github=lambda token: self.gh, registry_path=self.regfile, policy_path=self.policy)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def req(self, **kw):
+        return {"kind": "project_add", "name": "triagem", "github": "Allan/Triagem", "pkg": "com.allan.triagem", "guardian": "g1", "ts": 1, **kw}
+
+    def test_01_registers_an_android_app_and_persists_it(self):
+        res = self.d.project_add(self.req())
+        self.assertTrue(res["ok"], res)
+        saved = json.load(open(self.regfile))
+        e = saved["triagem"]
+        self.assertEqual((e["type"], e["github"], e["pkg"], e["tag_prefix"]), ("android_app", "Allan/Triagem", "com.allan.triagem", "v"))
+        self.assertNotIn("steps", e)                       # nunca roda nada no Pi
+        self.assertNotIn("workdir", e)
+        self.assertNotIn("token_file", e)                  # só repositório público
+        self.assertIn("triagem", self.d.reg)
+        self.assertIn(".github/workflows/*", e["sensitive"])
+
+    def test_02_refusals(self):
+        for kw, why in (({"github": "Outro/App"}, "dono"), ({"name": "guardian"}, "nome"), ({"pkg": "com.guardian.x"}, "pacote"),
+                        ({"github": "allan/triagem", "name": "outro", "pkg": "com.allan.outro"}, "repositório")):
+            if why == "repositório":
+                self.d.project_add(self.req())
+            res = self.d.project_add(self.req(**kw))
+            self.assertFalse(res["ok"], (kw, res))
+            self.assertIn(why, res["msg"])
+
+    def test_03_private_or_missing_repository_is_refused(self):
+        def boom(token):
+            raise RuntimeError("HTTP 404")
+        d = Deployer(self.reg, self.state, github=boom, registry_path=self.regfile, policy_path=self.policy)
+        res = d.project_add(self.req())
+        self.assertFalse(res["ok"])
+        self.assertIn("público", res["msg"])
+        self.assertNotIn("triagem", json.load(open(self.regfile)))
+
+    def test_04_without_a_policy_file_nobody_is_allowed(self):
+        d = Deployer(self.reg, self.state, github=lambda token: self.gh, registry_path=self.regfile, policy_path=os.path.join(self.tmp.name, "nao-existe.json"))
+        self.assertFalse(d.project_add(self.req())["ok"])
+
+    def test_05_inbox_request_is_processed_once_and_recorded(self):
+        with open(os.path.join(self.state, "inbox", "1-1-add-triagem.json"), "w") as f:
+            json.dump(self.req(), f)
+        (res,) = self.d.process_inbox()
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.d.status["history"][0]["project"], "triagem")
+        self.assertEqual(os.listdir(os.path.join(self.state, "inbox")), [])
+        bad = {"kind": "project_add", "name": "x", "github": "Allan/x.git", "pkg": "com.a.b"}
+        with open(os.path.join(self.state, "inbox", "2-2-add-x.json"), "w") as f:
+            json.dump(bad, f)
+        (res2,) = self.d.process_inbox()
+        self.assertFalse(res2["ok"])
+        self.assertNotIn("x", json.load(open(self.regfile)))
+
+
+class ExecutorQueuesProjectAdd(unittest.TestCase):
+    def test_args_and_executor_queue(self):
+        ok = {"name": "triagem", "github": "Allan/Triagem", "pkg": "com.allan.triagem"}
+        cmds.check_project_add_args(ok)
+        for bad in ({**ok, "extra": 1}, {"name": "triagem", "github": "Allan/Triagem"}, {**ok, "name": "Triagem"}, {**ok, "github": "https://github.com/a/b"},
+                    {**ok, "github": "Allan/Triagem.git"}, {**ok, "pkg": "semponto"}, {**ok, "github": "../x"}):
+            with self.assertRaises(cmds.CommandError, msg=bad):
+                cmds.check_project_add_args(bad)
+        trust = cmds.Trust("rp", "https://rp", {"m": cmds.Guardian("Gandalf", {}, cmds.ROLE_MASTER), "a": cmds.Guardian("Mor", {}, cmds.ROLE_ADMIN)})
+        cmd = lambda g: {"guardian": g, "type": cmds.T_PROJECT_ADD, "args": ok}
+        self.assertEqual(cmds.check_author(trust, cmd("m")).name, "Gandalf")
+        with self.assertRaises(cmds.CommandError):
+            cmds.check_author(trust, cmd("a"))              # só o mestre
+        self.assertIn(cmds.T_PROJECT_ADD, cmds.EXECUTOR_MASTER_TYPES)
+
+
 class ExecutorQueuesDeploy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

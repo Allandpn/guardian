@@ -84,7 +84,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  deploy: 'colocar versão no ar', remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
+  deploy: 'colocar versão no ar', install_app: 'instalar app', project_add: 'cadastrar app', remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -1487,6 +1487,18 @@ async function deploysView() {
       effect: 'vale na hora', effectKind: sens ? 'warn' : 'ok',
       note: 'O Pi confere a versão, instala, testa e volta sozinho para a anterior se algo falhar.', noteKind: 'warn', confirm: 'Colocar no ar' })) route();
   });
+  const addIn = (ph, label) => h('input', { class: 'inp', type: 'text', placeholder: ph, 'aria-label': label, autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false' });
+  const aName = addIn('Nome curto (ex.: triagem)', 'Nome curto do app'), aRepo = addIn('Repositório (ex.: Allandpn/MeuApp)', 'Repositório no GitHub'), aPkg = addIn('Pacote (ex.: com.allan.meuapp)', 'Pacote do app (applicationId)');
+  const addApp = act(async () => {
+    const args = { name: aName.value.trim().toLowerCase(), github: aRepo.value.trim(), pkg: aPkg.value.trim() };
+    if (!args.name || !args.github || !args.pkg) throw new Error('Preencha o nome, o repositório e o pacote.');
+    if (await confirmSend(ex.id, 'project_add', args, { title: `Cadastrar o app ${args.name}?`,
+      rows: [['Nome', args.name], ['Repositório', args.github], ['Pacote', args.pkg]], effect: 'vale na hora', effectKind: 'ok',
+      note: 'O Pi passa a ler as Releases deste repositório (só se for público e de um dono permitido) e mostra as versões no Catálogo. Nada é instalado: instalar continua pedindo a sua passkey.', noteKind: 'warn', confirm: 'Cadastrar' })) {
+      aName.value = aRepo.value = aPkg.value = '';
+      route();
+    }
+  });
   const body = [
     !ex ? h('div', { class: 'card badb' }, 'Nenhum executor pareado.') : !dep ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O deployer ainda não está ligado a este executor (veja docs/DEPLOY.md).')) : null,
     h('div', { class: 'sec' }, `Versões prontas · ${offers.length}`),
@@ -1497,10 +1509,13 @@ async function deploysView() {
           o.files != null ? chip(`${o.files} arquivo${o.files === 1 ? '' : 's'}`) : null)),
       o.policy_n > 0 ? h('span', { class: 'muted' }, 'o Pi recusa') : h('button', { class: 'btn pri', type: 'button', onclick: approve(o) }, 'Colocar no ar')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhuma versão nova aguardando.')),
     errs.length ? errs.map((o) => h('div', { class: 'note warn' }, `${o.project}: ${o.error}`)) : null,
+    ex && dep ? h('div', { class: 'sec' }, 'Cadastrar app novo') : null,
+    ex && dep ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'App Android com Releases no GitHub (repositório público). Depois de cadastrar, ele aparece em Apps > Catálogo quando houver uma Release.'),
+      h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, aName, aRepo, aPkg, h('button', { class: 'btn pri', type: 'button', onclick: addApp }, 'Revisar e assinar'))) : null,
     h('div', { class: 'sec' }, 'Últimos deploys'),
     hist.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, hist.slice(0, 10).map((x) => h('div', { class: 'li' },
       h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, `${x.project} ${String(x.commit).slice(0, 8)}`), h('div', { class: 'muted' }, x.msg || '', x.ts ? ` · ${ago(x.ts, now)}` : '')),
-      x.ok ? chip('no ar', 'ok') : x.rolled_back ? chip('revertido', 'warn') : chip('recusado', 'bad')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum deploy ainda.')),
+      x.ok ? chip(x.commit === 'cadastro' ? 'cadastrado' : 'no ar', 'ok') : x.rolled_back ? chip('revertido', 'warn') : chip('recusado', 'bad')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum deploy ainda.')),
   ];
   show(top('Deploys'), h('div', { class: 'wrap wide' }, body));
   timer = setTimeout(autoRefresh, 20000);

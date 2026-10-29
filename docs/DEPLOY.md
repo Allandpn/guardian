@@ -82,3 +82,13 @@ Instalar e atualizar apps nos celulares sem a janela de dev. O aparelho **nunca 
 
 Limite: o mestre aprova um arquivo, não código. Para o NotToday, o recomendado é gerar o APK num repositório de CI da conta do mestre (sem escrita
 para quem desenvolve), que compila a etiqueta e publica a Release.
+
+### Cadastrar um app novo pelo site (sem terminal no Pi)
+Deploys > "Cadastrar app novo": nome curto, `dono/repositório` e o pacote (`applicationId`). O mestre assina `project_add`; o executor entrega o pedido ao deployer,
+que confere de novo e grava o app em `projects.json`. Regras (todas no deployer, que roda como root):
+- só **app Android** lido das Releases: o cadastro nunca cria projeto com diretório e passos a rodar no Pi (esses continuam só por root, direto no registro);
+- o dono do repositório tem de estar em `/etc/guardian-deploy/policy.json` (`allowed_owners`); sem esse arquivo ninguém é permitido;
+- repositório **público** (a leitura é feita sem token); repositório privado continua exigindo root para pôr o token;
+- o nome, o pacote e o repositório não podem já existir no registro (um app novo não toma o pacote de outro);
+- a lista de arquivos sensíveis é a padrão de apps Android (workflows, gradle, manifesto).
+Depois de cadastrar, o app aparece em Apps > Catálogo quando houver uma Release. Instalar continua pedindo a passkey do mestre (`install_app`).

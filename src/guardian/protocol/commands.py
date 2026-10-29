@@ -46,7 +46,10 @@ T_DEPLOY = "deploy"
 # Instalar ou atualizar um app no aparelho (também o próprio NotToday): só o mestre. O comando leva o pacote e o SHA-256 do APK; o aparelho baixa
 # o arquivo do gateway, confere o hash (e o certificado do app) e instala em silêncio como Device Owner. Um APK sem comando assinado nunca é instalado.
 T_INSTALL_APP = "install_app"
-EXECUTOR_MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY}   # os que o executor do Pi executa
+# Cadastrar no Pi um app Android novo (repositório do GitHub + pacote) para ele aparecer no Catálogo. Só o mestre. Cadastra APENAS app Android lido das
+# Releases: nunca um projeto com diretório e passos a rodar no Pi (esses continuam só por root).
+T_PROJECT_ADD = "project_add"
+EXECUTOR_MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY, T_PROJECT_ADD}   # os que o executor do Pi executa
 MASTER_TYPES = EXECUTOR_MASTER_TYPES | {T_INSTALL_APP}
 MAX_APK_BYTES = 150 * 1024 * 1024
 _PKG = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
@@ -71,6 +74,21 @@ def check_install_args(args: dict) -> None:
     vc = args.get("version_code")
     if "version_code" in args and (not isinstance(vc, int) or isinstance(vc, bool) or vc < 1):
         raise CommandError("version_code inválido")
+
+
+_GITHUB = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def check_project_add_args(args: dict) -> None:
+    """name (nome curto do app no Pi), github ("dono/repositório") e pkg (applicationId do app)."""
+    if not isinstance(args, dict) or set(args) != {"name", "github", "pkg"}:
+        raise CommandError("argumentos do cadastro inválidos")
+    if not isinstance(args["name"], str) or not _PROJECT.match(args["name"]):
+        raise CommandError("nome inválido: use letras minúsculas, números, - e _")
+    if not isinstance(args["github"], str) or not _GITHUB.match(args["github"]) or args["github"].endswith(".git"):
+        raise CommandError("repositório inválido: use dono/repositório")
+    if not isinstance(args["pkg"], str) or len(args["pkg"]) > 200 or not _PKG.match(args["pkg"]):
+        raise CommandError("pacote inválido")
 
 
 def check_deploy_args(args: dict) -> None:

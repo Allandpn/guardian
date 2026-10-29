@@ -14,6 +14,7 @@ install -m 0644 -o root -g root "$SRC/src/guardian/deployer/__init__.py" "$SRC/s
 
 install -d -m 0755 -o root -g root /etc/guardian-deploy
 [ -f /etc/guardian-deploy/projects.json ] || install -m 0644 -o root -g root "$SRC/deploy/deploy-projects.example.json" /etc/guardian-deploy/projects.json
+[ -f /etc/guardian-deploy/policy.json ] || install -m 0644 -o root -g root "$SRC/deploy/deploy-policy.example.json" /etc/guardian-deploy/policy.json
 
 install -d -m 0755 -o root -g root "$STATE"
 install -d -m 0700 -o guardian-exec -g guardian-exec "$STATE/inbox"

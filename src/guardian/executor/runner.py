@@ -299,6 +299,8 @@ class Executor:
             return " | ".join(p for p in parts if p)
         if t == cmds.T_DEPLOY:
             return self._queue_deploy(a, who, cmd["ctr"])
+        if t == cmds.T_PROJECT_ADD:
+            return self._queue_project_add(a, who, cmd["ctr"])
         if t == cmds.T_PARENT_BLOCK:
             action = a.get("action")
             if action not in ("add", "remove"):
@@ -360,6 +362,25 @@ class Executor:
         except OSError as e:
             raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
         return f"deploy pedido: {a['project']} {a['commit'][:8]}"
+
+    def _queue_project_add(self, a: dict, who: str, ctr: int) -> str:
+        """Deixa o pedido de cadastro na caixa do deployer, que confere o dono do repositório, o pacote e se o repositório é público."""
+        try:
+            cmds.check_project_add_args(a)
+        except cmds.CommandError as e:
+            raise ValueError(str(e))
+        if not self.cfg.deploy_dir:
+            raise ValueError("este executor não está ligado a um deployer")
+        req = {"kind": "project_add", "name": a["name"], "github": a["github"], "pkg": a["pkg"], "guardian": who, "ts": int(self.now())}
+        inbox = os.path.join(self.cfg.deploy_dir, "inbox")
+        tmp = os.path.join(inbox, f".tmp-{ctr}")
+        try:
+            with open(tmp, "w") as f:
+                json.dump(req, f)
+            os.replace(tmp, os.path.join(inbox, f"{int(self.now())}-{ctr}-add-{a['name']}.json"))
+        except OSError as e:
+            raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
+        return f"cadastro de app pedido: {a['name']} ({a['github']})"
 
     def sync_apks(self) -> int:
         """Leva ao gateway os APKs que o deployer baixou e ainda não estão lá (o aparelho os baixa do gateway depois do comando assinado)."""

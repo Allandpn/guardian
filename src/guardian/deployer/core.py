@@ -40,6 +40,22 @@ def check_request(req: dict) -> None:
         raise ValueError("commit inválido")
 
 
+_GITHUB = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_PKG = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+# Arquivos que mudam política, restrições ou assinatura de um app Android: o mestre vê o aviso antes de instalar uma versão que os altere.
+APP_SENSITIVE = [".github/workflows/*", "app/build.gradle.kts", "build.gradle.kts", "gradle/*", "gradle.properties", "app/src/main/AndroidManifest.xml"]
+
+
+def check_add_request(req: dict) -> None:
+    """Repetido de propósito, como check_request (protocol/commands.py::check_project_add_args)."""
+    if not isinstance(req.get("name"), str) or not _PROJECT.match(req["name"]):
+        raise ValueError("nome inválido")
+    if not isinstance(req.get("github"), str) or not _GITHUB.match(req["github"]) or req["github"].endswith(".git"):
+        raise ValueError("repositório inválido")
+    if not isinstance(req.get("pkg"), str) or len(req["pkg"]) > 200 or not _PKG.match(req["pkg"]):
+        raise ValueError("pacote inválido")
+
+
 def _atomic_write(path: str, data: dict) -> None:
     d = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
@@ -55,8 +71,10 @@ def _run(argv, cwd=None, env=None, timeout=600):
 
 
 class Deployer:
-    def __init__(self, registry: dict, state_dir: str, run=_run, now=time.time, sleep=time.sleep, inbox_uid: int | None = None, github=None):
+    def __init__(self, registry: dict, state_dir: str, run=_run, now=time.time, sleep=time.sleep, inbox_uid: int | None = None, github=None,
+                 registry_path: str | None = None, policy_path: str | None = None):
         self.reg, self.state_dir, self.run, self.now, self.sleep = registry, state_dir, run, now, sleep
+        self.registry_path, self.policy_path = registry_path, policy_path   # onde gravar um app cadastrado pelo mestre e a política de quem pode ser cadastrado
         self.github = github   # fábrica (token) -> cliente do GitHub; trocada nos testes
         self._app_ts = 0.0
         self.inbox_uid = inbox_uid
@@ -399,11 +417,14 @@ class Deployer:
                     raise ValueError("arquivo de outro usuário")
                 with open(p) as f:
                     req = json.load(f)
-                check_request(req)
+                if isinstance(req, dict) and req.get("kind") == "project_add":
+                    check_add_request(req)
+                else:
+                    check_request(req)
             except (OSError, ValueError) as e:
                 res = {"ts": int(self.now()), "project": "?", "commit": "?", "ok": False, "rolled_back": False, "msg": f"pedido inválido: {e}"[:200]}
             else:
-                res = self.deploy(req)
+                res = self.project_add(req) if req.get("kind") == "project_add" else self.deploy(req)
             finally:
                 try:
                     os.replace(p, self._path("done", fn))  # um pedido roda uma vez só
@@ -415,6 +436,48 @@ class Deployer:
             _atomic_write(self._path("status.json"), self.status)
             self.refresh_offers()
         return out
+
+    def project_add(self, req: dict) -> dict:
+        """Cadastra um app Android que o mestre pediu (assinado e conferido pelo executor; aqui confere de novo). Só app lido das Releases do GitHub,
+        de um dono permitido pela política do Pi, de repositório público, com pacote e nome ainda não usados. Nunca cria projeto com passos no Pi."""
+        res = {"ts": int(self.now()), "project": req["name"], "commit": "cadastro", "ok": False, "rolled_back": False, "by": req.get("guardian")}
+
+        def fail(msg: str) -> dict:
+            res["msg"] = msg[:200]
+            return res
+        try:
+            with open(self.policy_path or "") as f:
+                owners = {str(o).lower() for o in json.load(f).get("allowed_owners", [])}
+        except (OSError, ValueError, AttributeError):
+            owners = set()
+        if req["github"].split("/")[0].lower() not in owners:
+            return fail("dono do repositório não permitido neste Pi (policy.json)")
+        if not self.registry_path:
+            return fail("o deployer não sabe onde gravar o cadastro")
+        if req["name"] in self.reg:
+            return fail("já existe um projeto com este nome")
+        for n, p in self.reg.items():
+            if p.get("pkg") == req["pkg"]:
+                return fail(f"o pacote já pertence a {n}")
+            if str(p.get("github", "")).lower() == req["github"].lower():
+                return fail(f"o repositório já está cadastrado como {n}")
+        try:   # sem token: só repositório público entra por este caminho
+            (self.github(None) if self.github else apps.GitHub(None)).releases(req["github"])
+        except Exception as e:
+            return fail(f"não consegui ler o repositório (precisa ser público): {e}")
+        new = {**self.reg, req["name"]: {"type": "android_app", "github": req["github"], "repo": f"https://github.com/{req['github']}.git", "pkg": req["pkg"],
+                                           "tag_prefix": "v", "asset": r"\.apk$", "sensitive": list(APP_SENSITIVE)}}
+        try:
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.registry_path), prefix=".tmp-")
+            with os.fdopen(fd, "w") as f:
+                json.dump(new, f, indent=2, ensure_ascii=False)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, self.registry_path)
+        except OSError as e:
+            return fail(f"não consegui gravar o registro: {e}")
+        self.reg[req["name"]] = new[req["name"]]
+        res.update(ok=True, msg=f"app cadastrado: {req['name']} ({req['github']}, {req['pkg']})")
+        return res
 
     def tick(self) -> None:
         self.process_inbox()
