@@ -847,10 +847,10 @@ async function appsView(tab) {
         : st === 'queued' ? chip(off ? 'na fila · aparelho offline: instala quando voltar' : 'na fila · aguardando o aparelho', 'warn')
         : st === 'have' ? chip('já instalado (versão não informada)')
         : chip('falta instalar', 'bad');
-      const canSend = ready.has(o.sha256) && st !== 'ok' && st !== 'queued';
+      const canSend = ready.has(o.sha256) && st !== 'ok';   // na fila também reenvia: o app pode ter sido desinstalado depois de instalado
       return h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px' }, h('strong', { style: 'font-size:13px' }, d.name), status,
         off && st !== 'queued' ? chip('offline: instala quando voltar', 'warn') : null,
-        canSend ? h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, st === 'have' ? 'Atualizar' : 'Instalar') : null);
+        canSend ? h('button', { class: 'btn pri', type: 'button', onclick: install(o, d) }, st === 'have' ? 'Atualizar' : st === 'queued' ? 'Reenviar' : 'Instalar') : null);
     };
     body = [
       !cat ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'O Pi ainda não publicou o catálogo (veja docs/DEPLOY.md, apps Android).')) : null,
