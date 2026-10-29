@@ -6,7 +6,7 @@ assinatura do mestre (Gandalf), dentro da janela dele**. Este documento diz como
 ## Quem pode o quê
 - **Sessões de desenvolvimento (nuvem):** escrevem código nos repositórios do GitHub, abrem PR, criam tags de versão (com a confirmação do dono). Não têm acesso ao Pi.
 - **Mestre (Gandalf):** assina, com a passkey e dentro da janela, tudo que mexe no Pi: deploy de projeto, cadastro e instalação de app, instalação no PC, vetos e liberações.
-- **Quem tem o Pi na mão:** só o acesso físico (o Pi fica no cofre, com roteador e modem). A senha de root fica guardada fora de casa.
+- **Quem tem o Pi na mão:** só o acesso físico (o Pi fica no cofre, com roteador e modem). O root **não tem senha** (login de root desativado) e a senha dos usuários comuns fica travada: sem o cartão SD na mão, ninguém vira root.
 - O que as sessões que rodam no Pi (usuário comum) ainda conseguem: ler logs (`journalctl`, grupo `adm`) e mexer no que é do próprio usuário. Não conseguem mudar nada
   dos serviços, das pastas de deploy, do gateway, do executor, do deployer nem do Pi-hole.
 
@@ -23,8 +23,12 @@ assinatura do mestre (Gandalf), dentro da janela dele**. Este documento diz como
 ## Se algo der errado
 - **Gateway fora do ar / site em "Carregando…":** corrigir no repositório, tag `release/N+1`, deploy assinado. Se o site não abre para assinar: acesso físico (abaixo).
 - **Passkey do mestre perdida:** hoje só há **um** mestre. Cadastrar o segundo mestre (convite assinado pelo primeiro) antes de precisar. Sem ele, só o acesso físico resolve.
-- **Acesso físico (emergência):** abrir o cofre, ligar teclado e tela no Pi, entrar como root com a senha guardada fora de casa. Depois de resolver, fechar de novo
-  (sem `sudo` para o usuário comum: `docs/DECISOES.md`, item sobre o fechamento).
+- **Acesso físico (emergência):** o Pi não tem login de root por senha. Quem abrir o cofre recupera o acesso pelo cartão SD:
+  1. desligar o Pi, tirar o cartão SD e ler no PC (a partição `bootfs`, a pequena, aparece no Windows);
+  2. em `cmdline.txt` (uma linha só) acrescentar ao fim ` init=/bin/sh` e salvar; devolver o cartão e ligar o Pi com teclado e tela;
+  3. no prompt: `mount -o remount,rw /` e `mount -t proc proc /proc`; então `passwd root` (ou `passwd allan` e `usermod -aG sudo allan`) e o que for preciso;
+  4. **desfazer o passo 2** (tirar o ` init=/bin/sh`), reiniciar e, ao terminar, fechar de novo (`gpasswd -d <usuário> sudo`, `gpasswd -d <usuário> docker`, `passwd -l <usuário>`).
+  Quem tem a chave do cofre tem, portanto, o Pi: por isso a chave fica com o Gandalf.
 - **Pasta de deploy "sem garantia de isolamento":** o deployer só confia em pasta do root que ninguém mais escreve (inclusive o diretório de cima). Se um deploy for
   recusado por isso, alguém mexeu na pasta: ver o dono dos arquivos (`ls -l`) e restaurar para root, no acesso físico.
 - **Token de leitura do GitHub:** `/etc/guardian-deploy/github_token` (root, sem validade, só leitura). Para revogar: página do token no GitHub. Para trocar: acesso físico.
