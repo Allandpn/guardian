@@ -450,6 +450,51 @@ class ProjectAdd(unittest.TestCase):
         self.assertNotIn("x", json.load(open(self.regfile)))
 
 
+class DeployDirOwnership(unittest.TestCase):
+    """O deploy roda git e docker como root dentro da pasta do projeto: pasta que um usuário comum escreve não é confiável."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = os.path.realpath(self.tmp.name)
+        self.wd = os.path.join(t, "proj")
+        os.makedirs(os.path.join(self.wd, ".git"))
+        open(os.path.join(self.wd, "a.txt"), "w").write("x")
+        os.chmod(t, 0o755)
+        self.reg = {"p": {"repo": "/x", "workdir": self.wd, "steps": []}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def dep(self, uid):
+        return Deployer(self.reg, os.path.join(self.tmp.name, "s"), trusted_uid=uid)
+
+    def test_owner_other_than_trusted_is_refused(self):
+        why = self.dep(os.getuid() + 1)._unsafe_project_dirs("p")     # as pastas são do usuário dos testes, não do "root" esperado
+        self.assertIn("não é só do root", why)
+
+    def test_trusted_owner_with_safe_modes_is_accepted(self):
+        self.assertIsNone(self.dep(os.getuid())._unsafe_project_dirs("p"))
+
+    def test_group_or_world_writable_is_refused(self):
+        os.chmod(self.wd, 0o777)
+        self.assertIsNotNone(self.dep(os.getuid())._unsafe_project_dirs("p"))
+        os.chmod(self.wd, 0o755)
+        os.chmod(os.path.join(self.wd, "a.txt"), 0o666)
+        self.assertIn("a.txt", self.dep(os.getuid())._unsafe_project_dirs("p"))
+
+    def test_unwritable_parent_chain_matters(self):
+        os.chmod(os.path.dirname(self.wd), 0o777)                     # quem escreve no diretório de cima pode trocar a pasta inteira
+        self.assertIsNotNone(self.dep(os.getuid())._unsafe_project_dirs("p"))
+
+    def test_a_refused_directory_stops_the_deploy_before_any_git(self):
+        calls = []
+        d = Deployer(self.reg, os.path.join(self.tmp.name, "s"), trusted_uid=os.getuid() + 1, run=lambda *a, **k: calls.append(a) or (0, ""))
+        res = d.deploy({"project": "p", "commit": "a" * 40})
+        self.assertFalse(res["ok"])
+        self.assertIn("isolamento", res["msg"])
+        self.assertEqual(calls, [])
+
+
 class ExecutorQueuesProjectAdd(unittest.TestCase):
     def test_args_and_executor_queue(self):
         ok = {"name": "triagem", "github": "Allan/Triagem", "pkg": "com.allan.triagem"}

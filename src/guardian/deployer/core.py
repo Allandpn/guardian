@@ -72,9 +72,11 @@ def _run(argv, cwd=None, env=None, timeout=600):
 
 class Deployer:
     def __init__(self, registry: dict, state_dir: str, run=_run, now=time.time, sleep=time.sleep, inbox_uid: int | None = None, github=None,
-                 registry_path: str | None = None, policy_path: str | None = None):
+                 registry_path: str | None = None, policy_path: str | None = None, trusted_uid: int | None = None):
         self.reg, self.state_dir, self.run, self.now, self.sleep = registry, state_dir, run, now, sleep
         self.registry_path, self.policy_path = registry_path, policy_path   # onde gravar um app cadastrado pelo mestre e a política de quem pode ser cadastrado
+        # Rodando como root, só confia em pasta de deploy que é do root e que ninguém mais consegue trocar (nos testes, sem root, não confere).
+        self.trusted_uid = (0 if os.geteuid() == 0 else None) if trusted_uid is None else trusted_uid
         self.github = github   # fábrica (token) -> cliente do GitHub; trocada nos testes
         self._app_ts = 0.0
         self.inbox_uid = inbox_uid
@@ -113,7 +115,48 @@ class Deployer:
 
     def _git(self, name: str, *args, cwd=None) -> tuple[int, str]:
         proj = self.reg[name]
-        return self.run(["git", *args], cwd=cwd, env=self._env(proj), timeout=300)
+        # Sem hooks nem fsmonitor: o git roda como root dentro de uma pasta de projeto, e nada ali pode virar comando de root.
+        return self.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], cwd=cwd, env=self._env(proj), timeout=300)
+
+    def untrusted_dir(self, path: str) -> str | None:
+        """Motivo de a pasta não merecer confiança, ou None. O deploy roda git e docker como root nela: se um usuário comum puder escrever na pasta (ou
+        trocá-la, por ser dona do diretório de cima), um arquivo plantado ali viraria código de root no próximo deploy assinado."""
+        if self.trusted_uid is None:
+            return None
+        p, first = os.path.realpath(path), True
+        while True:
+            try:
+                st = os.lstat(p)
+            except OSError as e:
+                return f"{p}: {e.strerror}"
+            ok_owner = st.st_uid == self.trusted_uid if first else st.st_uid in (self.trusted_uid, 0)
+            sticky_ok = bool(st.st_mode & 0o1000) and st.st_uid == 0 and not first   # tipo /tmp: ninguém renomeia o que não é seu
+            if not ok_owner or (st.st_mode & 0o022 and not sticky_ok):
+                return f"{p} não é só do root (dono {st.st_uid}, modo {oct(st.st_mode & 0o777)})"
+            if p == "/":
+                return None
+            p, first = os.path.dirname(p), False
+
+    def _unsafe_project_dirs(self, name: str) -> str | None:
+        proj = self.reg[name]
+        for d in [proj.get("workdir"), *(proj.get("allowed_contexts") or [])]:
+            if d:
+                why = self.untrusted_dir(d)
+                if not why:   # o .git e o conteúdo da pasta também: um arquivo solto de outro dono já basta
+                    for root, dirs, files in os.walk(d):
+                        for n in dirs + files:
+                            try:
+                                st = os.lstat(os.path.join(root, n))
+                            except OSError:
+                                continue
+                            if self.trusted_uid is not None and (st.st_uid != self.trusted_uid or (not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o002)):
+                                why = f"{os.path.join(root, n)} não é só do root"
+                                break
+                        if why:
+                            break
+                if why:
+                    return why
+        return None
 
     def _mirror(self, name: str) -> str:
         return self._path("mirrors", name + ".git")
@@ -358,7 +401,7 @@ class Deployer:
         rc, out = self._git(name, "-C", wd, "fetch", m, commit)
         if rc != 0:
             return False, f"fetch falhou: {out[-150:]}"
-        rc, out = self._git(name, "-C", wd, "checkout", "--detach", commit)
+        rc, out = self._git(name, "-C", wd, "checkout", "--force", "--detach", commit)
         return (rc == 0), ("ok" if rc == 0 else f"checkout falhou: {out[-150:]}")
 
     def deploy(self, req: dict) -> dict:
@@ -367,6 +410,9 @@ class Deployer:
         try:
             if name not in self.reg:
                 raise RuntimeError("projeto não cadastrado no Pi")
+            unsafe = self._unsafe_project_dirs(name)
+            if unsafe:
+                raise RuntimeError("pasta de deploy sem garantia de isolamento: " + unsafe)
             m = self._fetch_tags(name)
             tagged = self._tagged_commits(name, m)
             if commit not in tagged:
