@@ -88,7 +88,15 @@ Deploys > "Cadastrar app novo": nome curto, `dono/repositório` e o pacote (`app
 que confere de novo e grava o app em `projects.json`. Regras (todas no deployer, que roda como root):
 - só **app Android** lido das Releases: o cadastro nunca cria projeto com diretório e passos a rodar no Pi (esses continuam só por root, direto no registro);
 - o dono do repositório tem de estar em `/etc/guardian-deploy/policy.json` (`allowed_owners`); sem esse arquivo ninguém é permitido;
-- repositório **público** (a leitura é feita sem token); repositório privado continua exigindo root para pôr o token;
+- repositório **público** (lido sem token) ou **privado**: no segundo caso o deployer usa o **token único de leitura** do Pi (`token_file` em `policy.json`, por padrão
+  `/etc/guardian-deploy/github_token`, só root lê). Quem decide quais repositórios privados o token enxerga é o dono do token, **no GitHub** (fine-grained token,
+  permissão Contents: leitura, lista de repositórios): nenhuma sessão de desenvolvimento mexe nisso. Se o token não enxerga o repositório, o cadastro é recusado com essa
+  mensagem. O mesmo token serve à API de Releases e ao git (sem chave SSH);
 - o nome, o pacote e o repositório não podem já existir no registro (um app novo não toma o pacote de outro);
 - a lista de arquivos sensíveis é a padrão de apps Android (workflows, gradle, manifesto).
 Depois de cadastrar, o app aparece em Apps > Catálogo quando houver uma Release. Instalar continua pedindo a passkey do mestre (`install_app`).
+
+**Token de leitura (uma vez):** em GitHub > Settings > Developer settings > Fine-grained tokens: acesso só aos repositórios do app, permissão *Contents: Read-only*, validade
+o maior prazo que você aceitar. Gravar no Pi como root: `install -m 0600 /dev/stdin /etc/guardian-deploy/github_token` (cole o token e Ctrl-D) e acrescentar
+`"token_file": "/etc/guardian-deploy/github_token"` em `/etc/guardian-deploy/policy.json`. Para liberar um repositório privado novo basta incluí-lo na lista do token no GitHub e
+cadastrar o app pelo site. Renovar o token ao vencer exige root no Pi (guarde a data).

@@ -437,19 +437,23 @@ class Deployer:
             self.refresh_offers()
         return out
 
+    def _policy(self) -> dict:
+        try:
+            with open(self.policy_path or "") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
     def project_add(self, req: dict) -> dict:
         """Cadastra um app Android que o mestre pediu (assinado e conferido pelo executor; aqui confere de novo). Só app lido das Releases do GitHub,
-        de um dono permitido pela política do Pi, de repositório público, com pacote e nome ainda não usados. Nunca cria projeto com passos no Pi."""
+        de um dono permitido pela política do Pi (público, ou privado se o token do Pi o enxerga), com pacote e nome ainda não usados. Nunca cria projeto com passos no Pi."""
         res = {"ts": int(self.now()), "project": req["name"], "commit": "cadastro", "ok": False, "rolled_back": False, "by": req.get("guardian")}
 
         def fail(msg: str) -> dict:
             res["msg"] = msg[:200]
             return res
-        try:
-            with open(self.policy_path or "") as f:
-                owners = {str(o).lower() for o in json.load(f).get("allowed_owners", [])}
-        except (OSError, ValueError, AttributeError):
-            owners = set()
+        owners = {str(o).lower() for o in (self._policy().get("allowed_owners") or []) if isinstance(o, str)}
         if req["github"].split("/")[0].lower() not in owners:
             return fail("dono do repositório não permitido neste Pi (policy.json)")
         if not self.registry_path:
@@ -461,12 +465,23 @@ class Deployer:
                 return fail(f"o pacote já pertence a {n}")
             if str(p.get("github", "")).lower() == req["github"].lower():
                 return fail(f"o repositório já está cadastrado como {n}")
-        try:   # sem token: só repositório público entra por este caminho
-            (self.github(None) if self.github else apps.GitHub(None)).releases(req["github"])
+        entry_extra: dict = {}
+        mk = lambda token: self.github(token) if self.github else apps.GitHub(token)
+        try:   # primeiro sem token: se o repositório é público, nada de segredo entra no jogo
+            mk(None).releases(req["github"])
         except Exception as e:
-            return fail(f"não consegui ler o repositório (precisa ser público): {e}")
+            tf = self._policy().get("token_file")
+            if not (isinstance(tf, str) and os.path.isfile(tf)):
+                return fail(f"não consegui ler o repositório: {e}. Se ele é privado, o Pi precisa do token de leitura (docs/DEPLOY.md)")
+            try:   # repositório privado: o token único de leitura do Pi (o dono do token escolhe, no GitHub, quais repositórios ele enxerga)
+                with open(tf) as f:
+                    token = f.read().strip()
+                mk(token or None).releases(req["github"])
+            except Exception as e2:
+                return fail(f"nem o token do Pi enxerga este repositório ({e2}): inclua-o no token em GitHub > Settings > Developer settings (Contents: leitura)")
+            entry_extra["token_file"] = tf
         new = {**self.reg, req["name"]: {"type": "android_app", "github": req["github"], "repo": f"https://github.com/{req['github']}.git", "pkg": req["pkg"],
-                                           "tag_prefix": "v", "asset": r"\.apk$", "sensitive": list(APP_SENSITIVE)}}
+                                           "tag_prefix": "v", "asset": r"\.apk$", "sensitive": list(APP_SENSITIVE), **entry_extra}}
         try:
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.registry_path), prefix=".tmp-")
             with os.fdopen(fd, "w") as f:
@@ -476,7 +491,7 @@ class Deployer:
         except OSError as e:
             return fail(f"não consegui gravar o registro: {e}")
         self.reg[req["name"]] = new[req["name"]]
-        res.update(ok=True, msg=f"app cadastrado: {req['name']} ({req['github']}, {req['pkg']})")
+        res.update(ok=True, msg=f"app cadastrado: {req['name']} ({req['github']}, {req['pkg']}, {'privado' if entry_extra else 'público'})")
         return res
 
     def tick(self) -> None:

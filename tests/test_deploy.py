@@ -397,7 +397,38 @@ class ProjectAdd(unittest.TestCase):
         d = Deployer(self.reg, self.state, github=boom, registry_path=self.regfile, policy_path=self.policy)
         res = d.project_add(self.req())
         self.assertFalse(res["ok"])
-        self.assertIn("público", res["msg"])
+        self.assertIn("token", res["msg"])                  # sem token no Pi, a mensagem manda configurar o token
+        self.assertNotIn("triagem", json.load(open(self.regfile)))
+
+    def test_03b_private_repository_uses_the_pi_token(self):
+        tok = os.path.join(self.tmp.name, "github_token")
+        open(tok, "w").write("segredo\n")
+        json.dump({"allowed_owners": ["Allan"], "token_file": tok}, open(self.policy, "w"))
+        seen = []
+
+        def gh(token):
+            seen.append(token)
+            if token is None:
+                raise RuntimeError("HTTP 404")             # sem token o repositório não existe: é privado
+            return self.gh
+        d = Deployer(self.reg, self.state, github=gh, registry_path=self.regfile, policy_path=self.policy)
+        res = d.project_add(self.req())
+        self.assertTrue(res["ok"], res)
+        self.assertIn("privado", res["msg"])
+        self.assertEqual(seen, [None, "segredo"])           # tenta sem segredo primeiro
+        self.assertEqual(json.load(open(self.regfile))["triagem"]["token_file"], tok)
+
+    def test_03c_private_repository_the_token_cannot_see_is_refused(self):
+        tok = os.path.join(self.tmp.name, "github_token")
+        open(tok, "w").write("segredo")
+        json.dump({"allowed_owners": ["Allan"], "token_file": tok}, open(self.policy, "w"))
+
+        def gh(token):
+            raise RuntimeError("HTTP 404")
+        d = Deployer(self.reg, self.state, github=gh, registry_path=self.regfile, policy_path=self.policy)
+        res = d.project_add(self.req())
+        self.assertFalse(res["ok"])
+        self.assertIn("token", res["msg"])
         self.assertNotIn("triagem", json.load(open(self.regfile)))
 
     def test_04_without_a_policy_file_nobody_is_allowed(self):

@@ -1494,7 +1494,7 @@ async function deploysView() {
     if (!args.name || !args.github || !args.pkg) throw new Error('Preencha o nome, o repositório e o pacote.');
     if (await confirmSend(ex.id, 'project_add', args, { title: `Cadastrar o app ${args.name}?`,
       rows: [['Nome', args.name], ['Repositório', args.github], ['Pacote', args.pkg]], effect: 'vale na hora', effectKind: 'ok',
-      note: 'O Pi passa a ler as Releases deste repositório (só se for público e de um dono permitido) e mostra as versões no Catálogo. Nada é instalado: instalar continua pedindo a sua passkey.', noteKind: 'warn', confirm: 'Cadastrar' })) {
+      note: 'O Pi passa a ler as Releases deste repositório (de um dono permitido; se for privado, o token do Pi precisa enxergá-lo) e mostra as versões no Catálogo. Nada é instalado: instalar continua pedindo a sua passkey.', noteKind: 'warn', confirm: 'Cadastrar' })) {
       aName.value = aRepo.value = aPkg.value = '';
       route();
     }
@@ -1510,7 +1510,7 @@ async function deploysView() {
       o.policy_n > 0 ? h('span', { class: 'muted' }, 'o Pi recusa') : h('button', { class: 'btn pri', type: 'button', onclick: approve(o) }, 'Colocar no ar')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhuma versão nova aguardando.')),
     errs.length ? errs.map((o) => h('div', { class: 'note warn' }, `${o.project}: ${o.error}`)) : null,
     ex && dep ? h('div', { class: 'sec' }, 'Cadastrar app novo') : null,
-    ex && dep ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'App Android com Releases no GitHub (repositório público). Depois de cadastrar, ele aparece em Apps > Catálogo quando houver uma Release.'),
+    ex && dep ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'App Android com Releases no GitHub (público, ou privado se estiver liberado no token do Pi). Depois de cadastrar, ele aparece em Apps > Catálogo quando houver uma Release.'),
       h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, aName, aRepo, aPkg, h('button', { class: 'btn pri', type: 'button', onclick: addApp }, 'Revisar e assinar'))) : null,
     h('div', { class: 'sec' }, 'Últimos deploys'),
     hist.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, hist.slice(0, 10).map((x) => h('div', { class: 'li' },
