@@ -92,3 +92,5 @@ Por enquanto o guardião-mor do trabalho usa passkey **sincronizável**, e a bar
 Quando houver uma chave FIDO2: criar **outro guardião-mor** "só neste aparelho" (com a chave), propagar, remover o sincronizável e apagar a passkey
 da conta Google. O horário e a regra de sincronização não mudam em um guardião existente. Faça a troca antes de perder o acesso ao computador antigo:
 sem ele não há como assinar.
+
+Depois de fechar o acesso ao Pi (sem sudo para quem desenvolve), veja `docs/OPERACAO-FECHADA.md`.
