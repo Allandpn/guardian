@@ -253,107 +253,134 @@ class Executor:
         self.state.data["temp"] = [t for t in self.state.data["temp"] if (t["list"], t["domain"]) != (list_, domain)]
 
     def apply(self, cmd: dict) -> str:
-        t, a, who = cmd["type"], cmd["args"], cmd["guardian"]
+        """Executa um comando já aceito (assinatura, papel, horário e contador conferidos). Devolve o resumo para o histórico."""
+        t = cmd["type"]
         if t in cmds.TRUST_TYPES:
-            self.consumer.apply_trust(cmd)
-            if self.cfg.deploy_dir:   # a confiança do deployer acompanha (passkey nova do mestre, mestre novo)
-                try:
-                    self._to_deployer({"kind": "trust", "guardian": who}, cmd["ctr"], "trust")
-                except ValueError as e:
-                    return f"confiança atualizada (o deployer não recebeu: {e})"
-            return "confiança atualizada"
-        if t in ("pihole_allow", "pihole_deny"):
-            list_, other = ("allow", "deny") if t == "pihole_allow" else ("deny", "allow")
-            d, ttl = self._guard(a.get("domain"), allow=list_ == "allow"), self._ttl(a)
-            self._put(list_, d, who)
-            if list_ == "deny":
-                self._del("allow", d)  # a lista de permissão vence a de bloqueio
-                self._drop_temp("allow", d)
-            self._drop_temp(list_, d)
-            if ttl:
-                self.state.data["temp"].append({"list": list_, "domain": d, "expires": int(self.now()) + ttl})
-            return f"{'liberado' if list_ == 'allow' else 'bloqueado'} {d}" + (f" por {_fmt_ttl(ttl)}" if ttl else " (sem prazo)")
-        if t == "pihole_batch":
-            items = a.get("items")
-            if not isinstance(items, list) or not 1 <= len(items) <= BATCH_MAX:
-                raise ValueError("lote inválido")
-            ok, bad, blocked_now = [], [], []
-            self.failed = {}
-            for it in items:
-                try:
-                    if not isinstance(it, dict):
-                        raise ValueError("item inválido")
-                    if it.get("deny") is True:  # bloquear: a lista de permissão vence a de bloqueio, então sai de lá
-                        d = self._guard(it.get("domain"), allow=False)
-                        self._put("deny", d, who)
-                        self._del("allow", d)
-                        self._drop_temp("allow", d)
-                        self._drop_temp("deny", d)
-                        blocked_now.append(d)
-                        continue
-                    d, ttl = self._guard(it.get("domain"), allow=True), self._ttl(it)
-                    self._put("allow", d, who)
-                    self._drop_temp("allow", d)
-                    if ttl:
-                        self.state.data["temp"].append({"list": "allow", "domain": d, "expires": int(self.now()) + ttl})
-                    ok.append(f"{d} por {_fmt_ttl(ttl)}" if ttl else d)
-                except (ValueError, PiholeError) as e:  # um item que falha não derruba os outros
-                    name = str(it.get("domain"))[:60] if isinstance(it, dict) else "?"
-                    bad.append(f"{name}: {e}")
-                    self.failed[name] = str(e)[:100]
-            if bad and not ok and not blocked_now:
-                raise ValueError("; ".join(bad))
-            parts = [f"liberados: {', '.join(ok)}" if ok else "", f"bloqueados: {', '.join(blocked_now)}" if blocked_now else "",
-                     f"falharam: {'; '.join(bad)}" if bad else ""]
-            return " | ".join(p for p in parts if p)
-        if t == cmds.T_DEPLOY:
-            return self._queue_deploy(a, who, cmd["ctr"])
-        if t == cmds.T_PROJECT_ADD:
-            return self._queue_project_add(a, who, cmd["ctr"])
-        if t == cmds.T_PARENT_BLOCK:
-            action = a.get("action")
-            if action not in ("add", "remove"):
-                raise ValueError("ação inválida")
-            items = a.get("domains") if "domains" in a else [a.get("domain")]  # vários numa assinatura só
-            if not isinstance(items, list) or not 1 <= len(items) <= PARENTS_BATCH_MAX:
-                raise ValueError("lista de sites inválida")
-            done: list[str] = []
-            same: list[str] = []
-            bad = []
-            for raw in items:
-                try:
-                    d = domains.rule_domain(raw)
-                    changed = self.veto.add_parent(raw) if action == "add" else self.veto.remove_parent(raw)
-                except ValueError as e:
-                    bad.append(f"{str(raw)[:60]}: {e}")
+            return self._apply_trust(cmd)
+        handler = {"pihole_allow": self._apply_one, "pihole_deny": self._apply_one, "pihole_batch": self._apply_batch,
+                   "pihole_remove": self._apply_remove, cmds.T_PARENT_BLOCK: self._apply_parent_block,
+                   cmds.T_DEPLOY: lambda c: self._queue_deploy(c["args"], c["guardian"], c["ctr"]),
+                   cmds.T_PROJECT_ADD: lambda c: self._queue_project_add(c["args"], c["guardian"], c["ctr"])}.get(t)
+        if handler is None:
+            raise ValueError(f"comando desconhecido: {t}")
+        return handler(cmd)
+
+    # Peças do apply: cada tipo de comando, e o que liberar e bloquear têm em comum (avulso ou em lote).
+    def _add_temp(self, list_: str, d: str, ttl: int | None) -> None:
+        if ttl:
+            self.state.data["temp"].append({"list": list_, "domain": d, "expires": int(self.now()) + ttl})
+
+    def _allow(self, d: str, ttl: int | None, who: str) -> None:
+        self._put("allow", d, who)
+        self._drop_temp("allow", d)
+        self._add_temp("allow", d, ttl)
+
+    def _deny(self, d: str, who: str) -> None:
+        self._put("deny", d, who)
+        self._del("allow", d)  # a lista de permissão vence a de bloqueio, então sai de lá
+        self._drop_temp("allow", d)
+        self._drop_temp("deny", d)
+
+    @staticmethod
+    def _summary(*parts: str) -> str:
+        return " | ".join(p for p in parts if p)
+
+    def _apply_trust(self, cmd: dict) -> str:
+        self.consumer.apply_trust(cmd)
+        if self.cfg.deploy_dir:   # a confiança do deployer acompanha (passkey nova do mestre, mestre novo)
+            try:
+                self._to_deployer({"kind": "trust", "guardian": cmd["guardian"]}, cmd["ctr"], "trust")
+            except ValueError as e:
+                return f"confiança atualizada (o deployer não recebeu: {e})"
+        return "confiança atualizada"
+
+    def _apply_one(self, cmd: dict) -> str:
+        a, who, allow = cmd["args"], cmd["guardian"], cmd["type"] == "pihole_allow"
+        d, ttl = self._guard(a.get("domain"), allow=allow), self._ttl(a)
+        if allow:
+            self._allow(d, ttl, who)
+        else:
+            self._deny(d, who)
+            self._add_temp("deny", d, ttl)
+        return f"{'liberado' if allow else 'bloqueado'} {d}" + (f" por {_fmt_ttl(ttl)}" if ttl else " (sem prazo)")
+
+    def _apply_batch(self, cmd: dict) -> str:
+        items, who = cmd["args"].get("items"), cmd["guardian"]
+        if not isinstance(items, list) or not 1 <= len(items) <= BATCH_MAX:
+            raise ValueError("lote inválido")
+        ok: list[str] = []
+        bad: list[str] = []
+        blocked_now: list[str] = []
+        self.failed = {}
+        for it in items:
+            try:
+                if not isinstance(it, dict):
+                    raise ValueError("item inválido")
+                if it.get("deny") is True:
+                    d = self._guard(it.get("domain"), allow=False)
+                    self._deny(d, who)
+                    blocked_now.append(d)
                     continue
-                (done if changed else same).append(d)
-            self.state.data["veto_parents"] = list(self.veto.parents)
-            self.state.save()
-            if bad and not done and not same:
-                raise ValueError("; ".join(bad))
-            verb, past = ("vetados", "já estavam vetados") if action == "add" else ("vetos removidos", "não estavam vetados")
-            parts = [f"{verb}: {', '.join(done)}" if done else "", f"{past}: {', '.join(same)}" if same else "", f"falharam: {'; '.join(bad)}" if bad else ""]
-            return " | ".join(p for p in parts if p)
-        if t == "pihole_remove":
-            if a.get("list") not in ("allow", "deny"):
-                raise ValueError("lista inválida")
-            raw = a["domains"] if "domains" in a else [a.get("domain")]  # vários numa assinatura só
-            if not isinstance(raw, list) or not 1 <= len(raw) <= BATCH_MAX:
-                raise ValueError("lote inválido")
-            done, bad = [], []
-            for x in raw:
-                try:
-                    d = self._guard(x)
-                    self._del(a["list"], d)
-                    self._drop_temp(a["list"], d)
-                    done.append(d)
-                except (ValueError, PiholeError) as e:  # um item que falha não derruba os outros
-                    bad.append(f"{str(x)[:60]}: {e}")
-            if bad and not done:
-                raise ValueError("; ".join(bad))
-            return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {', '.join(done)}" + (f" | falharam: {'; '.join(bad)}" if bad else "")
-        raise ValueError(f"comando desconhecido: {t}")
+                d, ttl = self._guard(it.get("domain"), allow=True), self._ttl(it)
+                self._allow(d, ttl, who)
+                ok.append(f"{d} por {_fmt_ttl(ttl)}" if ttl else d)
+            except (ValueError, PiholeError) as e:  # um item que falha não derruba os outros
+                name = str(it.get("domain"))[:60] if isinstance(it, dict) else "?"
+                bad.append(f"{name}: {e}")
+                self.failed[name] = str(e)[:100]
+        if bad and not ok and not blocked_now:
+            raise ValueError("; ".join(bad))
+        return self._summary(f"liberados: {', '.join(ok)}" if ok else "", f"bloqueados: {', '.join(blocked_now)}" if blocked_now else "",
+                             f"falharam: {'; '.join(bad)}" if bad else "")
+
+    def _apply_parent_block(self, cmd: dict) -> str:
+        a = cmd["args"]
+        action = a.get("action")
+        if action not in ("add", "remove"):
+            raise ValueError("ação inválida")
+        items = a.get("domains") if "domains" in a else [a.get("domain")]  # vários numa assinatura só
+        if not isinstance(items, list) or not 1 <= len(items) <= PARENTS_BATCH_MAX:
+            raise ValueError("lista de sites inválida")
+        done: list[str] = []
+        same: list[str] = []
+        bad: list[str] = []
+        for raw in items:
+            try:
+                d = domains.rule_domain(raw)
+                changed = self.veto.add_parent(raw) if action == "add" else self.veto.remove_parent(raw)
+            except ValueError as e:
+                bad.append(f"{str(raw)[:60]}: {e}")
+                continue
+            (done if changed else same).append(d)
+        self.state.data["veto_parents"] = list(self.veto.parents)
+        self.state.save()
+        if bad and not done and not same:
+            raise ValueError("; ".join(bad))
+        verb, past = ("vetados", "já estavam vetados") if action == "add" else ("vetos removidos", "não estavam vetados")
+        return self._summary(f"{verb}: {', '.join(done)}" if done else "", f"{past}: {', '.join(same)}" if same else "",
+                             f"falharam: {'; '.join(bad)}" if bad else "")
+
+    def _apply_remove(self, cmd: dict) -> str:
+        a = cmd["args"]
+        list_ = a.get("list")
+        if list_ not in ("allow", "deny"):
+            raise ValueError("lista inválida")
+        raw = a["domains"] if "domains" in a else [a.get("domain")]  # vários numa assinatura só
+        if not isinstance(raw, list) or not 1 <= len(raw) <= BATCH_MAX:
+            raise ValueError("lote inválido")
+        done: list[str] = []
+        bad: list[str] = []
+        for x in raw:
+            try:
+                d = self._guard(x)
+                self._del(list_, d)
+                self._drop_temp(list_, d)
+                done.append(d)
+            except (ValueError, PiholeError) as e:  # um item que falha não derruba os outros
+                bad.append(f"{str(x)[:60]}: {e}")
+        if bad and not done:
+            raise ValueError("; ".join(bad))
+        return f"removido de {'liberados' if list_ == 'allow' else 'bloqueados'}: {', '.join(done)}" + (f" | falharam: {'; '.join(bad)}" if bad else "")
 
     def _to_deployer(self, req: dict, ctr: int, label: str) -> None:
         """Deixa um pedido na caixa do deployer (root), com o comando assinado inteiro: ele não confia no executor e confere tudo de novo."""
