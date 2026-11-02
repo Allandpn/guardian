@@ -21,7 +21,7 @@ import tempfile
 import time
 import urllib.error
 
-from . import apps, policy
+from . import apps, policy, signed
 
 _PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -72,7 +72,7 @@ def _run(argv, cwd=None, env=None, timeout=600):
 
 class Deployer:
     def __init__(self, registry: dict, state_dir: str, run=_run, now=time.time, sleep=time.sleep, inbox_uid: int | None = None, github=None,
-                 registry_path: str | None = None, policy_path: str | None = None, trusted_uid: int | None = None):
+                 registry_path: str | None = None, policy_path: str | None = None, trusted_uid: int | None = None, trust_path: str | None = None):
         self.reg, self.state_dir, self.run, self.now, self.sleep = registry, state_dir, run, now, sleep
         self.registry_path, self.policy_path = registry_path, policy_path   # onde gravar um app cadastrado pelo mestre e a política de quem pode ser cadastrado
         # Rodando como root, só confia em pasta de deploy que é do root e que ninguém mais consegue trocar (nos testes, sem root, não confere).
@@ -80,6 +80,8 @@ class Deployer:
         self.github = github   # fábrica (token) -> cliente do GitHub; trocada nos testes
         self._app_ts = 0.0
         self.inbox_uid = inbox_uid
+        # Com `trust_path` (o serviço sempre passa), só vale pedido com o comando assinado pelo mestre, conferido aqui (deployer/signed.py).
+        self.signed = signed.SignedInbox(trust_path) if trust_path else None
         for d in ("mirrors", "inbox", "done", "apks"):
             os.makedirs(os.path.join(state_dir, d), exist_ok=True)
         with open(self._path("gitconfig"), "w") as f:
@@ -495,14 +497,21 @@ class Deployer:
                     raise ValueError("arquivo de outro usuário")
                 with open(p) as f:
                     req = json.load(f)
-                if isinstance(req, dict) and req.get("kind") == "project_add":
+                if self.signed is not None:
+                    req = self.signed.check(req if isinstance(req, dict) else {}, self.now())   # vale o que está no comando assinado
+                kind = req.get("kind") if isinstance(req, dict) else None
+                if kind == "project_add":
                     check_add_request(req)
-                else:
+                elif kind != "trust" or self.signed is None:   # mudança de confiança só existe com a assinatura conferida aqui
                     check_request(req)
             except (OSError, ValueError) as e:
                 res = {"ts": int(self.now()), "project": "?", "commit": "?", "ok": False, "rolled_back": False, "msg": f"pedido inválido: {e}"[:200]}
             else:
-                res = self.project_add(req) if req.get("kind") == "project_add" else self.deploy(req)
+                if req.get("kind") == "trust":
+                    res = {"ts": int(self.now()), "project": "confiança", "commit": req["type"], "ok": True, "rolled_back": False,
+                           "by": req["guardian"], "msg": f"confiança do deployer atualizada ({req['type']})"}
+                else:
+                    res = self.project_add(req) if req.get("kind") == "project_add" else self.deploy(req)
             finally:
                 try:
                     os.replace(p, self._path("done", fn))  # um pedido roda uma vez só

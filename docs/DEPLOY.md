@@ -13,8 +13,12 @@ horário dele. Quem desenvolve (você, as sessões do Claude) programa e testa o
    linha de risco ("não mexe em segurança" ou "mexe em segurança (N)").
 4. O mestre toca em **Colocar no ar** e assina com o passkey (comando `deploy`: projeto + hash do commit; `sensitive_ok` só quando a
    versão mexe em segurança e ele confirmou o aviso em vermelho). O comando só vale dentro do horário dele (relógio do executor).
-5. O executor confere assinatura, papel (só mestre) e horário e deixa o pedido em `inbox/`. O deployer **confere tudo de novo**: o commit
-   tem que ser a ponta de uma etiqueta, e se a versão toca segurança o pedido precisa ter `sensitive_ok`.
+5. O executor confere assinatura, papel (só mestre) e horário e deixa o pedido em `inbox/`, com o **comando assinado inteiro**. O deployer
+   **confere tudo de novo**, inclusive a assinatura da passkey, o papel, o horário (pelo relógio dele) e o contador, contra a **sua própria cópia
+   da confiança** (`/var/lib/guardian-deploy/trust.json`, só do root). Vale o que está dentro do comando assinado: projeto, commit e
+   `sensitive_ok`. O commit tem que ser a ponta de uma etiqueta, e se a versão toca segurança o comando precisa ter `sensitive_ok`. Um executor
+   comprometido não coloca nada no ar sozinho. Passkey nova ou mestre novo chegam ao deployer pelo mesmo caminho: o executor encaminha o
+   comando de confiança assinado, e o deployer o confere e aplica.
 6. Instala (`git checkout` do commit + passos do projeto), roda a **checagem de saúde** e, se falhar, **volta sozinho** para a versão
    anterior (voltar a uma versão já aprovada não afrouxa nada, então não pede assinatura). O resultado vai para `status.json` e para a tela.
 
@@ -26,7 +30,8 @@ que fica com o guardião. O código do executor e do gateway muda por deploy, ma
 
 ## Instalar (uma vez, como root)
 
-1. `sudo sh deploy/install-deployer.sh`
+1. `sudo sh deploy/install-deployer.sh` (precisa de `python3-cryptography` no Python do sistema). Na primeira vez, o script copia a confiança
+   do executor para o deployer (`init-trust`) e lista os guardiões e quantas passkeys cada um tem: confira que são só os que você reconhece.
 2. Repositório público (como o do Guardian): nada a fazer, o Pi lê por https. Repositório privado: gere uma chave só de leitura
    (`ssh-keygen -t ed25519 -N '' -f /etc/guardian-deploy/<projeto>_deploy_key`), cadastre a `.pub` como *deploy key* (sem escrita)
    e aponte `ssh_key` no registro.

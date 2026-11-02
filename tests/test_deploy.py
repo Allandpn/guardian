@@ -14,6 +14,8 @@ from gwharness import Env  # noqa: E402
 from guardian.deployer import policy  # noqa: E402
 from guardian.deployer.core import Deployer, _run  # noqa: E402
 from guardian.executor.runner import ExecConfig, Executor, pair  # noqa: E402
+from authenticator import FakeAuthenticator  # noqa: E402
+from guardian.protocol import b64  # noqa: E402
 from guardian.protocol import commands as cmds  # noqa: E402
 from test_executor import pairing_string  # noqa: E402
 
@@ -640,6 +642,24 @@ class ExecutorQueuesDeploy(unittest.TestCase):
         (fn,) = os.listdir(os.path.join(self.dd, "inbox"))
         req = json.load(open(os.path.join(self.dd, "inbox", fn)))
         self.assertEqual((req["project"], req["commit"], req["sensitive_ok"], req["guardian"]), ("guardian", C40, True, self.gid))
+
+    def test_01b_the_signed_envelope_goes_along_and_trust_changes_too(self):
+        """O deployer confere a assinatura de novo: o executor manda o comando assinado inteiro, e também as mudanças de confiança."""
+        inbox = os.path.join(self.dd, "inbox")
+        for f in os.listdir(inbox):
+            os.remove(os.path.join(inbox, f))
+        self.ex._env = {"payload": "cGF5bG9hZA", "sigs": [{"guardian": self.gid}]}
+        self.ex.apply({"type": cmds.T_DEPLOY, "args": {"project": "guardian", "commit": C40}, "guardian": self.gid, "ctr": 9})
+        a = FakeAuthenticator("x", "https://x")
+        self.ex.apply({"type": cmds.T_ADD_CREDENTIAL, "args": {"id": self.gid, "cred": a.cred_id_b64, "spki": b64.enc(a.spki)},
+                       "guardian": self.gid, "ctr": 10})
+        names = sorted(os.listdir(inbox))
+        self.assertEqual([n.split("-", 1)[1] for n in names], ["000000000009-guardian.json", "000000000010-trust.json"])
+        reqs = [json.load(open(os.path.join(inbox, n))) for n in names]
+        self.assertEqual([r["envelope"] for r in reqs], [self.ex._env] * 2)
+        self.assertEqual(reqs[1]["kind"], "trust")
+        for f in names:
+            os.remove(os.path.join(inbox, f))
 
     def test_02_bad_args_and_no_deployer_are_refused(self):
         with self.assertRaises(ValueError):

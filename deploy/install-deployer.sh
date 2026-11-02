@@ -8,9 +8,15 @@ LIB=/usr/local/lib/guardian-deployer
 STATE=/var/lib/guardian-deploy
 EXEC_UID="$(id -u guardian-exec)"
 
-install -d -m 0755 -o root -g root "$LIB/guardian_deployer"
+# O deployer confere ele mesmo a assinatura do mestre (deployer/signed.py): leva uma cópia do protocolo e precisa da biblioteca cryptography.
+/usr/bin/python3 -c "import cryptography" 2>/dev/null || { echo "falta a biblioteca cryptography no python do sistema: apt install python3-cryptography" >&2; exit 1; }
+
+install -d -m 0755 -o root -g root "$LIB/guardian_deployer" "$LIB/guardian_deployer/protocol"
 install -m 0644 -o root -g root "$SRC/src/guardian/deployer/__init__.py" "$SRC/src/guardian/deployer/core.py" \
-  "$SRC/src/guardian/deployer/__main__.py" "$SRC/src/guardian/deployer/policy.py" "$SRC/src/guardian/deployer/apps.py" "$LIB/guardian_deployer/"
+  "$SRC/src/guardian/deployer/__main__.py" "$SRC/src/guardian/deployer/policy.py" "$SRC/src/guardian/deployer/apps.py" \
+  "$SRC/src/guardian/deployer/signed.py" "$LIB/guardian_deployer/"
+install -m 0644 -o root -g root "$SRC/src/guardian/protocol/__init__.py" "$SRC/src/guardian/protocol/commands.py" \
+  "$SRC/src/guardian/protocol/webauthn.py" "$SRC/src/guardian/protocol/b64.py" "$SRC/src/guardian/protocol/cbor.py" "$LIB/guardian_deployer/protocol/"
 
 install -d -m 0755 -o root -g root /etc/guardian-deploy
 [ -f /etc/guardian-deploy/projects.json ] || install -m 0644 -o root -g root "$SRC/deploy/deploy-projects.example.json" /etc/guardian-deploy/projects.json
@@ -18,6 +24,12 @@ install -d -m 0755 -o root -g root /etc/guardian-deploy
 
 install -d -m 0755 -o root -g root "$STATE"
 install -d -m 0700 -o guardian-exec -g guardian-exec "$STATE/inbox"
+
+# Confiança própria do deployer (guardiões, passkeys, papéis, contadores), copiada UMA vez do executor. Depois só muda por comando assinado.
+if [ ! -f "$STATE/trust.json" ]; then
+  PYTHONPATH="$LIB" /usr/bin/python3 -m guardian_deployer init-trust --state "$STATE" --from /var/lib/guardian-executor/state.json
+  echo "Confira acima: só os guardiões que você reconhece. Se algo estiver errado, apague $STATE/trust.json e corrija o executor antes."
+fi
 
 sed "s/@EXEC_UID@/$EXEC_UID/" "$SRC/deploy/guardian-deployer.service" > /etc/systemd/system/guardian-deployer.service
 chmod 0644 /etc/systemd/system/guardian-deployer.service
