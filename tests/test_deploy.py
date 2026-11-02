@@ -14,6 +14,8 @@ from gwharness import Env  # noqa: E402
 from guardian.deployer import policy  # noqa: E402
 from guardian.deployer.core import Deployer, _run  # noqa: E402
 from guardian.executor.runner import ExecConfig, Executor, pair  # noqa: E402
+from authenticator import FakeAuthenticator  # noqa: E402
+from guardian.protocol import b64  # noqa: E402
 from guardian.protocol import commands as cmds  # noqa: E402
 from test_executor import pairing_string  # noqa: E402
 
@@ -172,7 +174,7 @@ class ComposePolicy(unittest.TestCase):
                                                                 {"type": "bind", "source": "/tmp/proj/conf", "target": "/c"},
                                                                 {"type": "volume", "source": "dados", "target": "/v"}],
                                     "build": {"context": "/tmp/proj"}, "env_file": [{"path": "/tmp/proj/.env"}]}},
-               "volumes": {"dados": {"name": "p_dados"}}, "networks": {"default": {"name": "p_default"}}}
+               "volumes": {"dados": {"name": "p_dados"}}, "networks": {"default": {"name": "p_default"}}, "name": "p"}
         self.assertEqual(policy.violations(cfg, self.P, ["/mnt/ssd"]), [])
 
     def test_each_escape_hatch_is_a_violation(self):
@@ -194,6 +196,37 @@ class ComposePolicy(unittest.TestCase):
                     {"secrets": {"s": {"file": "/etc/shadow"}}}):
             self.assertTrue(policy.violations({"services": {"app": {"image": "x"}}, **top}, self.P), top)
 
+    def test_paths_through_a_symlink_of_the_version_are_refused(self):
+        """A política vê uma cópia sem links, mas o checkout recria `dados -> /` e o Docker segue o link ao montar."""
+        links = frozenset({"dados", "conf/segredo.env"})
+        for svc in (dict(volumes=[{"type": "bind", "source": "/tmp/proj/dados", "target": "/host"}]),
+                    dict(volumes=[{"type": "bind", "source": "/tmp/proj/dados/sub", "target": "/host"}]),
+                    dict(env_file=[{"path": "/tmp/proj/conf/segredo.env"}]),
+                    dict(build={"context": "/tmp/proj/dados"})):
+            self.assertTrue(policy.violations(self.cfg(**svc), self.P, symlinks=links), svc)
+        ok = self.cfg(volumes=[{"type": "bind", "source": "/tmp/proj/dados2", "target": "/d"}], env_file=[{"path": "/tmp/proj/conf/.env"}])
+        self.assertEqual(policy.violations(ok, self.P, symlinks=links), [])
+        self.assertTrue(policy.violations({"services": {"app": {"image": "x"}}, "secrets": {"s": {"file": "/tmp/proj/dados/k"}}}, self.P, symlinks=links))
+
+    def test_build_cannot_pull_host_folders_or_root_keys(self):
+        for b in ({"context": "/tmp/proj", "additional_contexts": {"etc": "/etc"}},
+                  {"context": "/tmp/proj", "additional_contexts": ["etc=/etc/guardian-deploy"]},
+                  {"context": "/tmp/proj", "additional_contexts": {"x": "oci-layout:///root/img"}},
+                  {"context": "/tmp/proj", "ssh": ["default"]}):
+            self.assertTrue(policy.violations(self.cfg(build=b), self.P), b)
+        fine = {"context": "/tmp/proj", "additional_contexts": {"base": "docker-image://alpine:3", "s": "service:outro", "d": "/tmp/proj/extra"}}
+        self.assertEqual(policy.violations(self.cfg(build=fine), self.P), [])
+        self.assertTrue(policy.violations({"services": {"app": {"image": "x"}}, "secrets": {"s": {"environment": "HOME"}}}, self.P))
+
+    def test_named_volume_or_network_of_another_owner_is_refused(self):
+        """`name:` sem `external` reaproveita um volume que já existe (o do gateway); o nome do projeto também não pode ser o de outro serviço."""
+        base = {"name": "p", "services": {"app": {"image": "x"}}}
+        for top in ({"volumes": {"dados": {"name": "deploy_gateway-data"}}}, {"networks": {"n": {"name": "guardian_net"}}}):
+            self.assertTrue(policy.violations({**base, **top}, self.P), top)
+        self.assertTrue(policy.violations({**base, "name": "deploy", "volumes": {"gateway-data": {"name": "deploy_gateway-data"}}},
+                                          self.P, forbidden_names=frozenset({"deploy"})))
+        self.assertEqual(policy.violations({**base, "volumes": {"dados": {"name": "p_dados"}}}, self.P, forbidden_names=frozenset({"deploy"})), [])
+
     def test_allowed_context_and_network_none(self):
         cfg = self.cfg(build={"context": "/opt/outro"}, network_mode="none")
         self.assertEqual(policy.violations(cfg, self.P, [], ["/opt/outro"]), [])
@@ -213,11 +246,13 @@ class DeployerCompose(unittest.TestCase):
         git(self.origin, "commit", "-q", "-m", "v1")
         git(self.origin, "tag", "release/1")
         git(t, "clone", "-q", self.origin, self.work)
-        self.bad = False
+        self.bad, self.bind = False, None
 
         def run(argv, cwd=None, env=None, timeout=600):
             if argv[0] == "docker" and "config" in argv:
                 svc = {"image": "x", "privileged": True} if self.bad else {"image": "x"}
+                if self.bind:   # o compose monta ./dados (caminho dentro do projeto)
+                    svc["volumes"] = [{"type": "bind", "source": os.path.join(cwd, self.bind), "target": "/d"}]
                 return 0, json.dumps({"services": {"app": svc}})
             if argv[0] == "docker":
                 return 0, ""
@@ -247,6 +282,56 @@ class DeployerCompose(unittest.TestCase):
         self.bad = False
         self.assertTrue(self.d.deploy({"project": "p", "commit": c})["ok"])
 
+
+    def _release(self, msg, tag):
+        git(self.origin, "add", "-A")
+        git(self.origin, "commit", "-q", "-m", msg)
+        git(self.origin, "tag", tag)
+        return git(self.origin, "rev-parse", "HEAD")
+
+    def test_bind_through_a_symlink_of_the_version_is_refused(self):
+        """A versão traz `dados -> /` e monta ./dados: a cópia conferida não tem o link, mas o checkout de verdade teria."""
+        os.symlink("/", os.path.join(self.origin, "dados"))
+        c = self._release("v2 com link", "release/2")
+        self.bind = "dados"
+        (offer,) = [o for o in self.d.refresh_offers() if o.get("commit") == c]
+        self.assertTrue(any("link simbólico" in v for v in offer["policy"]), offer["policy"])
+        before = git(self.work, "rev-parse", "HEAD")
+        r = self.d.deploy({"project": "p", "commit": c, "sensitive_ok": True})
+        self.assertFalse(r["ok"])
+        self.assertIn("isolamento", r["msg"])
+        self.assertEqual(git(self.work, "rev-parse", "HEAD"), before)
+
+    def test_plain_folder_bind_still_passes(self):
+        os.makedirs(os.path.join(self.origin, "dados"))
+        open(os.path.join(self.origin, "dados", "k"), "w").write("1")
+        c = self._release("v2 com pasta", "release/2")
+        self.bind = "dados"
+        (offer,) = [o for o in self.d.refresh_offers() if o.get("commit") == c]
+        self.assertEqual(offer["policy"], [])
+
+    def test_link_left_in_the_deploy_folder_is_refused_only_when_the_compose_uses_it(self):
+        """Um contêiner com a pasta montada pode criar `dados/host -> /` na pasta de deploy: a versão seguinte que monte por ali é recusada.
+        Um link para fora que o compose não usa (um .venv, por exemplo) não atrapalha."""
+        os.makedirs(os.path.join(self.work, "dados"))
+        os.symlink("/", os.path.join(self.work, "dados", "host"))
+        os.symlink("/usr/bin/python3", os.path.join(self.work, "python"))
+        self.assertEqual(self.d._escaping_links("p"), {"dados/host", "python"})
+        open(os.path.join(self.origin, "y.txt"), "w").write("3")
+        c = self._release("v2", "release/2")
+        self.bind = "dados/host"
+        (offer,) = [o for o in self.d.refresh_offers() if o.get("commit") == c]
+        self.assertTrue(any("link simbólico" in v for v in offer["policy"]), offer["policy"])
+        self.bind = "outra"
+        (offer,) = [o for o in self.d.refresh_offers() if o.get("commit") == c]
+        self.assertEqual(offer["policy"], [])
+
+    def test_compose_names_of_other_services_are_reserved(self):
+        self.d.reg["outro"] = {"repo": "/x", "workdir": "/opt/Imagineer", "type": "compose"}
+        names = self.d._reserved_compose_names("p")
+        self.assertTrue({"deploy", "outro", "imagineer"} <= names)
+        self.assertNotIn("p", names)
+        self.assertNotIn(os.path.basename(self.work).lower(), names)
 
 class FakeGitHub:
     def __init__(self, releases, blobs):
@@ -450,6 +535,23 @@ class ProjectAdd(unittest.TestCase):
         self.assertNotIn("x", json.load(open(self.regfile)))
 
 
+class DeployerEnv(unittest.TestCase):
+    def test_git_and_docker_do_not_inherit_the_process_environment(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Deployer({"p": {"repo": "/x", "workdir": t}}, os.path.join(t, "s"))
+            old = dict(os.environ)
+            os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.sshCommand", GIT_CONFIG_VALUE_0="touch /tmp/pwn", DOCKER_HOST="tcp://x:1")
+            try:
+                env = d._env(d.reg["p"])
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+            self.assertNotIn("GIT_CONFIG_COUNT", env)
+            self.assertNotIn("DOCKER_HOST", env)
+            self.assertEqual(env["HOME"], old.get("HOME") or os.path.join(t, "s"))
+            self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+
+
 class DeployDirOwnership(unittest.TestCase):
     """O deploy roda git e docker como root dentro da pasta do projeto: pasta que um usuário comum escreve não é confiável."""
 
@@ -540,6 +642,24 @@ class ExecutorQueuesDeploy(unittest.TestCase):
         (fn,) = os.listdir(os.path.join(self.dd, "inbox"))
         req = json.load(open(os.path.join(self.dd, "inbox", fn)))
         self.assertEqual((req["project"], req["commit"], req["sensitive_ok"], req["guardian"]), ("guardian", C40, True, self.gid))
+
+    def test_01b_the_signed_envelope_goes_along_and_trust_changes_too(self):
+        """O deployer confere a assinatura de novo: o executor manda o comando assinado inteiro, e também as mudanças de confiança."""
+        inbox = os.path.join(self.dd, "inbox")
+        for f in os.listdir(inbox):
+            os.remove(os.path.join(inbox, f))
+        self.ex._env = {"payload": "cGF5bG9hZA", "sigs": [{"guardian": self.gid}]}
+        self.ex.apply({"type": cmds.T_DEPLOY, "args": {"project": "guardian", "commit": C40}, "guardian": self.gid, "ctr": 9})
+        a = FakeAuthenticator("x", "https://x")
+        self.ex.apply({"type": cmds.T_ADD_CREDENTIAL, "args": {"id": self.gid, "cred": a.cred_id_b64, "spki": b64.enc(a.spki)},
+                       "guardian": self.gid, "ctr": 10})
+        names = sorted(os.listdir(inbox))
+        self.assertEqual([n.split("-", 1)[1] for n in names], ["000000000009-guardian.json", "000000000010-trust.json"])
+        reqs = [json.load(open(os.path.join(inbox, n))) for n in names]
+        self.assertEqual([r["envelope"] for r in reqs], [self.ex._env] * 2)
+        self.assertEqual(reqs[1]["kind"], "trust")
+        for f in names:
+            os.remove(os.path.join(inbox, f))
 
     def test_02_bad_args_and_no_deployer_are_refused(self):
         with self.assertRaises(ValueError):

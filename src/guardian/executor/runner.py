@@ -196,6 +196,7 @@ class Executor:
         self.pihole = pihole or Pihole(cfg.pihole_url, cfg.pihole_password, cfg.pihole_ca)
         self.executed: list[dict] = []
         self.failed: dict[str, str] = {}  # domínios que o último lote não aplicou, e por quê
+        self._env: dict | None = None     # o comando assinado em execução: vai inteiro para o deployer, que confere a assinatura de novo
         self.last_report = 0.0
         self._lists: dict | None = None
         self._lists_ts = 0.0
@@ -209,6 +210,8 @@ class Executor:
             raise ValueError("o domínio-canário não pode ser alterado")
         if allow and canary and self.cfg.allow_mode == "regex" and canary.endswith("." + domains.rule_domain(d)):
             raise ValueError("a liberação cobriria o domínio-canário")  # a regex inclui os subdomínios
+        if allow and (domains.is_public_suffix(d) or domains.is_public_suffix(domains.rule_domain(d))):
+            raise ValueError("não se libera um sufixo inteiro (como com.br)")  # www.com.br vira a regra de com.br inteiro
         if allow:
             why = self.veto.reason(d, self.cfg.allow_mode == "regex")
             if why:
@@ -252,6 +255,11 @@ class Executor:
         t, a, who = cmd["type"], cmd["args"], cmd["guardian"]
         if t in cmds.TRUST_TYPES:
             self.consumer.apply_trust(cmd)
+            if self.cfg.deploy_dir:   # a confiança do deployer acompanha (passkey nova do mestre, mestre novo)
+                try:
+                    self._to_deployer({"kind": "trust", "guardian": who}, cmd["ctr"], "trust")
+                except ValueError as e:
+                    return f"confiança atualizada (o deployer não recebeu: {e})"
             return "confiança atualizada"
         if t in ("pihole_allow", "pihole_deny"):
             list_, other = ("allow", "deny") if t == "pihole_allow" else ("deny", "allow")
@@ -344,42 +352,36 @@ class Executor:
             return f"removido de {'liberados' if a['list'] == 'allow' else 'bloqueados'}: {', '.join(done)}" + (f" | falharam: {'; '.join(bad)}" if bad else "")
         raise ValueError(f"comando desconhecido: {t}")
 
+    def _to_deployer(self, req: dict, ctr: int, label: str) -> None:
+        """Deixa um pedido na caixa do deployer (root), com o comando assinado inteiro: ele não confia no executor e confere tudo de novo."""
+        if not self.cfg.deploy_dir:
+            raise ValueError("este executor não está ligado a um deployer")
+        inbox = os.path.join(self.cfg.deploy_dir, "inbox")
+        req = {**req, "envelope": self._env, "ts": int(self.now())}
+        tmp = os.path.join(inbox, f".tmp-{ctr}")
+        try:
+            with open(tmp, "w") as f:
+                json.dump(req, f)
+            # o deployer processa em ordem de nome: hora e contador com largura fixa (passkey nova antes do deploy que a usa)
+            os.replace(tmp, os.path.join(inbox, f"{int(self.now())}-{ctr:012d}-{label}.json"))
+        except OSError as e:
+            raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
+
     def _queue_deploy(self, a: dict, who: str, ctr: int) -> str:
-        """Deixa o pedido (já com assinatura, horário e papel conferidos) na caixa do deployer, que roda como root e confere tudo de novo."""
         try:
             cmds.check_deploy_args(a)
         except cmds.CommandError as e:
             raise ValueError(str(e))
-        if not self.cfg.deploy_dir:
-            raise ValueError("este executor não está ligado a um deployer")
-        inbox = os.path.join(self.cfg.deploy_dir, "inbox")
-        req = {"project": a["project"], "commit": a["commit"], "sensitive_ok": bool(a.get("sensitive_ok")), "guardian": who, "ts": int(self.now())}
-        tmp = os.path.join(inbox, f".tmp-{ctr}")
-        try:
-            with open(tmp, "w") as f:
-                json.dump(req, f)
-            os.replace(tmp, os.path.join(inbox, f"{int(self.now())}-{ctr}-{a['project']}.json"))
-        except OSError as e:
-            raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
+        self._to_deployer({"project": a["project"], "commit": a["commit"], "sensitive_ok": bool(a.get("sensitive_ok")), "guardian": who}, ctr, a["project"])
         return f"deploy pedido: {a['project']} {a['commit'][:8]}"
 
     def _queue_project_add(self, a: dict, who: str, ctr: int) -> str:
-        """Deixa o pedido de cadastro na caixa do deployer, que confere o dono do repositório, o pacote e se o repositório é público."""
+        """Pedido de cadastro: o deployer confere o dono do repositório, o pacote e se o repositório é público."""
         try:
             cmds.check_project_add_args(a)
         except cmds.CommandError as e:
             raise ValueError(str(e))
-        if not self.cfg.deploy_dir:
-            raise ValueError("este executor não está ligado a um deployer")
-        req = {"kind": "project_add", "name": a["name"], "github": a["github"], "pkg": a["pkg"], "guardian": who, "ts": int(self.now())}
-        inbox = os.path.join(self.cfg.deploy_dir, "inbox")
-        tmp = os.path.join(inbox, f".tmp-{ctr}")
-        try:
-            with open(tmp, "w") as f:
-                json.dump(req, f)
-            os.replace(tmp, os.path.join(inbox, f"{int(self.now())}-{ctr}-add-{a['name']}.json"))
-        except OSError as e:
-            raise ValueError(f"não consegui entregar o pedido ao deployer: {e}")
+        self._to_deployer({"kind": "project_add", "name": a["name"], "github": a["github"], "pkg": a["pkg"], "guardian": who}, ctr, "add-" + a["name"])
         return f"cadastro de app pedido: {a['name']} ({a['github']})"
 
     def sync_apks(self) -> int:
@@ -443,6 +445,7 @@ class Executor:
             self.executed.append({"type": "?", "ok": False, "msg": f"recusado: {e}"})
             return
         self.failed = {}
+        self._env = env
         try:
             msg = self.apply(v.cmd)
             self.executed.append({"type": v.cmd["type"], "ok": True, "msg": msg, **({"failed": self.failed} if self.failed else {})})
