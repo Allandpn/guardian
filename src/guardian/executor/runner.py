@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import domains
@@ -134,7 +135,7 @@ class State:
     def __init__(self, path: str):
         self.path = path
         self.lock = threading.RLock()
-        self.data = {"gateway": None, "consumer": None, "after": 0, "temp": [], "blocked_since": 0}
+        self.data: dict[str, Any] = {"gateway": None, "consumer": None, "after": 0, "temp": [], "blocked_since": 0}
         if os.path.exists(path):
             with open(path) as f:
                 self.data.update(json.load(f))
@@ -316,7 +317,9 @@ class Executor:
             items = a.get("domains") if "domains" in a else [a.get("domain")]  # vários numa assinatura só
             if not isinstance(items, list) or not 1 <= len(items) <= PARENTS_BATCH_MAX:
                 raise ValueError("lista de sites inválida")
-            done, same, bad = [], [], []
+            done: list[str] = []
+            same: list[str] = []
+            bad = []
             for raw in items:
                 try:
                     d = domains.rule_domain(raw)
@@ -456,7 +459,7 @@ class Executor:
 
     # --- relatório ---------------------------------------------------------------
     def report(self) -> None:
-        r = {"kind": "executor", "ts": int(self.now()), "canary_set": bool(self.cfg.canary),
+        r: dict[str, Any] = {"kind": "executor", "ts": int(self.now()), "canary_set": bool(self.cfg.canary),
              "ctrs": self.consumer.last_ctr, "temp": self.state.data["temp"][:100],
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
              "roles": {g: v.role for g, v in self.consumer.trust.guardians.items()},
@@ -589,7 +592,7 @@ class Executor:
         net: dict[str, dict] = {}  # id de rede -> {"name", "ip", "items"}
         mine = local_ips()
         for q in self.pihole.queries(since, None, max_pages=NET_PAGES):
-            c = q.get("client") if isinstance(q.get("client"), dict) else {}
+            c: dict = q["client"] if isinstance(q.get("client"), dict) else {}
             ip = c.get("ip")
             if not isinstance(ip, str) or ip in clients or ip in NET_SKIP or ip in mine:
                 continue
