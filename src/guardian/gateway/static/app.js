@@ -1667,6 +1667,36 @@ async function guardiansView() {
     }
     route();
   });
+  // O aparelho que ainda não conhece mestre nenhum recusa o comando do mestre (autor desconhecido). Quem o apresenta é um guardião-mor
+  // que o aparelho já conhece: um comando por mestre, com a 1ª passkey dele. As outras passkeys o próprio mestre leva depois (Propagar).
+  const devTrust = (d) => (d.report && d.report.trust) || {};
+  const devHasMaster = (d) => Object.values((d.report && d.report.roles) || {}).includes('master');
+  const knowsMe = (d) => !!devTrust(d)[me.guardian.id];
+  const mastersToIntroduce = (d) => (isAdmin() && !isMaster() && knowsMe(d) && !devHasMaster(d)
+    ? gs.filter(([gid, g]) => g.role === 'master' && !devTrust(d)[gid] && Object.keys(g.creds).length) : []);
+  const whoCanIntroduce = (d) => gs.filter(([gid, g]) => g.role === 'admin' && devTrust(d)[gid]).map(([, g]) => g.name);
+  const introduce = (d) => act(async () => {
+    const ms = mastersToIntroduce(d);
+    const names = ms.map(([, g]) => g.name).join(', ');
+    if (!(await sheet({ title: `Apresentar ${names} a ${d.name}?`, rows: [['Aparelho', d.name], ['Mestre', names]], effect: 'vale na hora', effectKind: 'ok',
+      note: `${d.name} ainda não conhece nenhum mestre e só aceita a apresentação de um guardião-mor que já conhece. Depois, ${names} entra e toca em Propagar para levar as outras passkeys.`,
+      noteKind: 'warn' }))) return;
+    for (const [gid, g] of ms) {
+      const cred = Object.keys(g.creds)[0];
+      await sendCommand(d.id, 'add_guardian', { id: gid, name: g.name, cred, spki: g.creds[cred], role: 'master', allow_sync: g.allow_sync !== false, window: g.window || null });
+    }
+    toast(`Enviado. Quando ${d.name} aplicar, ${names} pode propagar o resto.`);
+    route();
+  });
+  const propagateButton = (d) => {
+    if (canManage() && knowsMe(d)) return h('button', { class: 'btn pri', type: 'button', onclick: propagate(d) }, 'Propagar');
+    if (mastersToIntroduce(d).length) return h('button', { class: 'btn pri', type: 'button', onclick: introduce(d) }, 'Apresentar o mestre');
+    if (canManage()) {   // o mestre que o aparelho ainda não conhece: o comando dele seria recusado lá
+      const who = whoCanIntroduce(d);
+      return chip(who.length ? `${who.join(' ou ')} apresenta você` : 'aparelho não conhece você', 'warn');
+    }
+    return chip('só o mestre propaga', 'warn');
+  };
   const out = h('div', {});
   const myCreds = Object.keys((me.trust[me.guardian.id] || { creds: {} }).creds).length;
   const cos = aw.filter((c) => c.can_cosign);
@@ -1757,7 +1787,7 @@ async function guardiansView() {
       const m = missing(d);
       return h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, d.name), d.kind === 'executor' ? ' ' : null, d.kind === 'executor' ? chip('executor') : null,
         h('div', { class: 'muted', style: m.length ? 'color:var(--orange)' : '' }, m.length ? `ainda não confia em ${[...new Set(m.map((x) => x.g.name))].join(', ')}` : 'confia em todos os passkeys')),
-        m.length ? (canManage() ? h('button', { class: 'btn pri', type: 'button', onclick: propagate(d) }, 'Propagar') : chip('só o mestre propaga', 'warn')) : chip('ok', 'ok'));
+        m.length ? propagateButton(d) : chip('ok', 'ok'));
     }) : h('p', { class: 'muted' }, 'Nenhum aparelho pareado.')),
     h('div', { class: 'sec' }, 'Co-assinaturas pendentes'),
     h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, aw.length ? aw.map((c) => h('div', { class: 'li' }, h('div', { class: 'sp' }, h('strong', {}, (devices.find((x) => x.id === c.dev) || { name: c.dev }).name),
