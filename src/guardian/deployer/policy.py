@@ -41,84 +41,101 @@ def _via_link(path: str, project_dir: str, symlinks) -> bool:
 _REMOTE_CTX = ("docker-image://", "service:")
 
 
+class _Check:
+    """Uma conferência: o projeto, o que o registro permite e a lista de violações que vai sendo preenchida."""
+
+    def __init__(self, project_dir: str, allowed_binds, allowed_contexts, symlinks):
+        self.project_dir, self.symlinks = project_dir, symlinks
+        self.allowed = [a.rstrip("/") or "/" for a in (allowed_binds or [])]
+        self.ctxs = [a.rstrip("/") or "/" for a in (allowed_contexts or [])]
+        self.out: list[str] = []
+
+    def link(self, path: str, what: str) -> None:
+        if _via_link(path, self.project_dir, self.symlinks):
+            self.out.append(f"{what} passa por link simbólico ({os.path.relpath(path, self.project_dir)})")
+
+    def service(self, name: str, svc) -> None:
+        if not isinstance(svc, dict):
+            self.out.append(f"{name}: serviço ilegível")
+            return
+        for k in _FORBID_TRUE:
+            if svc.get(k):
+                self.out.append(f"{name}: {k}")
+        for k in _FORBID_SET:
+            v = svc.get(k)
+            if v and not (k == "network_mode" and v == "none"):
+                self.out.append(f"{name}: {k}")
+        for o in svc.get("security_opt") or []:
+            if any(b in str(o) for b in _BAD_OPT):
+                self.out.append(f"{name}: security_opt {o}")
+        self.volumes(name, svc.get("volumes") or [])
+        self.env_files(name, svc.get("env_file") or [])
+        if isinstance(svc.get("build"), dict):
+            self.build(name, svc["build"])
+
+    def volumes(self, name: str, vols) -> None:
+        for v in vols:
+            if not isinstance(v, dict):
+                self.out.append(f"{name}: volume ilegível")
+            elif v.get("type") == "bind" and not _allowed_bind(str(v.get("source", "")), self.project_dir, self.allowed):
+                self.out.append(f"{name}: monta {v.get('source')}")
+            elif v.get("type") == "bind":
+                self.link(str(v.get("source", "")), f"{name}: montagem")
+            elif v.get("type") not in ("bind", "volume", "tmpfs"):
+                self.out.append(f"{name}: volume do tipo {v.get('type')}")
+
+    def env_files(self, name: str, files) -> None:
+        for e in files:
+            path = e.get("path") if isinstance(e, dict) else e
+            if not isinstance(path, str) or not _inside(path, self.project_dir):
+                self.out.append(f"{name}: env_file {path}")
+            else:
+                self.link(path, f"{name}: env_file")
+
+    def build(self, name: str, b: dict) -> None:
+        extra = b.get("additional_contexts") or {}
+        if isinstance(extra, list):  # forma "nome=valor"
+            extra = dict(str(x).split("=", 1) if "=" in str(x) else ("?", str(x)) for x in extra)
+        local = [str(v) for v in extra.values() if not str(v).startswith(_REMOTE_CTX)] if isinstance(extra, dict) else ["?"]
+        for c in [str(b.get("context", "")), *local]:   # outra pasta do host no build seria copiada para dentro da imagem (/etc, segredos do Pi)
+            if not os.path.isabs(c) or not (_inside(c, self.project_dir) or any(_inside(c, x) for x in self.ctxs)):
+                self.out.append(f"{name}: build fora do projeto ({c})")
+            else:
+                self.link(c, f"{name}: build")
+        if b.get("privileged") or b.get("network") in ("host",):
+            self.out.append(f"{name}: build com privilégios ou rede do host")
+        if b.get("ssh"):  # repassaria as chaves SSH do root ao build
+            self.out.append(f"{name}: build com ssh")
+
+    def top_level(self, cfg: dict, proj) -> None:
+        for key in ("secrets", "configs"):
+            for n, d in (cfg.get(key) or {}).items():
+                f = d.get("file") if isinstance(d, dict) else None
+                if (isinstance(d, dict) and (d.get("external") or d.get("environment"))) or (f and not _inside(str(f), self.project_dir)):
+                    self.out.append(f"{key} {n}: fora do projeto")
+                elif f:
+                    self.link(str(f), f"{key} {n}")
+        # volume: driver_opts monta pasta do host; rede: attachable deixa outro contêiner entrar
+        for key, what, driver, extra, bad in (("volumes", "volume", "local", "driver_opts", "externo ou com driver especial"),
+                                              ("networks", "rede", "bridge", "attachable", "externa ou especial")):
+            for n, d in (cfg.get(key) or {}).items():
+                d = d or {}
+                if d.get("external") or (d.get("driver") not in (None, driver)) or d.get(extra):
+                    self.out.append(f"{what} {n}: {bad}")
+                elif d.get("name") not in (None, f"{proj}_{n}"):  # `name:` pega um que já existe (o volume do gateway, a rede de outro projeto)
+                    self.out.append(f"{what} {n}: nome de outro dono ({d.get('name')})")
+
 def violations(cfg: dict, project_dir: str, allowed_binds: list[str] | None = None, allowed_contexts: list[str] | None = None,
                symlinks=frozenset(), forbidden_names=frozenset()) -> list[str]:
     """`forbidden_names`: nomes de projeto do compose que pertencem a outro serviço do Pi (o do Guardian é `deploy`): um projeto que se
     chamasse assim herdaria os volumes e as redes dele."""
-    allowed = [a.rstrip("/") or "/" for a in (allowed_binds or [])]
-    ctxs = [a.rstrip("/") or "/" for a in (allowed_contexts or [])]
-    out: list[str] = []
     if not isinstance(cfg, dict):
         return ["configuração ilegível"]
+    c = _Check(project_dir, allowed_binds, allowed_contexts, symlinks)
     proj = cfg.get("name")
     if proj is not None and (not isinstance(proj, str) or proj.lower() in forbidden_names):
-        out.append(f"nome de projeto do compose reservado ({proj})")
-
-    def link(path: str, what: str) -> None:
-        if _via_link(path, project_dir, symlinks):
-            out.append(f"{what} passa por link simbólico ({os.path.relpath(path, project_dir)})")
+        c.out.append(f"nome de projeto do compose reservado ({proj})")
     for name, svc in (cfg.get("services") or {}).items():
-        if not isinstance(svc, dict):
-            out.append(f"{name}: serviço ilegível")
-            continue
-        for k in _FORBID_TRUE:
-            if svc.get(k):
-                out.append(f"{name}: {k}")
-        for k in _FORBID_SET:
-            v = svc.get(k)
-            if v and not (k == "network_mode" and v == "none"):
-                out.append(f"{name}: {k}")
-        for o in svc.get("security_opt") or []:
-            if any(b in str(o) for b in _BAD_OPT):
-                out.append(f"{name}: security_opt {o}")
-        for v in svc.get("volumes") or []:
-            if not isinstance(v, dict):
-                out.append(f"{name}: volume ilegível")
-            elif v.get("type") == "bind" and not _allowed_bind(str(v.get("source", "")), project_dir, allowed):
-                out.append(f"{name}: monta {v.get('source')}")
-            elif v.get("type") == "bind":
-                link(str(v.get("source", "")), f"{name}: montagem")
-            elif v.get("type") not in ("bind", "volume", "tmpfs"):
-                out.append(f"{name}: volume do tipo {v.get('type')}")
-        for e in svc.get("env_file") or []:
-            path = e.get("path") if isinstance(e, dict) else e
-            if not isinstance(path, str) or not _inside(path, project_dir):
-                out.append(f"{name}: env_file {path}")
-            else:
-                link(path, f"{name}: env_file")
-        b = svc.get("build")
-        if isinstance(b, dict):
-            ctx = str(b.get("context", ""))
-            extra = b.get("additional_contexts") or {}
-            if isinstance(extra, list):  # forma "nome=valor"
-                extra = dict(str(x).split("=", 1) if "=" in str(x) else ("?", str(x)) for x in extra)
-            local = [str(v) for v in extra.values() if not str(v).startswith(_REMOTE_CTX)] if isinstance(extra, dict) else ["?"]
-            for c in [ctx, *local]:   # outra pasta do host no build seria copiada para dentro da imagem (/etc, segredos do Pi)
-                if not os.path.isabs(c) or not (_inside(c, project_dir) or any(_inside(c, x) for x in ctxs)):
-                    out.append(f"{name}: build fora do projeto ({c})")
-                else:
-                    link(c, f"{name}: build")
-            if b.get("privileged") or b.get("network") in ("host",):
-                out.append(f"{name}: build com privilégios ou rede do host")
-            if b.get("ssh"):  # repassaria as chaves SSH do root ao build
-                out.append(f"{name}: build com ssh")
-    for key in ("secrets", "configs"):
-        for n, d in (cfg.get(key) or {}).items():
-            f = d.get("file") if isinstance(d, dict) else None
-            if (isinstance(d, dict) and (d.get("external") or d.get("environment"))) or (f and not _inside(str(f), project_dir)):
-                out.append(f"{key} {n}: fora do projeto")
-            elif f:
-                link(str(f), f"{key} {n}")
-    for n, d in (cfg.get("volumes") or {}).items():
-        d = d or {}
-        if d.get("external") or (d.get("driver") not in (None, "local")) or d.get("driver_opts"):
-            out.append(f"volume {n}: externo ou com driver especial")
-        elif d.get("name") not in (None, f"{proj}_{n}"):  # `name:` pega um volume que já existe (o do gateway, o de outro projeto)
-            out.append(f"volume {n}: nome de outro dono ({d.get('name')})")
-    for n, d in (cfg.get("networks") or {}).items():
-        d = d or {}
-        if d.get("external") or (d.get("driver") not in (None, "bridge")) or d.get("attachable"):
-            out.append(f"rede {n}: externa ou especial")
-        elif d.get("name") not in (None, f"{proj}_{n}"):
-            out.append(f"rede {n}: nome de outro dono ({d.get('name')})")
-    return out
+        c.service(name, svc)
+    c.top_level(cfg, proj)
+    return c.out
