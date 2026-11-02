@@ -1,4 +1,5 @@
 """Servidor HTTP do gateway: só biblioteca padrão + cryptography, HTTP/1.0 (uma requisição por conexão)."""
+import gzip
 import hashlib
 import json
 import os
@@ -146,6 +147,15 @@ class Gateway:
             if os.path.exists(p):
                 with open(p, "rb") as f:
                     self.static[path] = (f.read(), ctype)
+        # Arquivos do site: identificador de versão (o navegador revalida e recebe 304 sem corpo) e cópia comprimida dos de texto,
+        # preparada uma vez. Antes cada abertura do site baixava ~200 KB inteiros pelo Funnel.
+        self.static_etag = {path: '"' + hashlib.sha256(body).hexdigest()[:16] + '"' for path, (body, _) in self.static.items()}
+        self.static_gz = {}
+        for path, (body, ctype) in self.static.items():
+            if not ctype.startswith("image/png"):
+                z = gzip.compress(body, compresslevel=9, mtime=0)
+                if len(z) < len(body) * 0.9:
+                    self.static_gz[path] = z
         h = hashlib.sha256()
         for path in sorted(self.static):
             h.update(path.encode() + b"|" + self.static[path][0])
@@ -220,7 +230,13 @@ class Gateway:
             if not self.l_static.allow(req.ip):
                 raise HttpError(429, "devagar")
             body, ctype = self.static[req.path]
-            return 200, body, {"Content-Type": ctype, "Cache-Control": "no-cache"}
+            etag = self.static_etag[req.path]
+            h = {"Content-Type": ctype, "Cache-Control": "no-cache", "ETag": etag, "Vary": "Accept-Encoding"}
+            if etag in [t.strip() for t in req.headers.get("If-None-Match", "").split(",")]:
+                return 304, b"", h
+            if req.path in self.static_gz and "gzip" in req.headers.get("Accept-Encoding", "").lower():
+                return 200, self.static_gz[req.path], {**h, "Content-Encoding": "gzip"}
+            return 200, body, h
         if not self.l_global.allow("g") or not self.l_ip.allow(req.ip):
             raise HttpError(429, "devagar")
         for method, rx, fn in self.routes:
@@ -392,8 +408,6 @@ class Gateway:
             raise HttpError(401, "assinatura do aparelho ausente")
         if abs(time.time() - int(ts)) > devauth.MAX_SKEW_S:
             raise HttpError(401, "relógio fora da janela")
-        if not self.l_dev.allow(dev):
-            raise HttpError(429, "devagar")
         try:
             sigb = b64.dec(sig)
         except ValueError:
@@ -402,6 +416,10 @@ class Gateway:
                else devauth.signing_string(req.method, req.raw_target, ts, nonce, req.body))
         if not devauth.verify(spki, msg, sigb):
             raise HttpError(401, "assinatura inválida")
+        # Depois da assinatura: quem não tem a chave do aparelho não gasta a cota dele (antes, lixo com o X-Dev de outro travava o canal).
+        # O limite por IP, antes de tudo, segura quem só manda lixo.
+        if not self.l_dev.allow(dev):
+            raise HttpError(429, "devagar")
         if self.nonces.seen(f"{dev}:{nonce}"):
             raise HttpError(401, "nonce repetido")
 
@@ -1422,8 +1440,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Build", self.server.gw.build)  # o site recarrega sozinho quando o servidor passa a servir outra versão
         if self.server.gw.cfg.secure_cookies:
             self.send_header("Strict-Transport-Security", "max-age=31536000")
-        if not ctype.startswith(("text/javascript", "text/css", "image/")):
-            self.send_header("Cache-Control", "no-store")
+        if not ctype.startswith(("text/javascript", "text/css", "image/")) and "ETag" not in headers:
+            self.send_header("Cache-Control", "no-store")   # respostas da API; os arquivos do site revalidam pelo ETag
         for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()

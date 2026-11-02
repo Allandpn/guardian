@@ -398,7 +398,7 @@ class Executor:
             return 0
         have = set(self.gw.call("GET", f"/v1/devices/{self.dev}/apks").get("have", []))
         sent = 0
-        for sha, o in want.items():
+        for sha in want:
             if sha in have:
                 continue
             file = os.path.join(self.cfg.deploy_dir, "apks", sha + ".apk")
@@ -581,7 +581,7 @@ class Executor:
         seen_dev: dict[str, dict] = {}  # tudo que cada aparelho consultou (bloqueado ou não)
         for ip, dev in clients.items():
             for q in self.pihole.queries(since, ip):
-                t = self._blocked_entry(per_dev.setdefault(dev, {}), q, canary)
+                self._blocked_entry(per_dev.setdefault(dev, {}), q, canary)
                 self._query_entry(seen_dev.setdefault(dev, {}), q, canary)
                 qt = q.get("time")
                 if isinstance(qt, (int, float)):

@@ -31,6 +31,47 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(c.call("GET", "/nada")[0], 404)
         self.assertEqual(c.call("POST", "/healthz", {})[0], 404)
 
+    def test_site_files_are_compressed_and_revalidated(self):
+        """O site não baixa ~200 KB inteiros a cada abertura: vai comprimido, e o navegador revalida pelo ETag (304 sem corpo)."""
+        import gzip
+        c = self.env.client()
+        st, body, r = c.call("GET", "/app.js")
+        self.assertEqual(st, 200)
+        etag = r.getheader("ETag")
+        self.assertTrue(etag and etag.startswith('"'))
+        self.assertEqual(r.getheader("Cache-Control"), "no-cache")
+        self.assertIsNone(r.getheader("Content-Encoding"))
+        st, gz, r = c.call("GET", "/app.js", headers={"Accept-Encoding": "gzip, br"})
+        self.assertEqual((st, r.getheader("Content-Encoding"), r.getheader("Vary")), (200, "gzip", "Accept-Encoding"))
+        self.assertEqual(gzip.decompress(gz), body)
+        self.assertLess(len(gz), len(body) // 2)
+        st, nothing, r = c.call("GET", "/app.js", headers={"If-None-Match": etag})
+        self.assertEqual((st, nothing), (304, {}))
+        self.assertIn("default-src 'none'", r.getheader("Content-Security-Policy"))
+        st, _, r = c.call("GET", "/", headers={"If-None-Match": '"outro"'})
+        self.assertEqual(st, 200)
+        self.assertNotEqual(r.getheader("Cache-Control"), "no-store")     # a página também revalida, em vez de baixar sempre
+        self.assertEqual(c.call("GET", "/healthz")[2].getheader("Cache-Control"), "no-store")   # a API continua sem cache
+
+    def test_junk_with_a_device_id_does_not_spend_its_quota(self):
+        """Quem não tem a chave do aparelho não esgota a cota dele (antes, lixo com o X-Dev de outro travava o canal)."""
+        from guardian.gateway.server import HttpError, Req
+        gw = self.env.srv.gw
+        old = gw.l_dev
+        try:
+            from guardian.gateway.limits import Limiter
+            gw.l_dev = Limiter(6, 3)
+            path = f"/v1/devices/{self.dev}/commands"
+            for i in range(10):
+                h = {"X-Dev": self.dev, "X-Ts": str(int(time.time())), "X-Nonce": f"lixo{i:06d}", "X-Sig": b64.enc(b"x" * 64)}
+                with self.assertRaises(HttpError) as e:
+                    gw.device(Req("GET", path, "", h, b"", "1.2.3.4", path), self.dev)
+                self.assertEqual(e.exception.status, 401)
+            st, _, _ = self.env.client().signed(self.key, "GET", path)
+            self.assertEqual(st, 200)
+        finally:
+            gw.l_dev = old
+
     def test_requires_login_and_origin(self):
         c = self.env.client()
         self.assertEqual(c.call("GET", "/v1/devices")[0], 401)
