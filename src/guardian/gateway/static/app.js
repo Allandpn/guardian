@@ -473,7 +473,7 @@ function deviceBanner(d, now) {
 }
 
 function segTabs(items, active) {
-  return h('nav', { class: 'seg', 'aria-label': 'Seções' }, items.map(([href, label, key]) => h('a', { href, class: key === active ? 'on' : '', 'aria-current': key === active ? 'page' : null }, label)));
+  return h('nav', { class: 'seg', 'aria-label': 'Abas desta seção' }, items.map(([href, label, key]) => h('a', { href, class: key === active ? 'on' : '', 'aria-current': key === active ? 'page' : null }, label)));
 }
 
 async function deviceView(id, tab) {

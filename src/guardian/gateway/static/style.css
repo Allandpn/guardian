@@ -157,7 +157,9 @@ form.f { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin:
 .st { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex: none; }
 .st.ok { background: var(--green); border-color: var(--green); color: var(--ink); }
 .st.cur { background: var(--orange); border-color: var(--orange); color: var(--ink); }
-.card.lock { border-style: dashed; opacity: .75; }
+/* passo ainda não alcançado: borda tracejada e título apagado, sem opacidade (ela derrubava o texto abaixo do contraste mínimo 4,5:1) */
+.card.lock { border-style: dashed; }
+.card.lock strong { color: var(--muted); font-weight: 500; }
 .card.done { background: var(--s2); }
 .fpb { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: .03em; text-align: center; padding: 16px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); margin: 10px 0; word-break: break-all; }
 .note { border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.45; margin: 10px 0; border: 1px solid var(--orange); background: color-mix(in srgb, var(--orange) 11%, transparent); }
