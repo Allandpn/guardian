@@ -319,54 +319,22 @@ class Deployer:
         return out
 
     def refresh_app_offers(self, force: bool = False) -> list[dict]:
+        """Releases dos apps (ou APKs numa pasta do Pi) viram ofertas de instalação em apk-offers.json; o APK fica guardado pelo SHA-256."""
         names = [n for n, p in self.reg.items() if p.get("type") == "android_app"]
         if not names or (not force and self.now() - self._app_ts < APP_REFRESH_S):
             return []
         self._app_ts = self.now()
         cache = self._load("apps-cache.json", {})
-        offers, errors, keep = [], [], set()
+        offers: list[dict] = []
+        errors: list[dict] = []
+        keep: set[str] = set()
         for name in names:
             proj = self.reg[name]
-            if proj.get("source") == "dir":   # APKs deixados à mão por root numa pasta do Pi (fora do GitHub)
-                try:
-                    offers.extend(self._dir_offers(name, proj, keep))
-                except OSError as e:
-                    errors.append({"app": name, "error": str(e)[:200]})
-                continue
             try:
-                token = None
-                if proj.get("token_file") and os.path.isfile(proj["token_file"]):
-                    token = open(proj["token_file"]).read().strip() or None
-                gh = self.github(token) if self.github else apps.GitHub(token)
-                rels = [r for r in gh.releases(proj["github"]) if isinstance(r, dict) and not r.get("draft")
-                        and (proj.get("prerelease") or not r.get("prerelease")) and str(r.get("tag_name", "")).startswith(proj.get("tag_prefix", ""))]
-                commit_of = {}
-                if proj.get("repo"):  # o commit de cada etiqueta, para dizer se a versão mexe em arquivos de segurança
-                    m = self._fetch_tags(name)
-                    commit_of = {tag: c for c, tag in self._tagged_commits(name, m).items()}
-                for i, rel in enumerate(rels[:3]):
-                    asset = apps.pick_asset(rel, proj.get("asset", r"\.apk$"))
-                    if not asset or int(asset.get("size", 0)) > apps.MAX_APK_BYTES:
-                        continue
-                    key = f"{name}:{asset['id']}"
-                    ent = cache.get(key)
-                    path = lambda sha: self._path("apks", sha + ".apk")
-                    if not ent or not os.path.isfile(path(ent["sha256"])):
-                        sha, size = gh.download(proj["github"], asset["id"], self._path("apks", f".dl-{asset['id']}"))
-                        os.replace(self._path("apks", f".dl-{asset['id']}"), path(sha))
-                        ent = cache[key] = {"sha256": sha, "size": size}
-                    keep.add(ent["sha256"])
-                    tag = rel["tag_name"]
-                    base = commit_of.get(rels[i + 1]["tag_name"]) if i + 1 < len(rels) else None
-                    m_ = self._mirror(name) if proj.get("repo") else None
-                    files = self.changed_files(name, m_, base, commit_of[tag]) if m_ and tag in commit_of else None
-                    sens = self.sensitive_of(name, files)
-                    body = (rel.get("body") or "").strip().splitlines()
-                    offers.append({"kind": "app", "app": name, "pkg": proj["pkg"], "tag": tag, "version_name": tag.lstrip("v")[:40],
-                                   "sha256": ent["sha256"], "size": ent["size"], "asset": asset["name"][:80],
-                                   "subject": (rel.get("name") or (body[0] if body else ""))[:80],
-                                   "author": str((rel.get("author") or {}).get("login", ""))[:40], "ts": apps.release_ts(rel),
-                                   "files": len(files) if files is not None else None, "sensitive": sens[:8], "sensitive_n": len(sens)})
+                if proj.get("source") == "dir":   # APKs deixados à mão por root numa pasta do Pi (fora do GitHub)
+                    offers.extend(self._dir_offers(name, proj, keep))
+                else:
+                    self._github_offers(name, proj, cache, keep, offers)   # vai acrescentando: o que já entrou fica, mesmo se a seguinte falhar
             except (OSError, ValueError, KeyError, RuntimeError, urllib.error.URLError) as e:
                 errors.append({"app": name, "error": str(e)[:200]})
         for f in os.listdir(self._path("apks")):   # só ficam os APKs das ofertas atuais
@@ -375,6 +343,46 @@ class Deployer:
         _atomic_write(self._path("apps-cache.json"), {k: v for k, v in cache.items() if v["sha256"] in keep})
         _atomic_write(self._path("apk-offers.json"), {"ts": int(self.now()), "offers": offers, "errors": errors})
         return offers
+
+    def _github_offers(self, name: str, proj: dict, cache: dict, keep: set, offers: list) -> None:
+        token = None
+        if proj.get("token_file") and os.path.isfile(proj["token_file"]):
+            token = open(proj["token_file"]).read().strip() or None
+        gh = self.github(token) if self.github else apps.GitHub(token)
+        rels = [r for r in gh.releases(proj["github"]) if isinstance(r, dict) and not r.get("draft")
+                and (proj.get("prerelease") or not r.get("prerelease")) and str(r.get("tag_name", "")).startswith(proj.get("tag_prefix", ""))]
+        commit_of = {}
+        if proj.get("repo"):  # o commit de cada etiqueta, para dizer se a versão mexe em arquivos de segurança
+            m = self._fetch_tags(name)
+            commit_of = {tag: c for c, tag in self._tagged_commits(name, m).items()}
+        for i, rel in enumerate(rels[:3]):
+            asset = apps.pick_asset(rel, proj.get("asset", r"\.apk$"))
+            if not asset or int(asset.get("size", 0)) > apps.MAX_APK_BYTES:
+                continue
+            ent = self._cached_apk(name, proj, gh, asset, cache)
+            keep.add(ent["sha256"])
+            tag = rel["tag_name"]
+            base = commit_of.get(rels[i + 1]["tag_name"]) if i + 1 < len(rels) else None   # comparada com a Release anterior
+            m_ = self._mirror(name) if proj.get("repo") else None
+            files = self.changed_files(name, m_, base, commit_of[tag]) if m_ and tag in commit_of else None
+            sens = self.sensitive_of(name, files)
+            body = (rel.get("body") or "").strip().splitlines()
+            offers.append({"kind": "app", "app": name, "pkg": proj["pkg"], "tag": tag, "version_name": tag.lstrip("v")[:40],
+                           "sha256": ent["sha256"], "size": ent["size"], "asset": asset["name"][:80],
+                           "subject": (rel.get("name") or (body[0] if body else ""))[:80],
+                           "author": str((rel.get("author") or {}).get("login", ""))[:40], "ts": apps.release_ts(rel),
+                           "files": len(files) if files is not None else None, "sensitive": sens[:8], "sensitive_n": len(sens)})
+
+    def _cached_apk(self, name: str, proj: dict, gh, asset: dict, cache: dict) -> dict:
+        """{sha256, size} do APK da Release: baixa só se ainda não está guardado."""
+        key = f"{name}:{asset['id']}"
+        ent = cache.get(key)
+        if not ent or not os.path.isfile(self._path("apks", ent["sha256"] + ".apk")):
+            tmp = self._path("apks", f".dl-{asset['id']}")
+            sha, size = gh.download(proj["github"], asset["id"], tmp)
+            os.replace(tmp, self._path("apks", sha + ".apk"))
+            ent = cache[key] = {"sha256": sha, "size": size}
+        return ent
 
     def refresh_offers(self) -> list[dict]:
         offers: list[dict] = []

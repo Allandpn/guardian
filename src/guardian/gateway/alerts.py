@@ -27,47 +27,60 @@ class Alerts:
         names = {}
         for d in self.store.devices():
             names[d["id"]] = d["name"]
-            name = d["name"]
             st = self.state.setdefault(d["id"], {"silent": None, "filter": None, "apps": None, "pend": None, "pihole": None})
             r = json.loads(d["report"]) if d["report"] else {}
             if not isinstance(r, dict):
                 r = {}
-            silent = now - (d["last_seen"] or d["created"]) > SILENT_S
-            if st["silent"] is not None and silent != st["silent"]:
-                notes.append(self._note(f"silent:{d['id']}", "Aparelho sem sinal" if silent else "Aparelho voltou",
-                                        f"{name} não consulta o gateway há mais de {SILENT_S // 60} min" if silent else f"{name} voltou a responder"))
-            st["silent"] = silent
-
+            self._silence(d, st, now, notes)
             if d["kind"] == "device":
-                fa = r.get("filterActive")
-                if isinstance(fa, bool):
-                    if st["filter"] is not None and fa != st["filter"]:
-                        why = str(r.get("filterReason", ""))[:120]
-                        notes.append(self._note(f"filter:{d['id']}", "Filtro caiu" if not fa else "Filtro voltou",
-                                                f"{name}: {why}" if not fa else f"{name}: filtro confirmado"))
-                    st["filter"] = fa
-                apps = {a["pkg"]: a for a in r.get("pendingApps", []) if isinstance(a, dict) and isinstance(a.get("pkg"), str)}
-                if st["apps"] is not None:
-                    for pkg in sorted(set(apps) - st["apps"]):
-                        a = apps[pkg]
-                        risks = a.get("risks") if isinstance(a.get("risks"), list) else []
-                        notes.append(self._note(f"app:{d['id']}:{pkg}", "App novo pendente",
-                                                f"{name}: {str(a.get('label') or pkg)[:60]}" + (" ⚠ " + ", ".join(map(str, risks[:3])) if risks else "")))
-                st["apps"] = set(apps)
-                pend = {(str(p.get("kind")), str(p.get("summary", ""))) for p in r.get("pending", []) if isinstance(p, dict)}
-                if st["pend"] is not None:
-                    for kind, summary in sorted(pend - st["pend"]):
-                        notes.append(self._note(f"pend:{d['id']}:{kind}", "Pedido de afrouxar",
-                                                f"{name}: {LOOSEN_KINDS.get(kind, kind)} — {summary[:100]}"))
-                st["pend"] = pend
+                self._device(d, st, r, notes)
             elif d["kind"] == "executor":
-                ok = r.get("pihole_ok")
-                if isinstance(ok, bool):
-                    if st["pihole"] is not None and ok != st["pihole"]:
-                        notes.append(self._note(f"pihole:{d['id']}", "Pi-hole inacessível" if not ok else "Pi-hole voltou",
-                                                f"{name}: " + (str(r.get("pihole_error", ""))[:120] if not ok else "respondendo")))
-                    st["pihole"] = ok
+                self._executor(d, st, r, notes)
+        self._new_requests(names, notes)
+        self._new_awaiting(names, notes)
+        return notes
 
+    # Cada parte compara o que vê agora com o que memorizou da rodada anterior; a 1ª vez (memória None) só memoriza.
+    def _silence(self, d, st: dict, now: int, notes: list) -> None:
+        name = d["name"]
+        silent = now - (d["last_seen"] or d["created"]) > SILENT_S
+        if st["silent"] is not None and silent != st["silent"]:
+            notes.append(self._note(f"silent:{d['id']}", "Aparelho sem sinal" if silent else "Aparelho voltou",
+                                    f"{name} não consulta o gateway há mais de {SILENT_S // 60} min" if silent else f"{name} voltou a responder"))
+        st["silent"] = silent
+
+    def _device(self, d, st: dict, r: dict, notes: list) -> None:
+        name = d["name"]
+        fa = r.get("filterActive")
+        if isinstance(fa, bool):
+            if st["filter"] is not None and fa != st["filter"]:
+                why = str(r.get("filterReason", ""))[:120]
+                notes.append(self._note(f"filter:{d['id']}", "Filtro caiu" if not fa else "Filtro voltou",
+                                        f"{name}: {why}" if not fa else f"{name}: filtro confirmado"))
+            st["filter"] = fa
+        apps = {a["pkg"]: a for a in r.get("pendingApps", []) if isinstance(a, dict) and isinstance(a.get("pkg"), str)}
+        if st["apps"] is not None:
+            for pkg in sorted(set(apps) - st["apps"]):
+                a = apps[pkg]
+                risks = a.get("risks") if isinstance(a.get("risks"), list) else []
+                notes.append(self._note(f"app:{d['id']}:{pkg}", "App novo pendente",
+                                        f"{name}: {str(a.get('label') or pkg)[:60]}" + (" ⚠ " + ", ".join(map(str, risks[:3])) if risks else "")))
+        st["apps"] = set(apps)
+        pend = {(str(p.get("kind")), str(p.get("summary", ""))) for p in r.get("pending", []) if isinstance(p, dict)}
+        if st["pend"] is not None:
+            for kind, summary in sorted(pend - st["pend"]):
+                notes.append(self._note(f"pend:{d['id']}:{kind}", "Pedido de afrouxar", f"{name}: {LOOSEN_KINDS.get(kind, kind)} — {summary[:100]}"))
+        st["pend"] = pend
+
+    def _executor(self, d, st: dict, r: dict, notes: list) -> None:
+        ok = r.get("pihole_ok")
+        if isinstance(ok, bool):
+            if st["pihole"] is not None and ok != st["pihole"]:
+                notes.append(self._note(f"pihole:{d['id']}", "Pi-hole inacessível" if not ok else "Pi-hole voltou",
+                                        f"{d['name']}: " + (str(r.get("pihole_error", ""))[:120] if not ok else "respondendo")))
+            st["pihole"] = ok
+
+    def _new_requests(self, names: dict, notes: list) -> None:
         reqs = {q["id"]: q for q in self.store.requests_open()}
         if self.seen_requests is not None:
             for rid in sorted(set(reqs) - self.seen_requests):
@@ -75,6 +88,7 @@ class Alerts:
                 notes.append(self._note(f"req:{rid}", "Pedido do usuário", f"{names.get(q['dev'], q['dev'])}: [{q['kind']}] {q['text'][:120]}"))
         self.seen_requests = set(reqs)
 
+    def _new_awaiting(self, names: dict, notes: list) -> None:
         aw = {c["id"]: c for c in self.store.awaiting()}
         if self.seen_awaiting is not None:
             for cid in sorted(set(aw) - self.seen_awaiting):
@@ -84,10 +98,9 @@ class Alerts:
                 except (ValueError, KeyError, TypeError):
                     kind = "?"
                 n = self._note(f"cosign:{cid}", "Co-assinatura pendente", f"{names.get(c['dev'], c['dev'])}: {kind}")
-                n["exclude"] = c["guardian"]
+                n["exclude"] = c["guardian"]   # quem mandou não precisa do aviso
                 notes.append(n)
         self.seen_awaiting = set(aw)
-        return notes
 
     @staticmethod
     def _note(tag: str, title: str, body: str) -> dict:
