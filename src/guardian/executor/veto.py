@@ -33,7 +33,7 @@ class Veto:
         self.path = gravity_path
         self.parents: list[str] = list(parents or [])  # sites vetados pelo mestre (o próprio domínio e tudo abaixo dele)
         self.lock = threading.Lock()
-        self._mtime = None
+        self._mtime: float | int | None = None
         self.listed: set[str] = set()   # domínios das listas
         self.above: set[str] = set()    # pais de algum domínio listado: liberá-los (com subdomínios) abriria o que está listado
         self.loaded = False
