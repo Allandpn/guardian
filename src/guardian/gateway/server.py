@@ -616,6 +616,7 @@ class Gateway:
             return False
 
     def post_command(self, req, dev):
+        """Recebe um comando assinado para um aparelho ou o executor: confere o que dá para conferir aqui e põe na fila dele."""
         gid = self.guardian(req)
         if not self.l_cmd.allow(gid):
             raise HttpError(429, "devagar")
@@ -630,60 +631,60 @@ class Gateway:
             signers = cmds.verify_sigs(trust, payload, env.get("sigs"))
         except (cmds.CommandError, ValueError) as e:
             raise HttpError(400, str(e))
-        allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES | (cmds.WIN_TYPES if self._is_windows(row) else set())
-        if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or cmd["type"] not in allowed:
-            raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
-        try:
-            cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
-        except cmds.CommandError as e:
-            raise HttpError(403, str(e))
-        if cmd["type"] == cmds.T_PROJECT_ADD:
-            try:
-                cmds.check_project_add_args(cmd["args"])
-            except cmds.CommandError as e:
-                raise HttpError(400, str(e))
-        if cmd["type"] == cmds.T_DEPLOY:
-            try:
-                cmds.check_deploy_args(cmd["args"])
-            except cmds.CommandError as e:
-                raise HttpError(400, str(e))
-        if cmd["type"] == cmds.T_INSTALL_APP:
-            try:
-                cmds.check_install_args(cmd["args"])
-            except cmds.CommandError as e:
-                raise HttpError(400, str(e))
-            if row["kind"] != "device" or self._is_windows(row):
-                raise HttpError(400, "só aparelhos Android recebem instalação de app")
-            if not self.store.has_apk(cmd["args"]["sha256"]):  # evita gastar o contador e travar a fila do aparelho esperando um arquivo que não chegou
-                raise HttpError(409, "o APK ainda não chegou ao gateway: espere o Pi enviá-lo (até ~1 min) e tente de novo")
-        if cmd["type"] in cmds.WIN_TYPES:
-            try:
-                cmds.check_win_args(cmd["type"], cmd["args"], time.time(), creating=True)
-            except cmds.CommandError as e:
-                raise HttpError(400, str(e))
-        if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
-            raise HttpError(429, "fila cheia")
-        if cmd["type"] == "approve_app" and isinstance(cmd["args"].get("pkg"), str) and self.store.is_app_vetoed(dev, cmd["args"]["pkg"]):
-            raise HttpError(403, "app vetado pelo guardião-mor")
+        self._check_command(row, dev, gid, cmd, signers, trust)
         ready = cmd["type"] in cmds.GUARDIAN_TYPES or len(signers & trust.admins()) >= cmds.required_signers(trust, cmd)
         cid = self.store.enqueue(dev, gid, cmd["ctr"], {"payload": env["payload"], "sigs": env["sigs"]}, ready)
         if cid is None:
             raise HttpError(409, "contador repetido")
         self.store.audit(dev, "queued", f"{gid}: {cmd['type']}" + ("" if ready else " (aguarda 2º guardião)"))
-        pkg = cmd["args"].get("pkg")
-        if ready and isinstance(pkg, str) and re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg):
-            if cmd["type"] == "approve_app":
-                self.store.record_approval(dev, pkg, gid)  # para o guardião ver o que aprovou e poder revogar
-            elif cmd["type"] == "revoke_app":
-                self.store.drop_approval(dev, pkg)
-        if ready and cmd["type"] == "pihole_batch":
-            self._note_origins(cmd["args"])
-        if ready and cmd["type"] == cmds.T_INSTALL_APP:
-            self.store.grant_apk(dev, cmd["args"]["sha256"], cmd["args"]["pkg"])   # a partir daqui este aparelho pode baixar este APK
         if ready:
-            self._after_ready(cmd, gid)
-            self._wake()
+            self._on_ready(dev, gid, cmd)
         return 200, {"id": cid, "status": "ready" if ready else "awaiting"}, {}
+
+    # Argumentos que o gateway confere antes de enfileirar (o aparelho e o executor conferem de novo).
+    _ARG_CHECKS = {cmds.T_PROJECT_ADD: cmds.check_project_add_args, cmds.T_DEPLOY: cmds.check_deploy_args, cmds.T_INSTALL_APP: cmds.check_install_args}
+
+    def _check_command(self, row, dev: str, gid: str, cmd: dict, signers: set, trust: cmds.Trust) -> None:
+        t, a = cmd["type"], cmd["args"]
+        allowed = EXECUTOR_TYPES if row["kind"] == "executor" else DEVICE_TYPES | (cmds.WIN_TYPES if self._is_windows(row) else set())
+        if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or t not in allowed:
+            raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
+        try:
+            cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
+        except cmds.CommandError as e:
+            raise HttpError(403, str(e))
+        try:
+            if t in self._ARG_CHECKS:
+                self._ARG_CHECKS[t](a)
+            if t in cmds.WIN_TYPES:
+                cmds.check_win_args(t, a, time.time(), creating=True)
+        except cmds.CommandError as e:
+            raise HttpError(400, str(e))
+        if t == cmds.T_INSTALL_APP:
+            if row["kind"] != "device" or self._is_windows(row):
+                raise HttpError(400, "só aparelhos Android recebem instalação de app")
+            if not self.store.has_apk(a["sha256"]):  # evita gastar o contador e travar a fila do aparelho esperando um arquivo que não chegou
+                raise HttpError(409, "o APK ainda não chegou ao gateway: espere o Pi enviá-lo (até ~1 min) e tente de novo")
+        if self.store.pending_count(dev) >= self.cfg.max_pending_per_dev:
+            raise HttpError(429, "fila cheia")
+        if t == "approve_app" and isinstance(a.get("pkg"), str) and self.store.is_app_vetoed(dev, a["pkg"]):
+            raise HttpError(403, "app vetado pelo guardião-mor")
+
+    def _on_ready(self, dev: str, gid: str, cmd: dict) -> None:
+        """O comando já tem as assinaturas que precisa: efeitos no gateway e acordar quem espera na fila."""
+        t, a = cmd["type"], cmd["args"]
+        pkg = a.get("pkg")
+        if isinstance(pkg, str) and re.fullmatch(r"[A-Za-z0-9._]{1,200}", pkg):
+            if t == "approve_app":
+                self.store.record_approval(dev, pkg, gid)  # para o guardião ver o que aprovou e poder revogar
+            elif t == "revoke_app":
+                self.store.drop_approval(dev, pkg)
+        if t == "pihole_batch":
+            self._note_origins(a)
+        if t == cmds.T_INSTALL_APP:
+            self.store.grant_apk(dev, a["sha256"], a["pkg"])   # a partir daqui este aparelho pode baixar este APK
+        self._after_ready(cmd, gid)
+        self._wake()
 
     # --- APKs ---------------------------------------------------------------------------------------
     @property
@@ -905,6 +906,7 @@ class Gateway:
                 "count": r["count"], "first": r["first"], "last": r["last"]}
 
     def resolve(self, req, rid):
+        """Resolve um pedido do aparelho: liberação de domínios (o guardião já mandou o lote assinado) ou pedido de administrador."""
         gid = self.guardian(req)
         if not self.l_cmd.allow(gid):
             raise HttpError(429, "devagar")
@@ -916,28 +918,8 @@ class Gateway:
             raise HttpError(404, "pedido não encontrado ou já resolvido")
         open_domains = {i["domain"] for i in self.store.request_items(row["id"]) if i["state"] == "open"}
         states: dict[str, tuple[str, int | None]] = {}
-        cid = d.get("cmd")
-        if cid is not None:
-            c = self.store.command(cid) if isinstance(cid, int) and not isinstance(cid, bool) else None
-            ex = self.store.device(c["dev"]) if c else None
-            if not c or c["guardian"] != gid or not ex or ex["kind"] != "executor":
-                raise HttpError(400, "comando não confere")
-            try:
-                cmd = cmds.parse_payload(b64.dec(json.loads(c["envelope"])["payload"]))
-            except (cmds.CommandError, ValueError, KeyError):
-                raise HttpError(400, "comando ilegível")
-            if cmd["type"] != "pihole_batch":
-                raise HttpError(400, "comando não é uma liberação")
-            for it in cmd["args"].get("items", []):
-                try:
-                    dom = normalize_domain(it.get("domain"))
-                except (ValueError, AttributeError):
-                    continue
-                if it.get("deny") is True:
-                    continue
-                for od in open_domains:  # liberar o domínio ou um pai dele (o guardião pode encurtar antes de assinar)
-                    if od == dom or od.endswith("." + dom):
-                        states[od] = ("allowed", it.get("ttl_s") if isinstance(it.get("ttl_s"), int) else None)
+        if d.get("cmd") is not None:
+            states.update(self._allowed_by_batch(gid, d["cmd"], open_domains))
         deny = d.get("deny", [])
         if not isinstance(deny, list) or len(deny) > REQUEST_DOMAINS_MAX:
             raise HttpError(400, "lista de negados inválida")
@@ -952,6 +934,31 @@ class Gateway:
                 self.store.note_origin(od, row["dev"])
         self.store.audit(row["dev"], "request", f"{gid}: " + ", ".join(f"{k} {v[0]}" for k, v in sorted(states.items()))[:250])
         return 200, {"ok": True}, {}
+
+    def _allowed_by_batch(self, gid: str, cid, open_domains: set) -> dict[str, tuple[str, int | None]]:
+        """Os domínios do pedido que o lote assinado por ESTE guardião para o executor libera (o domínio ou um pai dele)."""
+        c = self.store.command(cid) if isinstance(cid, int) and not isinstance(cid, bool) else None
+        ex = self.store.device(c["dev"]) if c else None
+        if not c or c["guardian"] != gid or not ex or ex["kind"] != "executor":
+            raise HttpError(400, "comando não confere")
+        try:
+            cmd = cmds.parse_payload(b64.dec(json.loads(c["envelope"])["payload"]))
+        except (cmds.CommandError, ValueError, KeyError):
+            raise HttpError(400, "comando ilegível")
+        if cmd["type"] != "pihole_batch":
+            raise HttpError(400, "comando não é uma liberação")
+        states: dict[str, tuple[str, int | None]] = {}
+        for it in cmd["args"].get("items", []):
+            try:
+                dom = normalize_domain(it.get("domain"))
+            except (ValueError, AttributeError):
+                continue
+            if it.get("deny") is True:
+                continue
+            for od in open_domains:  # liberar o domínio ou um pai dele (o guardião pode encurtar antes de assinar)
+                if od == dom or od.endswith("." + dom):
+                    states[od] = ("allowed", it.get("ttl_s") if isinstance(it.get("ttl_s"), int) else None)
+        return states
 
     def _resolve_admin(self, req, gid: str, row, d: dict):
         """Aprova um pedido de instalação ou de comando: o guardião-mor já enviou o comando assinado que faz exatamente o que foi pedido."""

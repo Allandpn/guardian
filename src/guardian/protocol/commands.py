@@ -126,62 +126,72 @@ def _win_text(args: dict, key: str, lo: int, hi: int, required: bool = True) -> 
     return v
 
 
+def _check_win_source(args: dict) -> None:
+    source = args.get("source")
+    if source == "winget":
+        if not _WINGET_ID.match(_win_text(args, "id", 3, 101)):
+            raise CommandError("id do winget inválido")
+        if args.get("version") is not None and not _VERSION.match(_win_text(args, "version", 1, 41)):
+            raise CommandError("versão inválida")
+    elif source == "url":
+        url = _win_text(args, "url", 12, 500)
+        m = re.match(r"^https://([^/?#:@\s]+)(/[^\s]*)?$", url)
+        if not m or not _HOST.match(m.group(1).lower()):
+            raise CommandError("o instalador precisa de um endereço https com nome de domínio")
+        if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
+            raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
+        if args.get("kind") not in ("msi", "exe"):
+            raise CommandError("tipo do instalador deve ser msi ou exe")
+        _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+    elif source == "file":
+        # Um instalador que já está no computador (baixado antes). O agente o copia para uma pasta protegida ANTES de conferir o hash,
+        # então trocar o arquivo depois da aprovação não adianta. `publisher` (opcional) exige assinatura digital válida desse nome.
+        path = _win_text(args, "path", 4, 400)
+        if not _WIN_PATH.match(path) or ".." in path.replace("/", "\\").split("\\"):
+            raise CommandError("caminho inválido (use um caminho completo com letra de unidade, como C:\\Users\\...)")
+        ext = path.lower().rsplit(".", 1)[-1]
+        if ext not in ("msi", "exe") or args.get("kind") != ext:
+            raise CommandError("o arquivo precisa ser .msi ou .exe e o tipo tem de combinar com a extensão")
+        if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
+            raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
+        _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+        if args.get("publisher") is not None:
+            _win_text(args, "publisher", 1, 120)
+    else:
+        raise CommandError("origem do programa inválida")
+
+
+def _check_win_install(args: dict) -> None:
+    _win_text(args, "name", 1, 80)
+    ti = args.get("timeout_s")
+    if ti is not None and (not isinstance(ti, int) or isinstance(ti, bool) or not 60 <= ti <= 3600):
+        raise CommandError("tempo limite da instalação de 60 s a 1 h")
+    idle = args.get("idle_s")   # desistir se o instalador ficar parado (sem CPU nem disco) por tanto tempo; 0 desliga
+    if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or not (idle == 0 or 30 <= idle <= 1800)):
+        raise CommandError("tempo parado de 30 s a 30 min, ou 0 para desligar")
+    _check_win_source(args)
+
+
+def _check_win_run(args: dict) -> None:
+    if args.get("shell", "powershell") != "powershell":
+        raise CommandError("só PowerShell")
+    script = args.get("script")
+    if not isinstance(script, str) or not script.strip() or "\x00" in script or len(script.encode("utf-8")) > WIN_MAX_SCRIPT_BYTES:
+        raise CommandError(f"script inválido (até {WIN_MAX_SCRIPT_BYTES} bytes)")
+    _win_text(args, "name", 0, 80, required=False)
+    t = args.get("timeout_s", 600)
+    if not isinstance(t, int) or isinstance(t, bool) or not 5 <= t <= 3600:
+        raise CommandError("tempo limite de 5 s a 1 h")
+
+
 def check_win_request(type_: str, args: dict) -> None:
     """Valida o que o programa ou script faz (o que a pessoa pede e o guardião aprova). Sem a validade (`not_after`)."""
     if not isinstance(args, dict):
         raise CommandError("argumentos inválidos")
-    if type_ == T_WIN_INSTALL:
-        _win_text(args, "name", 1, 80)
-        ti = args.get("timeout_s")
-        if ti is not None and (not isinstance(ti, int) or isinstance(ti, bool) or not 60 <= ti <= 3600):
-            raise CommandError("tempo limite da instalação de 60 s a 1 h")
-        idle = args.get("idle_s")   # desistir se o instalador ficar parado (sem CPU nem disco) por tanto tempo; 0 desliga
-        if idle is not None and (not isinstance(idle, int) or isinstance(idle, bool) or not (idle == 0 or 30 <= idle <= 1800)):
-            raise CommandError("tempo parado de 30 s a 30 min, ou 0 para desligar")
-        source = args.get("source")
-        if source == "winget":
-            if not _WINGET_ID.match(_win_text(args, "id", 3, 101)):
-                raise CommandError("id do winget inválido")
-            if args.get("version") is not None and not _VERSION.match(_win_text(args, "version", 1, 41)):
-                raise CommandError("versão inválida")
-        elif source == "url":
-            url = _win_text(args, "url", 12, 500)
-            m = re.match(r"^https://([^/?#:@\s]+)(/[^\s]*)?$", url)
-            if not m or not _HOST.match(m.group(1).lower()):
-                raise CommandError("o instalador precisa de um endereço https com nome de domínio")
-            if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
-                raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
-            if args.get("kind") not in ("msi", "exe"):
-                raise CommandError("tipo do instalador deve ser msi ou exe")
-            _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
-        elif source == "file":
-            # Um instalador que já está no computador (baixado antes). O agente o copia para uma pasta protegida ANTES de conferir o hash,
-            # então trocar o arquivo depois da aprovação não adianta. `publisher` (opcional) exige assinatura digital válida desse nome.
-            path = _win_text(args, "path", 4, 400)
-            if not _WIN_PATH.match(path) or ".." in path.replace("/", "\\").split("\\"):
-                raise CommandError("caminho inválido (use um caminho completo com letra de unidade, como C:\\Users\\...)")
-            ext = path.lower().rsplit(".", 1)[-1]
-            if ext not in ("msi", "exe") or args.get("kind") != ext:
-                raise CommandError("o arquivo precisa ser .msi ou .exe e o tipo tem de combinar com a extensão")
-            if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
-                raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
-            _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
-            if args.get("publisher") is not None:
-                _win_text(args, "publisher", 1, 120)
-        else:
-            raise CommandError("origem do programa inválida")
-    elif type_ == T_WIN_RUN:
-        if args.get("shell", "powershell") != "powershell":
-            raise CommandError("só PowerShell")
-        script = args.get("script")
-        if not isinstance(script, str) or not script.strip() or "\x00" in script or len(script.encode("utf-8")) > WIN_MAX_SCRIPT_BYTES:
-            raise CommandError(f"script inválido (até {WIN_MAX_SCRIPT_BYTES} bytes)")
-        _win_text(args, "name", 0, 80, required=False)
-        t = args.get("timeout_s", 600)
-        if not isinstance(t, int) or isinstance(t, bool) or not 5 <= t <= 3600:
-            raise CommandError("tempo limite de 5 s a 1 h")
-    else:
+    check = {T_WIN_INSTALL: _check_win_install, T_WIN_RUN: _check_win_run}.get(type_)
+    if check is None:
         raise CommandError("comando do Windows desconhecido")
+    check(args)
 
 
 def check_win_args(type_: str, args: dict, now: float | None = None, creating: bool = False) -> None:
