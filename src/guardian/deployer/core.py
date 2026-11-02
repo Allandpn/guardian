@@ -98,7 +98,8 @@ class Deployer:
             return default
 
     def _env(self, proj: dict):
-        env = dict(os.environ)
+        # Ambiente montado do zero: nada do ambiente do processo (GIT_*, DOCKER_*, proxies) muda o que o git e o docker fazem como root.
+        env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
         if proj.get("ssh_key"):
             env["GIT_SSH_COMMAND"] = f"ssh -i {proj['ssh_key']} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
         env["GIT_TERMINAL_PROMPT"] = "0"
@@ -110,7 +111,8 @@ class Deployer:
                 env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraheader",
                            GIT_CONFIG_VALUE_0="Authorization: Basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode())
         env["GIT_CONFIG_GLOBAL"] = self._path("gitconfig")  # só do deployer: aceita repositórios de outro usuário (inclusive em git-upload-pack)
-        env.setdefault("HOME", self.state_dir)
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["HOME"] = os.environ.get("HOME") or self.state_dir   # o do root (credenciais do docker, known_hosts do ssh)
         return env
 
     def _git(self, name: str, *args, cwd=None) -> tuple[int, str]:
@@ -157,6 +159,30 @@ class Deployer:
                 if why:
                     return why
         return None
+
+    def _escaping_links(self, name: str) -> set[str]:
+        """Links simbólicos que já estão na pasta de deploy e apontam para fora dela (inclusive um que um contêiner criou numa pasta montada):
+        caminhos relativos ao projeto. A política recusa a versão cujo compose passe por um deles."""
+        proj = self.reg[name]
+        top = proj.get("workdir")
+        if not top or not os.path.isdir(top):
+            return set()
+        roots = [os.path.realpath(r) for r in (top, *(proj.get("allowed_binds") or []), *(proj.get("allowed_contexts") or []))]
+        out = set()
+        for root, dirs, files in os.walk(top):
+            dirs[:] = [x for x in dirs if x != ".git" or os.path.islink(os.path.join(root, x))]   # o conteúdo do .git não é montado
+            for n in dirs + files:
+                p = os.path.join(root, n)
+                if os.path.islink(p) and not any(policy._inside(os.path.realpath(p), r) for r in roots):
+                    out.add(os.path.relpath(p, top))
+        return out
+
+    def _reserved_compose_names(self, name: str) -> set[str]:
+        """Nomes de projeto do compose de OUTROS serviços do Pi (o Guardian sobe como `deploy`): usá-los daria os volumes e redes deles."""
+        own = {name.lower(), os.path.basename(str(self.reg[name].get("workdir", "")).rstrip("/")).lower()}
+        names = {"deploy"} | {n.lower() for n in self.reg}
+        names |= {os.path.basename(str(p.get("workdir", "")).rstrip("/")).lower() for p in self.reg.values() if p.get("workdir")}
+        return {n for n in names - own if n}
 
     def _mirror(self, name: str) -> str:
         return self._path("mirrors", name + ".git")
@@ -231,12 +257,17 @@ class Deployer:
                 return [f"não consegui ler a versão: {out[-100:]}"]
             pdir = os.path.join(tmp, "p")
             os.makedirs(pdir)
+            links: set[str] = set()
             with tarfile.open(tar) as t:
                 for mem in t.getmembers():  # só arquivos e pastas dentro do projeto (sem links nem caminhos absolutos)
                     n = os.path.normpath(mem.name)
+                    if mem.issym() or mem.islnk():
+                        links.add(n)   # não é extraído, mas o checkout de verdade o recria: a política recusa caminho que passe por ele
+                        continue
                     if not (mem.isfile() or mem.isdir()) or n.startswith(("/", "..")):
                         continue
                     t.extract(mem, pdir)
+            links |= self._escaping_links(name)
             env = os.path.join(proj["workdir"], ".env")
             if os.path.isfile(env):
                 shutil.copy(env, os.path.join(pdir, ".env"))
@@ -249,7 +280,8 @@ class Deployer:
                 cfg = json.loads(out)
             except ValueError:
                 return ["saída do compose ilegível"]
-            return policy.violations(cfg, pdir, proj.get("allowed_binds"), proj.get("allowed_contexts"))
+            return policy.violations(cfg, pdir, proj.get("allowed_binds"), proj.get("allowed_contexts"),
+                                     symlinks=frozenset(links), forbidden_names=frozenset(self._reserved_compose_names(name)))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

@@ -135,6 +135,13 @@ class RegexAllow(unittest.TestCase):
         self.assertNotIn(domains.to_regex("exemplo.com"), self.fake.regex["allow"])
         self.assertEqual(list(self.ex.failed), ["exemplo.com"])
 
+    def test_06_a_whole_public_suffix_is_never_released(self):
+        self.send("pihole_batch", {"items": [{"domain": "com.br"}, {"domain": "www.com.br"}, {"domain": "co.uk"}, {"domain": "loja.com.br"}]})
+        for d in ("com.br", "co.uk"):
+            self.assertNotIn(domains.to_regex(d), self.fake.regex["allow"], d)
+        self.assertIn(domains.to_regex("loja.com.br"), self.fake.regex["allow"])
+        self.assertEqual(sorted(self.ex.failed), ["co.uk", "com.br", "www.com.br"])
+
 
 if __name__ == "__main__":
     unittest.main()

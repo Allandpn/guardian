@@ -41,6 +41,11 @@ exige editar esse arquivo como root (ainda não há comando assinado para isso).
 
 ## Limites desta primeira versão
 
+- A política do compose (`deployer/policy.py`) recusa: privilégios, rede/PID/IPC do host, dispositivos, pasta do host fora do projeto (inclusive
+  por link simbólico da versão ou deixado na pasta de deploy), contexto de build fora do projeto (`context` e `additional_contexts`), `ssh` no
+  build, segredo lido do ambiente, volume ou rede com `name:` de outro dono e projeto do compose com o nome de outro serviço (o Guardian é `deploy`).
+  Mudar a política exige reinstalar o deployer como root (decisão 53).
+
 - A etiqueta e o commit vêm de quem desenvolve: o mestre aprova **o que o deployer mostra**, e a lista de arquivos de segurança é a defesa.
   Mantenha a lista `sensitive` completa (verificação de assinatura, papéis, janelas, veto, o próprio deploy).
 - Os testes automáticos rodam fora do Pi (GitHub Actions ou na sessão); o deployer não os executa. A saúde pós-deploy e a reversão

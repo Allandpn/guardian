@@ -209,6 +209,8 @@ class Executor:
             raise ValueError("o domínio-canário não pode ser alterado")
         if allow and canary and self.cfg.allow_mode == "regex" and canary.endswith("." + domains.rule_domain(d)):
             raise ValueError("a liberação cobriria o domínio-canário")  # a regex inclui os subdomínios
+        if allow and (domains.is_public_suffix(d) or domains.is_public_suffix(domains.rule_domain(d))):
+            raise ValueError("não se libera um sufixo inteiro (como com.br)")  # www.com.br vira a regra de com.br inteiro
         if allow:
             why = self.veto.reason(d, self.cfg.allow_mode == "regex")
             if why:
