@@ -19,6 +19,15 @@ Um terceiro papel, `master`, fecha a brecha de um guardião-mor criar outro (ele
 
 Enquanto **não existe mestre**, vale o modo antigo: incluir e remover guardiões é do guardião-mor, com duas assinaturas se houver dois. A única mudança de papel possível nesse modo é `set_role {id, role: "master"}` de um guardião-mor, **com uma assinatura** (é a montagem do sistema), enviada a cada aparelho e ao executor. A brecha não reabre: depois do primeiro mestre, só mestre muda papéis. O gateway muda o papel no próprio banco quando o comando fica pronto. Depois da promoção a regra antiga some.
 
+### Aparelho que ainda não conhece o mestre (2026-11-02)
+
+Um aparelho pareado antes da promoção (ou que perdeu a promoção) não conhece mestre nenhum e recusa o comando dele (autor desconhecido).
+Como o gateway já tem mestre, o guardião-mor também era barrado ao tentar incluí-lo: ninguém levava o mestre até o aparelho. O gateway
+aceita agora, **só nesse caso**, que um guardião-mor que o aparelho conhece **apresente o mestre**: `add_guardian` com exatamente o mestre
+do gateway (mesmo nome, papel, janela, regra de sincronização e uma passkey dele), num aparelho cujo relatório não mostra mestre. Quem decide
+é o aparelho, no modo antigo. Na tela Guardiões o botão aparece como **Apresentar o mestre**; depois, o próprio mestre toca em **Propagar**
+para levar as outras passkeys. O mestre que o aparelho não conhece vê quem pode apresentá-lo, em vez de um botão que seria recusado.
+
 O quórum depende do **autor**: autor mestre = uma assinatura; senão vale o modo antigo (duas assinaturas só para remover guardião ou passkey). Por isso uma promoção que ainda está em andamento em outros destinos continua válida depois de o gateway já ter promovido o alvo.
 
 ---

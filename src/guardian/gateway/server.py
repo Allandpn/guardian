@@ -650,7 +650,11 @@ class Gateway:
         if cmd["dev"] != dev or cmd["guardian"] != gid or gid not in signers or t not in allowed:
             raise HttpError(400, "comando não confere com o destino, o autor ou o tipo")
         try:
-            cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
+            if self._introduces_master(row, cmd, trust):   # a regra "só o mestre inclui guardiões" travaria a apresentação dele
+                if not cmds.in_window(trust.guardians[gid].window, time.time()):
+                    raise cmds.CommandError("fora da janela de horário deste guardião")
+            else:
+                cmds.check_author(trust, cmd)  # papel e janela de horário (o aparelho e o executor conferem de novo, com o relógio deles)
         except cmds.CommandError as e:
             raise HttpError(403, str(e))
         try:
@@ -669,6 +673,31 @@ class Gateway:
             raise HttpError(429, "fila cheia")
         if t == "approve_app" and isinstance(a.get("pkg"), str) and self.store.is_app_vetoed(dev, a["pkg"]):
             raise HttpError(403, "app vetado pelo guardião-mor")
+
+    @staticmethod
+    def _introduces_master(row, cmd: dict, trust: cmds.Trust) -> bool:
+        """Um guardião-mor apresentando o mestre a um aparelho que ainda não conhece mestre nenhum.
+
+        Depois que existe um mestre, só ele inclui guardiões. Mas o aparelho que ainda não o conhece recusa o comando dele (autor
+        desconhecido), e o guardião-mor era barrado aqui: ninguém conseguia levar o mestre até o aparelho. Vale só para incluir
+        exatamente um mestre do gateway (mesmo nome, papel, janela, regra de sincronização e uma passkey dele), assinado por um
+        guardião-mor que o aparelho conhece, num aparelho cujo relatório não mostra mestre. Quem decide é o aparelho (modo antigo)."""
+        a = cmd["args"]
+        if cmd["type"] != cmds.T_ADD_GUARDIAN or not isinstance(a, dict):
+            return False
+        try:
+            rep = json.loads(row["report"] or "{}")
+        except ValueError:
+            return False
+        roles, known = rep.get("roles"), rep.get("trust")
+        if not isinstance(roles, dict) or not isinstance(known, dict) or cmds.ROLE_MASTER in roles.values():
+            return False
+        author, m = trust.guardians.get(cmd["guardian"]), trust.guardians.get(a.get("id"))
+        if author is None or author.role != cmds.ROLE_ADMIN or cmd["guardian"] not in known or a.get("id") in known:
+            return False
+        return (m is not None and m.role == cmds.ROLE_MASTER and a.get("role") == cmds.ROLE_MASTER and a.get("name") == m.name
+                and isinstance(a.get("cred"), str) and m.creds.get(a["cred"]) == a.get("spki")
+                and a.get("allow_sync") is m.allow_sync and a.get("window") == m.window)
 
     def _on_ready(self, dev: str, gid: str, cmd: dict) -> None:
         """O comando já tem as assinaturas que precisa: efeitos no gateway e acordar quem espera na fila."""
