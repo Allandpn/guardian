@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from authenticator import command, envelope  # noqa: E402
 from gwharness import Env  # noqa: E402
 from guardian.agent import actions  # noqa: E402
+from guardian.agent import agent as agent_mod  # noqa: E402
 from guardian.agent.agent import Agent, AgentConfig, pair  # noqa: E402
 from guardian.agent.ui import UiServer  # noqa: E402
 from guardian.protocol import commands as cmds  # noqa: E402
@@ -342,6 +343,20 @@ class AgentEndToEnd(unittest.TestCase):
         self.ag.step(wait_s=0)
         self.assertFalse(self.last()["ok"])                                # ...mas o agente não faz
         self.assertIn("não suportado", self.last()["msg"])
+
+    def test_10b_ui_keeps_this_pc_blocks_when_another_device_is_noisy(self):
+        """O limite da lista local vale por parte: os bloqueios deste PC não saem por causa de um celular que bloqueia muito."""
+        from unittest import mock
+        other = [{"dev": "x" * 20, "domain": f"d{i}.exemplo.net", "src": "own", "list": "", "count": 1, "last": 2000 - i} for i in range(400)]
+        mine = [{"dev": self.dev, "domain": "sketchup.exemplo.com", "src": "own", "list": "", "count": 3, "last": 10}]
+
+        def fake(method, path, body=None):
+            return {"items": other + mine, "devices": []} if "/blocked" in path else {"requests": [], "admin": []}
+        with mock.patch.object(self.ag.gw, "call", side_effect=fake):
+            st = self.ag.ui_state()
+        domains_ = [b["domain"] for b in st["blocked"]]
+        self.assertIn("sketchup.exemplo.com", domains_)
+        self.assertEqual(sum(1 for b in st["blocked"] if b["dev"] != self.dev), agent_mod.UI_BLOCKED_MAX)
 
     def test_10_local_ui_state_and_requests(self):
         self.ag.gw.call("POST", f"/v1/devices/{self.dev}/report", {"kind": "device", "platform": "windows"})
