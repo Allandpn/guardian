@@ -18,7 +18,7 @@ from ..executor.runner import GatewayClient, GatewayError, State, load_or_create
 from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import actions
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 REPORT_EVERY_S = actions._env_int("GUARDIAN_AGENT_REPORT_EVERY_S", 60)
 RUNS_KEEP = 6
 RUN_OUT_REPORT = 3000
@@ -205,8 +205,11 @@ class Agent:
                "busy": dict(self.current) if self.current else None}
         try:
             b = self.gw.call("GET", f"/v1/devices/{self.dev}/blocked?scope=all")   # todos os aparelhos, regras próprias e listas
-            out["blocked"] = [{**{k: i[k] for k in ("dev", "domain", "src", "list", "count", "last")}, "name": i.get("name", "")}
-                              for i in b.get("items", [])][:UI_BLOCKED_MAX]
+            rows = [{**{k: i[k] for k in ("dev", "domain", "src", "list", "count", "last")}, "name": i.get("name", "")}
+                    for i in b.get("items", [])]
+            # O limite vale por parte: os deste computador (os únicos que ele pode pedir) e os dos outros aparelhos. Um celular que
+            # bloqueia muito não tira daqui o que o próprio computador bloqueou.
+            out["blocked"] = [r for r in rows if r["dev"] == self.dev][:UI_BLOCKED_MAX] + [r for r in rows if r["dev"] != self.dev][:UI_BLOCKED_MAX]
             out["devices"] = b.get("devices", [])
             out["me"] = self.dev
             q = self.gw.call("GET", f"/v1/devices/{self.dev}/requests")

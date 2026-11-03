@@ -1337,6 +1337,9 @@ class Gateway:
         canaries = {d["id"]: self._canary(d["id"]) for d in devs}
         items = [{**self._blocked_row(r), "name": names[r["dev"]]} for r in self.store.blocked_list_each(src)
                  if r["dev"] in names and r["domain"] != canaries[r["dev"]]]
+        # Os do próprio computador vêm primeiro: o agente corta a lista (150 itens no agente 1.4) e um celular que bloqueia muito
+        # empurrava para fora tudo o que o computador bloqueou, inclusive o que ele mesmo pode pedir.
+        items.sort(key=lambda i: i["dev"] != row["id"])  # estável: dentro de cada parte continua do mais novo para o mais antigo
         return 200, {"items": items, "devices": [{"id": d["id"], "name": d["name"]} for d in devs], "now": int(time.time())}, {}
 
     def device_requests(self, req, dev):

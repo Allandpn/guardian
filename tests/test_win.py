@@ -165,6 +165,23 @@ class WinGateway(unittest.TestCase):
         st, r, _ = self.signed(self.phkey, self.ph, "GET", "/blocked")
         self.assertEqual({i["domain"] for i in r["items"]}, {"do-celular.exemplo.com", "anuncio.exemplo.net"})
 
+    def test_09b_the_pc_own_blocks_come_first_even_with_a_noisy_phone(self):
+        """O agente corta a lista: os bloqueios do próprio PC (os que ele pode pedir) não podem sair por causa do celular."""
+        import time
+        now = int(time.time())
+        row = lambda d, t: {"domain": d, "src": "own", "list": "", "cname": 0, "count": 1, "first": t, "last": t}  # noqa: E731
+        self.env.store.merge_blocked(self.pc, [row("sketchup.exemplo.com", now - 3600)])
+        self.env.store.merge_blocked(self.ph, [row(f"d{i}.exemplo.net", now - i) for i in range(200)])
+        self.pc_report()
+        st, r, _ = self.signed(self.pckey, self.pc, "GET", "/blocked?scope=all")
+        self.assertEqual(st, 200, r)
+        devs = [i["dev"] for i in r["items"]]
+        mine = devs.count(self.pc)
+        self.assertEqual(devs[:mine], [self.pc] * mine)                         # os do PC primeiro, todos juntos
+        self.assertIn("sketchup.exemplo.com", [i["domain"] for i in r["items"][:mine]])
+        rest = [i["last"] for i in r["items"][mine:]]
+        self.assertEqual(rest, sorted(rest, reverse=True))                     # os dos outros, do mais novo para o mais antigo
+
     def test_08_payload_is_not_exposed_on_other_kinds(self):
         self.signed(self.pckey, self.pc, "POST", "/requests", {"kind": "other", "text": "oi"})
         for x in self.c.call("GET", "/v1/requests")[1]["items"]:
