@@ -29,7 +29,11 @@ function describeWindow(w) {
 let domDur = 0;              // duração do formulário manual de domínio (0 = sem prazo)
 
 const fail = (e) => toast(e && e.message ? e.message : String(e));
-const show = (...nodes) => { main.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); };
+const show = (...nodes) => {
+  main.replaceChildren(...nodes.flat(Infinity).filter(Boolean));
+  // abas roláveis: a aba marcada fica sempre à vista
+  main.querySelectorAll('.seg').forEach((seg) => { const on = seg.querySelector('a.on'); if (on) seg.scrollLeft = Math.max(0, on.offsetLeft - (seg.clientWidth - on.offsetWidth) / 2); });
+};
 const wide = () => window.matchMedia('(min-width: 900px)').matches;
 
 let BUILD = null;  // versão do site que esta página carregou (cabeçalho X-Build)
@@ -59,7 +63,7 @@ function ago(ts, now) {
   if (!ts) return 'nunca';
   const s = Math.max(0, now - ts);
   if (s < 90) return `há ${s} s`;
-  if (s < 5400) return `há ${Math.round(s / 60)} min`;
+  if (s < 3570) return `há ${Math.round(s / 60)} min`;  // a partir de 60 min, em horas
   if (s < 172800) return `há ${Math.round(s / 3600)} h`;
   return `há ${Math.round(s / 86400)} d`;
 }
@@ -203,19 +207,29 @@ function statusOf(d, now) {
   if (!d.report) return { word: 'Novo', kind: '', detail: 'aguardando o primeiro relatório' };
   if (d.kind === 'executor') {
     if (r.pihole_ok === false) return { word: 'Atenção', kind: 'warn', detail: 'Pi-hole inacessível' };
-    return { word: 'Ok', kind: 'ok', detail: `${Object.keys(r.allow_by || {}).length} liberados pelo Guardian · ${(r.temp || []).length} temporários · ${Object.keys(r.deny_by || {}).length} bloqueados pelo Guardian` };
+    return { word: 'Ok', kind: 'ok', detail: [[Object.keys(r.allow_by || {}).length, 'liberado', 'liberados'], [(r.temp || []).length, 'temporário', 'temporários'], [Object.keys(r.deny_by || {}).length, 'bloqueado', 'bloqueados']].map(([n, one, many]) => `${n} ${n === 1 ? one : many}`).join(' · ') + ' pelo Guardian' };
   }
   if (r.platform === 'windows') return { word: 'Ok', kind: 'ok', detail: (r.busy ? `executando ${r.busy.name || (r.busy.type === 'win_install' ? 'uma instalação' : 'um comando')} há ${dur((now - r.busy.since) * 1000)} · ` : '') + `agente ${r.version || ''} · visto ${ago(d.last_seen, now)}${r.tailscale ? '' : ' · sem Tailscale'}` };
   const apps = (r.pendingApps || []).length;
   const pend = (r.pending || []).length;
   if (r.filterActive === false) return { word: 'Atenção', kind: 'warn', detail: 'filtro não confirmado' + (r.filterReason ? `: ${r.filterReason}` : '') };
   if (apps || pend) {
-    return { word: 'Atenção', kind: 'warn', detail: [apps ? `${apps} app(s) pendente(s)` : '', pend ? `${pend} pedido(s) em espera` : ''].filter(Boolean).join(' · ') };
+    return { word: 'Atenção', kind: 'warn', detail: [apps ? `${apps} ${apps > 1 ? 'apps pendentes' : 'app pendente'}` : '', pend ? `${pend} ${pend > 1 ? 'pedidos' : 'pedido'} em espera` : ''].filter(Boolean).join(' · ') };
   }
   return { word: 'Protegido', kind: 'ok', detail: `filtro confirmado · visto ${ago(d.last_seen, now)}` };
 }
 
 // ---------- peças comuns ----------
+// Nas listas com caixa de marcar, a linha inteira marca (o alvo deixa de ser só a caixa de 22 px). Botões e links da linha seguem com a ação deles.
+document.addEventListener('click', (e) => {
+  const row = e.target.closest('.li');
+  const box = row && row.querySelector(':scope > .chk');
+  if (!box || box.disabled || e.target.closest('button, a, input, select, textarea, label, summary')) return;
+  box.checked = !box.checked;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+});
+/** Campo com rótulo visível em cima (o placeholder some ao digitar e fica só como exemplo). O <label> em volta liga os dois. */
+const fld = (label, el, help) => h('label', { class: 'fl' }, h('span', { class: 'flt' }, label), el, help ? h('span', { class: 'flh' }, help) : null);
 function top(title, { back, actions } = {}) {
   return h('header', { class: 'top' }, back ? h('a', { class: 'ib', href: back, 'aria-label': 'Voltar' }, icon('back')) : null,
     h('h1', {}, title), whoami(), actions || null);
@@ -232,8 +246,12 @@ function whoami() {
 function renderNav(active) {
   nav.hidden = !me;
   if (!me) return;
-  const item = (href, label, ic, key, badge) => h('a', { class: 'navitem' + (active === key ? ' on' : ''), href, 'aria-current': active === key ? 'page' : null },
-    icon(ic), label, badge ? h('span', { class: 'badge' }, String(badge)) : null);
+  const item = (href, label, ic, key, badge) => {
+    const a = h('a', { class: 'navitem' + (active === key ? ' on' : ''), href, 'aria-current': active === key ? 'page' : null },
+      icon(ic), label, badge ? h('span', { class: 'badge', 'aria-label': `${badge} pendente${badge > 1 ? 's' : ''}` }, String(badge)) : null);
+    a.navInfo = { href, label, ic, key, badge };
+    return a;
+  };
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/apps', 'Apps', 'grid', 'apps', counts.apps + counts.catalog), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
     item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), isMaster() ? item('#/deploys', 'Deploys', 'box', 'deploys', counts.deploys) : null,
@@ -241,8 +259,32 @@ function renderNav(active) {
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps + counts.catalog),
       canSee('history') ? item('#/history', 'Histórico', 'clock', 'history', 0) : null, item('#/people', 'Conta', 'people', 'people', 0)];
-  nav.replaceChildren(h('div', { class: 'brand' }, insignia('master', 28), 'NotToday Guardian'), ...items.filter(Boolean),
+  // No celular a barra de baixo leva até 4 destinos e "Mais" (padrão do Material: 3 a 5 itens); no computador o trilho mostra todos.
+  const all = items.filter(Boolean);
+  const over = all.length > 5 ? all.slice(4) : [];
+  over.forEach((a) => a.classList.add('over'));
+  const overActive = over.some((a) => a.navInfo.key === active);
+  const overBadge = over.reduce((n, a) => n + (a.navInfo.badge || 0), 0);
+  const more = over.length ? h('button', { class: 'navitem more' + (overActive ? ' on' : ''), type: 'button', 'aria-haspopup': 'dialog',
+    onclick: () => moreSheet(over.map((a) => a.navInfo), active) }, icon('more'), 'Mais',
+    overBadge ? h('span', { class: 'badge', 'aria-label': `${overBadge} pendente${overBadge > 1 ? 's' : ''}` }, String(overBadge)) : null) : null;
+  nav.replaceChildren(h('div', { class: 'brand' }, insignia('master', 28), 'NotToday Guardian'), ...all, more,
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
+}
+
+/** "Mais" da barra de baixo: os outros destinos numa folha, com o mesmo ícone e contador, e o Sair. */
+function moreSheet(list, active) {
+  let overlay;
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', esc); };
+  const esc = (e) => { if (e.key === 'Escape') close(); };
+  overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Mais' }, h('div', { class: 'grab' }), h('h2', {}, 'Mais'),
+      h('nav', { class: 'morelist' }, list.map((x) => h('a', { class: 'moreitem' + (x.key === active ? ' on' : ''), href: x.href, onclick: close, 'aria-current': x.key === active ? 'page' : null },
+        icon(x.ic), h('span', { class: 'sp' }, x.label), x.badge ? h('span', { class: 'badge' }, String(x.badge)) : null))),
+      h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: act(async () => { close(); await logout(); }) }, 'Sair'))));
+  document.addEventListener('keydown', esc);
+  document.body.append(overlay);
+  overlay.querySelector('a')?.focus();
 }
 
 async function logout() {
@@ -451,7 +493,7 @@ async function devicesView() {
   const pane = wide() && sel ? h('div', { class: 'pane' }, paneHead(sel.name, sel.kind === 'executor' ? 'Pi-hole' : 'Aparelho'),
     sel.kind === 'executor' ? executorNodes(sel, now) : [resumoNodes(sel, now),
       h('div', { class: 'pad', style: 'margin-top:12px' }, h('a', { class: 'btn pri block', href: `#/device/${sel.id}/regras`, style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Regras e configurações'))]) : null;
-  show(top('Dispositivos', { actions: h('a', { class: 'btn pri', href: '#/pair', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Parear') }),
+  show(top('Dispositivos', { actions: h('a', { class: 'btn pri', href: '#/pair', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Parear') }),
     h('div', { class: 'wrap' }, h('div', { class: 'cols' }, list, pane)));
   timer = setTimeout(autoRefresh, 20000);
 }
@@ -582,7 +624,7 @@ function resumoNodes(d, now) {
 /** Janela para digitar um PIN (cifrado no navegador até a chave do aparelho). */
 function pinDialog(d) {
   return new Promise((resolve) => {
-    const pin = h('input', { class: 'inp', type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: 'PIN (6 ou mais dígitos)', 'aria-label': 'PIN' });
+    const pin = h('input', { class: 'inp', type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: '••••••' });
     let overlay;
     const close = (v) => { overlay.remove(); resolve(v); };
     const go = (type) => act(async () => {
@@ -596,7 +638,7 @@ function pinDialog(d) {
     });
     overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(false); } },
       h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Definir PIN' }, h('div', { class: 'grab' }), h('h2', {}, 'Definir PIN'),
-        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'O PIN fica só entre você e o aparelho.'), pin,
+        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'O PIN fica só entre você e o aparelho.'), fld('PIN', pin, '6 ou mais dígitos'),
         h('div', { class: 'row' }, h('button', { class: 'btn pri', type: 'button', onclick: go('set_pin') }, 'PIN local'),
           h('button', { class: 'btn', type: 'button', onclick: go('set_dev_pin') }, 'PIN de desenvolvedor')),
         h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => close(false) }, 'Cancelar'))));
@@ -979,7 +1021,7 @@ async function domainsView(tab) {
       box: (k) => { const e = h('input', { type: 'checkbox', class: 'chk', 'aria-label': `Marcar ${k}`, onchange: (ev) => { if (ev.target.checked) sel.add(k); else sel.delete(k); sync(); } });
         boxes.set(k, [...(boxes.get(k) || []), e]); return e; },
       bar: h('div', { class: 'card', style: 'margin:12px 0' }, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' },
-        h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer' }, allBox, h('span', {}, 'Marcar todos os mostrados')), btns),
+        h('label', { class: 'row grow', style: 'gap:10px;cursor:pointer;min-height:44px' }, allBox, h('span', {}, 'Marcar todos os mostrados')), btns),
         h('div', { class: 'muted', style: 'margin-top:8px' }, 'Cada ação leva até 50 itens e um só passkey.')),
     };
   };
@@ -1346,7 +1388,7 @@ async function domainsView(tab) {
         }) }, 'Liberar')))) : empty('Nada recusado nos últimos dias.')];
   } else if (tab === 'vetos') {
     const parents = veto.parents || [], audit = veto.audit || [], master = isMaster();
-    const pdom = h('textarea', { class: 'ta', rows: '3', placeholder: 'reddit.com, x.com, discord.com (um ou vários, separados por espaço, vírgula ou linha)', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Sites para vetar' });
+    const pdom = h('textarea', { class: 'ta', rows: '3', placeholder: 'reddit.com, x.com, discord.com', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off' });
     const parentSpec = (add, list) => {
       const one = list.length === 1 ? list[0] : '';
       return { title: add ? (one ? `Vetar ${one}?` : `Vetar ${list.length} sites?`) : (one ? `Tirar o veto de ${one}?` : `Tirar o veto de ${list.length} sites?`),
@@ -1364,7 +1406,7 @@ async function domainsView(tab) {
       // O campo para vetar fica no topo; a lista de vetados e o histórico (liberações em conflito) ficam embaixo.
       master ? [h('div', { class: 'sec' }, 'Vetar sites'),
         h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sites grandes e abertos, como reddit.com, x.com e tumblr.com, que ninguém pode liberar nem pelo pai nem por subdomínio. Vale para todos os guardiões.'),
-          pdom, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
+          fld('Sites para vetar', pdom, 'Um ou vários, separados por espaço, vírgula ou linha.'), h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
             const list = [...new Set(pdom.value.toLowerCase().split(/[\s,;]+/).filter(Boolean))];
             if (!list.length) throw new Error('Digite o site.');
             if (list.length > 80) throw new Error('No máximo 80 sites por vez.');
@@ -1395,7 +1437,7 @@ async function domainsView(tab) {
           temp.has(`${name}:${x}`) ? chip(`expira ${fmtWhen(temp.get(`${name}:${x}`))}`, 'warn') : name === 'allow' ? chip('sem prazo') : null)),
       h('button', { class: 'btn', type: 'button', onclick: send('pihole_remove', { list: name, domain: x }, removeSpec(name, x)) }, name === 'allow' ? 'Bloquear de novo' : 'Remover')))) :
       empty('Vazio.');
-    const dom = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'exemplo.com (domínio exato)', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Domínio' });
+    const dom = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'exemplo.com', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off' });
     const args = () => ({ domain: dom.value.trim().toLowerCase(), ...(domDur ? { ttl_s: domDur } : {}) });
     const need = (fn) => act(async () => { if (!dom.value.trim()) throw new Error('Digite o domínio.'); await fn(); });
     const durBtns = [3600, 86400, 604800, 0].map((s) => h('button', { type: 'button', 'aria-pressed': String(domDur === s), onclick: () => { domDur = s; route(); } }, durLabel(s)));
@@ -1405,7 +1447,7 @@ async function domainsView(tab) {
       h('div', { class: 'sec' }, 'Liberar ou bloquear um domínio à mão'),
       h('div', { class: 'card' },
         h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Para corrigir um bloqueio indevido, inclusive de listas de bloqueio, que ninguém consegue pedir: digite o domínio e libere. Só domínio exato.'),
-        h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'ib', style: 'width:24px;height:24px;color:var(--muted)' }, icon('search', 20)), h('div', { style: 'flex:1' }, dom)),
+        fld('Domínio', dom, 'Só o domínio exato; os subdomínios vêm junto.'),
         h('div', { class: 'durs', role: 'group', 'aria-label': 'Duração' }, durBtns),
         h('div', { class: 'row', style: 'margin-top:12px' },
           h('button', { class: 'btn grow', type: 'button', onclick: need(() => confirmSend(ex.id, 'pihole_deny', args(), { title: `Bloquear ${args().domain} ${domDur ? `por ${durLabel(domDur)}` : ''}?`,
@@ -1487,8 +1529,8 @@ async function deploysView() {
       effect: 'vale na hora', effectKind: sens ? 'warn' : 'ok',
       note: 'O Pi confere a versão, instala, testa e volta sozinho para a anterior se algo falhar.', noteKind: 'warn', confirm: 'Colocar no ar' })) route();
   });
-  const addIn = (ph, label) => h('input', { class: 'inp', type: 'text', placeholder: ph, 'aria-label': label, autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false' });
-  const aName = addIn('Nome curto (ex.: triagem)', 'Nome curto do app'), aRepo = addIn('Repositório (ex.: Allandpn/MeuApp)', 'Repositório no GitHub'), aPkg = addIn('Pacote (ex.: com.allan.meuapp)', 'Pacote do app (applicationId)');
+  const addIn = (ph) => h('input', { class: 'inp', type: 'text', placeholder: ph, autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false' });
+  const aName = addIn('triagem'), aRepo = addIn('Allandpn/MeuApp'), aPkg = addIn('com.allan.meuapp');
   const addApp = act(async () => {
     const args = { name: aName.value.trim().toLowerCase(), github: aRepo.value.trim(), pkg: aPkg.value.trim() };
     if (!args.name || !args.github || !args.pkg) throw new Error('Preencha o nome, o repositório e o pacote.');
@@ -1511,7 +1553,7 @@ async function deploysView() {
     errs.length ? errs.map((o) => h('div', { class: 'note warn' }, `${o.project}: ${o.error}`)) : null,
     ex && dep ? h('div', { class: 'sec' }, 'Cadastrar app novo') : null,
     ex && dep ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'App Android com Releases no GitHub (público, ou privado se estiver liberado no token do Pi). Depois de cadastrar, ele aparece em Apps > Catálogo quando houver uma Release.'),
-      h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, aName, aRepo, aPkg, h('button', { class: 'btn pri', type: 'button', onclick: addApp }, 'Revisar e assinar'))) : null,
+      h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, fld('Nome curto', aName), fld('Repositório no GitHub', aRepo), fld('Pacote (applicationId)', aPkg), h('button', { class: 'btn pri', type: 'button', onclick: addApp }, 'Revisar e assinar'))) : null,
     h('div', { class: 'sec' }, 'Últimos deploys'),
     hist.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, hist.slice(0, 10).map((x) => h('div', { class: 'li' },
       h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, `${x.project} ${String(x.commit).slice(0, 8)}`), h('div', { class: 'muted' }, x.msg || '', x.ts ? ` · ${ago(x.ts, now)}` : '')),
@@ -1542,10 +1584,10 @@ async function pcView() {
     await sendCommand(dev, isRun(p) ? 'win_run' : 'win_install', winArgs(p));
     route();
   });
-  const mk = (ph, label) => h('input', { class: 'inp', type: 'text', placeholder: ph, 'aria-label': label, autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false' });
-  const sel = h('select', { class: 'sel', 'aria-label': 'Computador' }, pcs.map((d) => h('option', { value: d.id }, d.name)));
-  const wName = mk('Nome (ex.: Git)', 'Nome do programa'), wId = mk('Id do winget (ex.: Git.Git)', 'Id do winget'), wVer = mk('Versão (opcional)', 'Versão');
-  const sName = mk('O que o script faz', 'Descrição'), sBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'Write-Output "olá"', spellcheck: 'false', 'aria-label': 'Script do PowerShell' });
+  const mk = (ph) => h('input', { class: 'inp', type: 'text', placeholder: ph, autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false' });
+  const sel = h('select', { class: 'sel' }, pcs.map((d) => h('option', { value: d.id }, d.name)));
+  const wName = mk('Git'), wId = mk('Git.Git'), wVer = mk('a mais nova');
+  const sName = mk('Limpar a pasta Temp'), sBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'Write-Output "olá"', spellcheck: 'false' });
   const reqCard = (q) => h('div', { class: 'card warnb' },
     h('div', { class: 'row', style: 'align-items:flex-start;gap:12px' }, insignia('device', 40), h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${nameOf(q.dev)} · ${ago(q.ts, now)}`))),
     h('pre', { class: 'detail inline' }, winDetail(q.payload)),
@@ -1574,14 +1616,14 @@ async function pcView() {
         Object.keys(WIN_CHOICES).map((k) => [h('div', { class: 'sec', style: 'padding-left:0' }, WIN_CHOICES[k][0]),
           pillGroup(WIN_CHOICES[k][0], WIN_CHOICES[k][1], winCfg()[k], (v) => { setWinCfg(k, v); route(); })])),
       h('div', { class: 'sec' }, 'Executar agora'),
-      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sem pedido: você mesmo manda, com a sua passkey.'), sel,
-        h('div', { class: 'sec', style: 'padding-left:0' }, 'Instalar pelo winget'), wName, h('div', { style: 'height:8px' }), wId, h('div', { style: 'height:8px' }), wVer,
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sem pedido: você mesmo manda, com a sua passkey.'), fld('Computador', sel),
+        h('div', { class: 'sec', style: 'padding-left:0' }, 'Instalar pelo winget'), fld('Nome do programa', wName), fld('Id do winget', wId), fld('Versão (opcional)', wVer),
         h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
           const p = { name: wName.value.trim(), source: 'winget', id: wId.value.trim() };
           if (wVer.value.trim()) p.version = wVer.value.trim();
           await direct(sel.value, p)();
         }) }, 'Revisar e assinar')),
-        h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script'), sName, h('div', { style: 'height:8px' }), sBody,
+        h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script'), fld('O que o script faz', sName), fld('Script do PowerShell', sBody),
         h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
           const p = { shell: 'powershell', script: sBody.value };
           if (sName.value.trim()) p.name = sName.value.trim();
@@ -1772,7 +1814,7 @@ async function guardiansView() {
             onclick: act(async () => { await api('POST', `/v1/guardians/${gid}/see`, { ...see, [k]: !see[k] }); route(); }) }, label)))] : null));
   };
 
-  show(top('Guardiões', { actions: canManage() ? h('a', { class: 'btn pri', href: '#/guardians/novo', style: 'min-height:40px;display:inline-flex;align-items:center;text-decoration:none' }, 'Convidar') : null }), h('div', { class: 'wrap' },
+  show(top('Guardiões', { actions: canManage() ? h('a', { class: 'btn pri', href: '#/guardians/novo', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Convidar') : null }), h('div', { class: 'wrap' },
     !hasMaster() ? h('div', { class: 'card warnb' }, h('strong', {}, 'Ainda não há guardião-mestre'),
       h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'O mestre é quem inclui e remove guardiões, sozinho; o guardião-mor faz o resto. Enquanto não existir um, incluir e remover guardiões exige dois guardiões-mor. Promova o primeiro mestre em "Promover a mestre" (uma assinatura); depois só um mestre mexe em guardiões.')) : null,
     hasMaster() && !isMaster() ? h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Só o guardião-mestre inclui, remove e propaga guardiões.')) : null,
@@ -1810,11 +1852,11 @@ async function guardianInviteView() {
   renderNav('guardians');
   if (!canManage()) { show(top('Convidar guardião', { back: '#/guardians' }), h('div', { class: 'wrap' }, h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Só o guardião-mestre convida guardiões.')))); return; }
   const out = h('div', {});
-  const nm = h('input', { class: 'inp', placeholder: 'Nome da pessoa', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Nome do guardião', value: inviteName, oninput: (e) => { inviteName = e.target.value; } });
+  const nm = h('input', { class: 'inp', placeholder: 'Ana', autocapitalize: 'words', autocomplete: 'off', enterkeyhint: 'done', value: inviteName, oninput: (e) => { inviteName = e.target.value; } });
   const syncOn = inviteSync === null ? inviteRole === 'domains' : inviteSync;  // guardião-mor e mestre: só neste aparelho, a menos que se escolha o contrário
   const step = (n, title) => h('div', { class: 'stephead' }, h('span', { class: 'stepn' }, String(n)), h('strong', {}, title));
   show(top('Convidar guardião', { back: '#/guardians' }), h('div', { class: 'wrap' },
-    h('div', { class: 'card' }, step(1, 'Quem'), nm,
+    h('div', { class: 'card' }, step(1, 'Quem'), fld('Nome do guardião', nm),
       h('div', { class: 'durs', role: 'group', 'aria-label': 'Papel do convidado' },
         [['domains', 'Guardião (só domínios e apps)'], ['admin', 'Guardião-mor'], ...(isMaster() ? [['master', 'Mestre']] : [])].map(([k, label]) => h('button', { type: 'button', 'aria-pressed': String(inviteRole === k), onclick: () => { inviteRole = k; route(); } }, label))),
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, inviteRole === 'master' ? 'Inclui e remove guardiões, inclusive outro mestre, sozinho; e tem tudo do guardião-mor. Use para a pessoa de confiança e para a reserva dela.' :
@@ -1983,10 +2025,10 @@ async function pairView() {
       h('button', { class: 'btn pri grow', type: 'button', onclick: () => { pair.step = pair.kind === 'executor' ? 9 : 4; route(); } }, 'Confere, continuar'))]));
 
   if (pair.kind === 'device') {
-    const pin = h('input', { class: 'inp', type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: 'PIN local (6 ou mais dígitos)', 'aria-label': 'PIN local' });
+    const pin = h('input', { class: 'inp', type: 'password', inputmode: 'numeric', autocomplete: 'off', placeholder: '••••••' });
     const hours = h('select', { class: 'sel', 'aria-label': 'Atraso para afrouxar' }, [[0, 'sem atraso (só para testes)'], [24, '24 horas (padrão)'], [48, '48 horas'], [72, '72 horas']].map(([v, t]) => h('option', { value: v, selected: v === 24 }, t)));
     body.push(card(4, steps[3], 'Você define o PIN local e o atraso para afrouxar', [
-      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Chega cifrado até o aparelho: o gateway e o usuário não o veem.'), pin,
+      h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Chega cifrado até o aparelho: o gateway e o usuário não o veem.'), fld('PIN local', pin, '6 ou mais dígitos'),
       h('label', { class: 'muted', style: 'display:block;margin:10px 0 4px' }, 'Atraso para afrouxar a proteção'), hours,
       h('div', { class: 'row', style: 'margin-top:12px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
         if (!/^[0-9]{6,32}$/.test(pin.value)) throw new Error('o PIN precisa ter 6 ou mais dígitos');

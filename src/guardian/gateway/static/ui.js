@@ -45,6 +45,7 @@ const ICONS = {
   inbox: ['M3 13l3-8h12l3 8', 'M3 13v6h18v-6', 'M3 13h5a4 4 0 0 0 8 0h5'],
   send: ['M21 3L10 14', 'M21 3l-7 18-4-7-7-4z'],
   sync: ['M20 12a8 8 0 0 0-14-5', 'M4 4v4h4', 'M4 12a8 8 0 0 0 14 5', 'M20 20v-4h-4'],
+  more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
 };
 
 // Brasões dos guardiões: um escudo comum e a figura de cada papel (mestre: coroa; guardião-mor: espada; guardião: portão do castelo).
