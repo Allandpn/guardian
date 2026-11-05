@@ -1,5 +1,5 @@
 import { enc, dec, sha256, sealPin, commandBytes, pairingString } from './crypto.js';
-import { h, icon, chip, toast, sheet, insignia, parentsOf } from './ui.js';
+import { h, icon, chip, spark, toast, sheet, insignia, parentsOf } from './ui.js';
 import { classify } from './gate.js';
 
 const main = document.getElementById('main');
@@ -606,9 +606,59 @@ function deviceReadOnly(d, now) {
   timer = setTimeout(autoRefresh, 20000);
 }
 
+const fmtBytes = (n) => (n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GB` : n >= 2 ** 20 ? `${Math.round(n / 2 ** 20)} MB` : `${Math.round(n / 1024)} KB`);
+const fmtRate = (n) => (n >= 2 ** 20 ? `${(n / 2 ** 20).toFixed(1)} MB/s` : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB/s`);
+const pct = (p) => Math.round(100 * p[0] / p[1]);
+
+/** O que pesa no desempenho do Pi: nota geral (ok/atenção/ruim) e o motivo em português. */
+function piVerdict(hl) {
+  const bad = [], warn = [];
+  const cores = hl.cores || 1, l1 = (hl.load || [])[0];
+  const th = hl.throttle || {};
+  if ((th.now || []).length) bad.push(`o Pi está com ${th.now.join(' e ')} agora`);
+  else if ((th.past || []).length) warn.push(`desde que ligou houve ${th.past.join(' e ')}`);
+  if (hl.temp >= 80) bad.push(`temperatura alta (${hl.temp} °C)`); else if (hl.temp >= 70) warn.push(`esquentando (${hl.temp} °C)`);
+  if (hl.cpu >= 90) bad.push(`CPU em ${Math.round(hl.cpu)}%`); else if (hl.cpu >= 70) warn.push(`CPU em ${Math.round(hl.cpu)}%`);
+  if (l1 != null && l1 / cores >= 1.5) bad.push(`fila de processos grande (carga ${l1})`); else if (l1 != null && l1 / cores >= 1) warn.push(`carga ${l1}`);
+  if (hl.mem && pct(hl.mem) >= 92) bad.push(`memória em ${pct(hl.mem)}%`); else if (hl.mem && pct(hl.mem) >= 80) warn.push(`memória em ${pct(hl.mem)}%`);
+  if (hl.swap && pct(hl.swap) >= 50) warn.push(`usando a troca (swap) em ${pct(hl.swap)}%`);
+  if (hl.disk && pct(hl.disk) >= 95) bad.push(`disco em ${pct(hl.disk)}%`); else if (hl.disk && pct(hl.disk) >= 85) warn.push(`disco em ${pct(hl.disk)}%`);
+  return bad.length ? { kind: 'bad', word: 'Sobrecarregado', why: bad.concat(warn) } : warn.length ? { kind: 'warn', word: 'Atenção', why: warn } : { kind: 'ok', word: 'Saudável', why: [] };
+}
+
+function piHealthNodes(d, now) {
+  const hl = (d.report || {}).health;
+  if (!hl) return [h('div', { class: 'card' }, h('strong', {}, 'Desempenho do Pi'),
+    h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'O executor ainda não enviou. Isso aparece depois que ele for atualizado (Deploys) e mandar o próximo relatório.'))];
+  const stale = now - (d.report_ts || 0) > 180;
+  const v = stale ? { kind: 'warn', word: 'Sem dados recentes', why: [`último relatório ${ago(d.report_ts, now)}`] } : piVerdict(hl);
+  const hist = hl.hist || [];
+  const net = (hl.net || {}).tailscale0;
+  const netPts = hist.map((p) => (p.net && p.net.tailscale0 ? p.net.tailscale0[0] + p.net.tailscale0[1] : null));
+  const peak = (xs) => Math.max(0, ...xs.filter((x) => x != null));
+  const chart = (title, now_, vals, opt) => h('div', { style: 'margin-top:14px' },
+    h('div', { class: 'row' }, h('span', { class: 'muted' }, title), h('span', { class: 'sp' }), h('strong', {}, now_)),
+    h('div', { style: 'color:var(--accent,var(--orange));margin-top:4px' }, spark(vals, { ...opt, label: `${title}, última hora` })));
+  const rows = [['Carga (1 / 5 / 15 min)', hl.load ? `${hl.load.join(' / ')} · ${hl.cores} núcleos` : '—'],
+    ['Memória', hl.mem ? `${fmtBytes(hl.mem[0])} de ${fmtBytes(hl.mem[1])} (${pct(hl.mem)}%)` : '—'],
+    hl.swap ? ['Troca (swap)', `${fmtBytes(hl.swap[0])} de ${fmtBytes(hl.swap[1])}`] : null,
+    ['Disco', hl.disk ? `${fmtBytes(hl.disk[0])} de ${fmtBytes(hl.disk[1])} (${pct(hl.disk)}%)` : '—'],
+    ['Ligado há', hl.uptime != null ? dur(hl.uptime * 1000) : '—'],
+    hl.throttle ? ['Energia / limitação', hl.throttle.now.length ? hl.throttle.now.join(', ') + ' (agora)' : hl.throttle.past.length ? hl.throttle.past.join(', ') + ' (desde o boot)' : 'sem problemas'] : null,
+  ].filter(Boolean);
+  return [h('div', { class: 'card' + (v.kind === 'ok' ? '' : v.kind === 'bad' ? ' badb' : ' warnb') },
+    h('div', { class: 'row' }, h('strong', {}, 'Desempenho do Pi'), h('span', { class: 'sp' }), chip(v.word, v.kind)),
+    v.why.length ? h('p', { style: 'margin:8px 0 0' }, v.why.join('; ') + '.') : h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'Nada pesando agora: se a conexão está lenta, o gargalo provavelmente não é o Pi.'),
+    hl.cpu != null ? chart('CPU', `${Math.round(hl.cpu)}%`, hist.map((p) => (p.cpu != null ? p.cpu : null)), { max: 100 }) : null,
+    hl.temp != null ? chart('Temperatura', `${hl.temp} °C`, hist.map((p) => (p.temp != null ? p.temp : null)), { max: 90 }) : null,
+    net ? chart('Tráfego dos aparelhos (Tailscale)', fmtRate(net[0] + net[1]), netPts, {}) : null,
+    net ? h('div', { class: 'muted', style: 'font-size:12px;margin-top:4px' }, `Agora: ${fmtRate(net[0])} recebido · ${fmtRate(net[1])} enviado · pico da hora ${fmtRate(peak(netPts))}`) : null),
+  h('div', { class: 'card' }, kvRows(rows))];
+}
+
 function executorNodes(d, now) {
   const r = d.report || {};
-  return [h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'Executor do Pi-hole. Os domínios liberados e bloqueados ficam em Domínios.'),
+  return [...piHealthNodes(d, now), h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'Executor do Pi-hole. Os domínios liberados e bloqueados ficam em Domínios.'),
     h('a', { class: 'btn pri', href: '#/domains', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Abrir domínios')),
   h('div', { class: 'card' }, kvRows([['Pi-hole', r.pihole_ok === false ? 'inacessível' : 'ok'], ['Liberados', String((r.allow || []).length)], ['Bloqueados', String((r.deny || []).length)],
     ['Temporários', String((r.temp || []).length)]], true))];
