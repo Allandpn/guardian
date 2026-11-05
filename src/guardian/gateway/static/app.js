@@ -272,6 +272,47 @@ function renderNav(active) {
     h('div', { class: 'navfoot' }, h('button', { class: 'btn block', type: 'button', onclick: act(logout) }, 'Sair')));
 }
 
+/**
+ * Escolher o que liberar no lugar do domínio pedido: mais específico (o que o aparelho tentou abrir dentro dele), o próprio pedido
+ * ou mais amplo (os pais). Também aceita digitar um domínio, desde que seja o pedido, um pai dele ou algo dentro dele.
+ */
+function domainPicker(asked, current, narrower, onPick) {
+  let overlay, chosen = current;
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', esc); };
+  const esc = (e) => { if (e.key === 'Escape') close(); };
+  const opt = (domain, desc) => h('label', { class: 'moreitem', style: 'cursor:pointer' },
+    h('input', { type: 'radio', name: 'dompick', value: domain, checked: domain === chosen, style: 'width:20px;height:20px;accent-color:var(--green);flex:none',
+      onchange: () => { chosen = domain; typed.value = ''; } }),
+    h('span', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600;overflow-wrap:anywhere' }, domain), h('span', { class: 'muted', style: 'display:block' }, desc)));
+  const typed = h('input', { class: 'inp', type: 'text', inputmode: 'url', placeholder: 'outro.' + asked, autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', autocomplete: 'off' });
+  const parents = parentsOf(asked);
+  const ok = act(async () => {
+    let v = chosen;
+    const t = typed.value.trim().toLowerCase().replace(/\.$/, '');
+    if (t) {
+      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(t)) throw new Error('Domínio inválido.');
+      if (!(t === asked || parents.includes(t) || t.endsWith('.' + asked))) throw new Error(`Use ${asked}, um domínio pai dele ou um endereço dentro dele.`);
+      v = t;
+    }
+    close();
+    onPick(v);
+  });
+  overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Liberar qual domínio?' }, h('div', { class: 'grab' }), h('h2', {}, 'Liberar qual domínio?'),
+      h('p', { class: 'muted', style: 'margin:0' }, `Pedido: ${asked}. A liberação vale para o domínio escolhido e tudo dentro dele.`),
+      narrower.length ? [h('div', { class: 'flt', style: 'margin-top:14px' }, 'Mais específico (o que o aparelho tentou abrir)'),
+        h('div', { class: 'morelist', style: 'margin-top:0' }, narrower.map((b) => opt(b.domain, `${b.count} bloqueio${b.count > 1 ? 's' : ''}`)))] : null,
+      h('div', { class: 'flt', style: 'margin-top:14px' }, 'O pedido'),
+      h('div', { class: 'morelist', style: 'margin-top:0' }, opt(asked, 'Exatamente o que foi pedido')),
+      parents.length ? [h('div', { class: 'flt', style: 'margin-top:14px' }, 'Mais amplo'),
+        h('div', { class: 'morelist', style: 'margin-top:0' }, parents.map((p, i) => opt(p, i === parents.length - 1 ? 'O domínio inteiro' : 'Este e tudo dentro dele')))] : null,
+      fld('Ou digite outro', typed, `Um endereço dentro de ${asked} ou um domínio pai dele.`),
+      h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: close }, 'Cancelar'), h('button', { class: 'btn pri', type: 'button', onclick: ok }, 'Usar este'))));
+  document.addEventListener('keydown', esc);
+  document.body.append(overlay);
+  overlay.querySelector('input[type=radio]:checked')?.focus();
+}
+
 /** "Mais" da barra de baixo: os outros destinos numa folha, com o mesmo ícone e contador, e o Sair. */
 function moreSheet(list, active) {
   let overlay;
@@ -946,7 +987,7 @@ function avancadoNodes(d, now) {
 let reqDev = '';             // filtro das solicitações: aparelho ('' = todos)
 let domGuardian = '';        // filtro de Bloqueios e Liberados: guardião que liberou/bloqueou ('' = todos)
 const alwSel = new Set(), recSel = new Set(), reqSel = new Set(), vetoSel = new Set();   // marcados para uma ação em lote (um comando, um passkey)
-const reqLvl = new Map();   // Solicitações: quanto cada domínio foi encurtado («)
+const reqLvl = new Map();   // Solicitações: o domínio que o guardião escolheu liberar no lugar do pedido (mais amplo ou mais específico)
 let reqTtl = 0;              // duração ao liberar pelas solicitações (0 = sempre)
 let qryDev = '', qryState = '', qrySearch = '';   // Consultas: aparelho, resultado ('' tudo | 'ok' | 'blk') e pesquisa
 const qrySel = new Set(), qryLvl = new Map();
@@ -1099,19 +1140,9 @@ async function domainsView(tab) {
         await api('POST', `/v1/requests/${q.id}/resolve`, cmd ? { cmd, deny: [] } : { deny: all.filter((x) => x.q.id === q.id && set.has(x.i.domain)).map((x) => x.i.domain) });
       }
     };
-    const optsOf = (d) => [d, ...parentsOf(d)];
-    const eff = (d) => { const o = optsOf(d); return o[Math.min(reqLvl.get(d) || 0, o.length - 1)]; };  // o domínio como está encurtado na tela
-    const nameEls = new Map();
-    const syncNames = () => {
-      for (const [d, r] of nameEls) {
-        const o = optsOf(d), at = Math.min(reqLvl.get(d) || 0, o.length - 1);
-        r.name.forEach((e) => { e.textContent = o[at]; });
-        r.less.forEach((e) => { e.disabled = at >= o.length - 1; });
-        r.more.forEach((e) => { e.disabled = at === 0; });
-      }
-    };
-    const stepReq = (d, delta) => { reqLvl.set(d, Math.max(0, Math.min(optsOf(d).length - 1, (reqLvl.get(d) || 0) + delta))); syncNames(); };
-    const stepBtn = (label, aria, fn) => h('button', { class: 'btn', type: 'button', 'aria-label': aria, style: 'padding:0 10px;min-width:40px', onclick: fn }, label);
+    const eff = (d) => reqLvl.get(d) || d;  // o domínio que vai ser liberado (o pedido, ou o que o guardião escolheu)
+    // Mais específico: o que o aparelho que pediu tentou abrir dentro do domínio pedido (dos bloqueios dele), do mais visto ao menos.
+    const narrowerOf = (dev, d) => blocked.filter((b) => b.dev === dev && b.domain.endsWith('.' + d)).sort((a, b) => b.count - a.count).slice(0, 8);
     const releaseOne = (x) => act(async () => {
       const items = [{ domain: eff(x.i.domain), ...ttl }];
       if (!(await confirmAdult([items[0].domain], blocked))) return;
@@ -1149,7 +1180,6 @@ async function domainsView(tab) {
         route();
       } }]);
     setTimeout(reqPick.sync, 0);
-    setTimeout(syncNames, 0);  // as setas começam desativadas até o desenho terminar
     body = [phonesFilter(protectedDevs, reqDev, (k) => { reqDev = k; route(); }),
       h('div', { class: 'sec' }, 'Liberar por'), pillGroup('Duração da liberação', REQ_TTLS, reqTtl, (k) => { reqTtl = k; route(); }),
       doms.length > 1 ? h('div', { class: 'card', style: 'margin-top:12px' }, h('div', { class: 'row', style: 'gap:8px' },
@@ -1159,16 +1189,15 @@ async function domainsView(tab) {
       h('div', { class: 'sec' }, `Solicitações · ${shown.length}`), shown.length ? reqPick.bar : null,
       shown.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, shown.map((x) => {
         const b = info.get(`${x.q.dev}|${x.i.domain}`);
-        const d0 = x.i.domain, nm = h('span', { class: 'mono', style: 'font-weight:600' }, d0);
-        const less = stepBtn('«', 'Encurtar um nível', () => stepReq(d0, 1)), more = stepBtn('»', 'Voltar um nível', () => stepReq(d0, -1));
-        const nr = nameEls.get(d0) || { name: [], less: [], more: [] };
-        nr.name.push(nm); nr.less.push(less); nr.more.push(more);
-        nameEls.set(d0, nr);
+        const d0 = x.i.domain, e = eff(d0), changed = e !== d0;
+        const narrower = narrowerOf(x.q.dev, d0);
         return h('div', { class: 'li', style: 'flex-wrap:wrap' }, reqPick.box(d0),
-          h('div', { class: 'sp' }, nm,
+          h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, e),
+            changed ? h('div', { class: 'muted' }, `pedido: ${d0} · ${e.endsWith('.' + d0) ? 'mais específico' : 'mais amplo'}`) : null,
             h('div', { class: 'muted' }, `${devName(x.q.dev)} · ${b ? `${b.count} bloqueio${b.count > 1 ? 's' : ''} · ${srcLabel(b)}` : 'sem bloqueio recente'} · ${ago(x.q.ts, now)}`, ' ', flags(b || x.i))),
           h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: refuseOne(x) }, 'Recusar'),
-            parentsOf(d0).length ? [less, more] : null,
+            h('button', { class: 'btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-label': `Escolher o domínio a liberar no lugar de ${d0}`,
+              onclick: () => domainPicker(d0, e, narrower, (v) => { if (v === d0) reqLvl.delete(d0); else reqLvl.set(d0, v); route(); }) }, 'Domínio…'),
             h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
       })) : empty('Nenhuma solicitação de liberação.'),
       otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
