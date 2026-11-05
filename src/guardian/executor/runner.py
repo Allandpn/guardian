@@ -13,6 +13,7 @@ from typing import Any
 
 from ..protocol import b64, commands as cmds, devauth, tailnet
 from . import domains
+from .health import Health
 from .pihole import Pihole, PiholeError
 from .veto import Veto
 
@@ -199,6 +200,7 @@ class Executor:
         self.failed: dict[str, str] = {}  # domínios que o último lote não aplicou, e por quê
         self._env: dict | None = None     # o comando assinado em execução: vai inteiro para o deployer, que confere a assinatura de novo
         self.last_report = 0.0
+        self.health = Health()
         self._lists: dict | None = None
         self._lists_ts = 0.0
         self.veto = Veto(cfg.gravity_db, self.state.data.get("veto_parents"))
@@ -491,6 +493,10 @@ class Executor:
              "trust": {g: sorted(v.creds) for g, v in self.consumer.trust.guardians.items()},
              "roles": {g: v.role for g, v in self.consumer.trust.guardians.items()},
              "executed": self.executed[-50:]}
+        try:
+            r["health"] = self.health.sample(int(self.now()))  # o desempenho do Pi, para o site; falha aqui não impede o relatório
+        except Exception as e:  # noqa: BLE001
+            print("saúde:", e, file=sys.stderr)
         dr = self._deploy_report()
         if dr is not None:
             r["deploy"] = dr

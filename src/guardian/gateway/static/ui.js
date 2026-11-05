@@ -95,6 +95,33 @@ export function icon(name, size = 22) {
   return s;
 }
 
+/** Gráfico de linha pequeno (sem biblioteca). `vals` pode ter null (sem dado). `max` fixa o topo da escala; sem ele, o maior valor. */
+export function spark(vals, { max, label, w = 280, ht = 56 } = {}) {
+  const s = document.createElementNS(NS, 'svg');
+  s.setAttribute('viewBox', `0 0 ${w} ${ht}`);
+  s.setAttribute('width', '100%');
+  s.setAttribute('height', String(ht));
+  s.setAttribute('preserveAspectRatio', 'none');
+  s.setAttribute('role', 'img');
+  if (label) s.setAttribute('aria-label', label);
+  const ok = vals.filter((v) => v != null);
+  const top = max || Math.max(1, ...ok);
+  const n = Math.max(vals.length - 1, 1);
+  let d = '';
+  vals.forEach((v, i) => { if (v == null) return; d += `${d && vals[i - 1] != null ? 'L' : 'M'}${(i / n * w).toFixed(1)} ${(ht - 3 - Math.min(v / top, 1) * (ht - 6)).toFixed(1)}`; });
+  const base = document.createElementNS(NS, 'path');
+  base.setAttribute('d', `M0 ${ht - 0.5}H${w}`);
+  base.setAttribute('stroke', 'currentColor'); base.setAttribute('stroke-opacity', '0.25'); base.setAttribute('fill', 'none');
+  s.append(base);
+  if (d) {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', 'currentColor');
+    p.setAttribute('stroke-width', '2'); p.setAttribute('stroke-linejoin', 'round'); p.setAttribute('vector-effect', 'non-scaling-stroke');
+    s.append(p);
+  }
+  return s;
+}
+
 export const chip = (text, kind) => h('span', { class: 'chip' + (kind ? ' ' + kind : '') }, text);
 
 let toastTimer;
