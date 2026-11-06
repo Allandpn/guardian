@@ -33,6 +33,7 @@ SEE_FLAGS = ("devices", "rules", "apps", "history")   # o que o admin deixa um g
 STATUS_KEYS = {"kind", "ts", "version", "owner", "filterActive", "filterReason", "tailscale", "activated", "pinSet", "platform"}
 RULE_KEYS = {"snapshot", "labels", "groups", "hints", "pending", "windows", "pkgNames"}
 APP_KEYS = {"pendingApps", "approvedApps", "installedApps"}
+VAULT_MAX = 256 * 1024  # o cofre cifrado, em texto (JSON)
 REQUEST_KINDS = {"domain", "app", "other", "unblock", "install", "command"}
 ADMIN_REQUEST_KINDS = {"install": cmds.T_WIN_INSTALL, "command": cmds.T_WIN_RUN}  # pedido do computador -> comando que o aprova
 ADMIN_REQUESTS_MAX_PER_DEV = 10
@@ -46,6 +47,7 @@ STATIC = {
     "/crypto.js": ("crypto.js", "text/javascript; charset=utf-8"),
     "/ui.js": ("ui.js", "text/javascript; charset=utf-8"),
     "/gate.js": ("gate.js", "text/javascript; charset=utf-8"),
+    "/vault.js": ("vault.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
@@ -192,6 +194,8 @@ class Gateway:
             ("POST", r"/v1/devices/(?P<dev>[a-z2-7]{20})/queried", self.post_queried),
             ("GET", r"/v1/queried", self.queried),
             ("POST", r"/v1/history/clear", self.clear_history),
+            ("GET", r"/v1/vault", self.vault_read),
+            ("POST", r"/v1/vault", self.vault_write),
             ("GET", r"/v1/allow-origins", self.allow_origins),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apks", self.list_apks),
             ("GET", r"/v1/devices/(?P<dev>[a-z2-7]{20})/apk/(?P<sha>[0-9a-f]{64})", self.get_apk),
@@ -219,6 +223,8 @@ class Gateway:
             return 128 * 1024  # com a lista de apps instalados (até ~400) o relatório passa de 64 KB
         if path.endswith("/blocked") or path.endswith("/queried"):
             return 64 * 1024
+        if path == "/v1/vault":
+            return VAULT_MAX + 1024
         if path.endswith("/commands") or path.endswith("/cosign"):
             return 16 * 1024
         if path.endswith("/requests"):
@@ -1241,6 +1247,35 @@ class Gateway:
                 continue
         self.store.drop_blocked(target, veto)
         return 200, {"ok": True, "accepted": len(items)}, {}
+
+    def vault_read(self, req):
+        """O cofre cifrado (só o mestre). O servidor não tem a chave: devolve o texto embaralhado que o navegador guardou."""
+        self.master(req)
+        row = self.store.vault_get()
+        out = {"ver": row["ver"], "blob": json.loads(row["blob"]), "ts": row["ts"]} if row else {"ver": 0, "blob": None}
+        return 200, out, {}
+
+    def vault_write(self, req):
+        """Grava o cofre já cifrado. Confere só a forma do envelope e a versão (dois navegadores não se atropelam)."""
+        gid = self.master(req)
+        if not self.l_cmd.allow(gid):
+            raise HttpError(429, "devagar")
+        d = req.json()
+        base, blob = d.get("base"), d.get("blob")
+        if not isinstance(base, int) or isinstance(base, bool) or base < 0:
+            raise HttpError(400, "versão inválida")
+        if not (isinstance(blob, dict) and blob.get("v") == 1 and blob.get("kdf") == "PBKDF2-SHA256"
+                and isinstance(blob.get("it"), int) and 100_000 <= blob["it"] <= 5_000_000
+                and all(isinstance(blob.get(k), str) and 0 < len(blob[k]) <= VAULT_MAX for k in ("salt", "iv", "ct"))):
+            raise HttpError(400, "cofre inválido")
+        text = json.dumps(blob, separators=(",", ":"))
+        if len(text) > VAULT_MAX:
+            raise HttpError(413, "cofre grande demais")
+        ver = self.store.vault_put(base, text, gid)
+        if ver is None:
+            raise HttpError(409, "o cofre mudou em outro navegador: recarregue")
+        self.store.audit(None, "vault", f"{gid}: atualizou o cofre (versão {ver}, {len(text)} bytes cifrados)")
+        return 200, {"ok": True, "ver": ver}, {}
 
     def clear_history(self, req):
         """Limpar o que as telas Bloqueios e Consultas mostram (só o guardião-mor e o mestre). Não mexe em regras do Pi-hole."""

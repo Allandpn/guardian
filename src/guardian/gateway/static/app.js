@@ -1,6 +1,7 @@
 import { enc, dec, sha256, sealPin, commandBytes, pairingString } from './crypto.js';
 import { h, icon, chip, spark, toast, sheet, insignia, parentsOf } from './ui.js';
 import { classify } from './gate.js';
+import { newContext as newVaultContext, seal as vaultSeal, open as vaultOpen, generate as vaultGenerate, MIN_PASS } from './vault.js';
 
 const main = document.getElementById('main');
 const nav = document.getElementById('nav');
@@ -254,7 +255,7 @@ function renderNav(active) {
   };
   const items = isAdmin() ? [item('#/', 'Início', 'home', 'home', 0), item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
     item('#/apps', 'Apps', 'grid', 'apps', counts.apps + counts.catalog), item('#/guardians', 'Guardiões', 'people', 'guardians', counts.cosign),
-    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), isMaster() ? item('#/deploys', 'Deploys', 'box', 'deploys', counts.deploys) : null,
+    item('#/devices', 'Dispositivos', 'device', 'devices', 0), item('#/pc', 'PC', 'terminal', 'pc', counts.pc), isMaster() ? item('#/deploys', 'Deploys', 'box', 'deploys', counts.deploys) : null, isMaster() ? item('#/cofre', 'Cofre', 'lock', 'cofre', 0) : null,
     item('#/history', 'Histórico', 'clock', 'history', 0)] :
     [canSee('devices') ? item('#/', 'Início', 'home', 'home', 0) : null, item('#/domains', 'Domínios', 'globe', 'domains', counts.reqs),
       item('#/apps', 'Apps', 'grid', 'apps', counts.apps + counts.catalog),
@@ -330,6 +331,7 @@ function moreSheet(list, active) {
 
 async function logout() {
   autoLogin = false;
+  vaultLock();
   await api('POST', '/v1/auth/logout', {});
   me = null;
   route();
@@ -2157,8 +2159,187 @@ async function pairView() {
 
 // ---------- roteamento ----------
 /** Atualização periódica que não atropela quem está digitando (no celular se digita devagar) nem uma folha aberta. */
+// ---------------------------------------------------------------- Cofre (cifrado no navegador; veja vault.js)
+const V = { ver: 0, blob: null, ctx: null, data: null, idle: null, hide: null };
+const VAULT_IDLE_MS = 5 * 60 * 1000;
+const vaultLock = () => { V.ctx = null; V.data = null; clearTimeout(V.idle); };
+function vaultTouch() {
+  clearTimeout(V.idle);
+  if (V.ctx) V.idle = setTimeout(() => { vaultLock(); if (location.hash.startsWith('#/cofre')) route(); }, VAULT_IDLE_MS);
+}
+document.addEventListener('visibilitychange', () => {   // aba escondida por mais de 1 minuto: trava
+  clearTimeout(V.hide);
+  if (document.hidden && V.ctx) V.hide = setTimeout(() => { vaultLock(); if (location.hash.startsWith('#/cofre')) route(); }, 60000);
+});
+
+async function vaultSave(next) {
+  const blob = await vaultSeal(V.ctx, next);
+  try {
+    const r = await api('POST', '/v1/vault', { base: V.ver, blob });
+    V.ver = r.ver; V.blob = blob; V.data = next;
+  } catch (e) {
+    if (e.status === 409) { vaultLock(); throw new Error('O cofre mudou em outro navegador. Abra de novo com a frase.'); }
+    throw e;
+  }
+  vaultTouch();
+}
+
+const newId = () => [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+const isUrl = (v) => /^https?:\/\/\S+$/i.test(v);
+const TEMPLATE = () => [{ label: 'Usuário', value: '', secret: false }, { label: 'Senha', value: '', secret: true }, { label: 'Página', value: '', secret: false }];
+const copyText = async (text) => {
+  try { await navigator.clipboard.writeText(text); } catch (_) { throw new Error('O navegador não deixou copiar'); }
+  toast('Copiado. Some da área de transferência em 30 s');
+  setTimeout(() => { navigator.clipboard.writeText('').catch(() => {}); }, 30000);
+};
+
+async function vaultView(sub, mode) {
+  if (!V.ctx) {
+    const r = await api('GET', '/v1/vault');
+    V.ver = r.ver; V.blob = r.blob;
+    return V.blob ? vaultUnlockView() : vaultCreateView();
+  }
+  vaultTouch();
+  if (sub === 'novo') return vaultEditView(null);
+  if (sub) {
+    const it = V.data.items.find((x) => x.id === sub);
+    if (!it) { location.hash = '#/cofre'; return null; }
+    return mode === 'editar' ? vaultEditView(it) : vaultItemView(it);
+  }
+  return vaultListView();
+}
+
+function vaultCreateView() {
+  const p1 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password', id: 'vp1' });
+  const p2 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password', id: 'vp2' });
+  const btn = h('button', { class: 'btn pri block', type: 'button' }, 'Criar cofre');
+  btn.onclick = act(async () => {
+    if (p1.value.length < MIN_PASS) throw new Error(`Use pelo menos ${MIN_PASS} caracteres`);
+    if (p1.value !== p2.value) throw new Error('As duas frases são diferentes');
+    btn.disabled = true; btn.textContent = 'Criando…';
+    try {
+      V.ctx = await newVaultContext(p1.value);
+      V.data = { items: [] };
+      await vaultSave(V.data);
+    } catch (e) { vaultLock(); btn.disabled = false; btn.textContent = 'Criar cofre'; throw e; }
+    route();
+  });
+  show(top('Cofre'), h('div', { class: 'wrap' },
+    h('div', { class: 'card' }, h('strong', {}, 'Criar o cofre'),
+      h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'Guarde senhas e dados de acesso (como o Pi). Tudo é cifrado aqui no seu navegador com uma frase que só você sabe: o servidor guarda só texto embaralhado.')),
+    h('div', { class: 'note bad' }, 'Se você esquecer a frase, ninguém consegue recuperar o cofre, nem o servidor. Anote em papel e guarde em lugar seguro.'),
+    h('div', { class: 'card' }, fld('Frase do cofre', p1, `Pelo menos ${MIN_PASS} caracteres. Uma frase longa (várias palavras) é melhor que uma senha curta.`), fld('Repita a frase', p2), btn)));
+}
+
+function vaultUnlockView() {
+  const p = h('input', { class: 'inp', type: 'password', autocomplete: 'current-password', id: 'vp' });
+  const btn = h('button', { class: 'btn pri block', type: 'button' }, 'Abrir cofre');
+  const go = act(async () => {
+    if (!p.value) throw new Error('Digite a frase do cofre');
+    btn.disabled = true; btn.textContent = 'Abrindo…';
+    try {
+      const r = await vaultOpen(p.value, V.blob);
+      V.ctx = r.ctx; V.data = r.data && Array.isArray(r.data.items) ? r.data : { items: [] };
+    } catch (e) { btn.disabled = false; btn.textContent = 'Abrir cofre'; p.select(); throw e; }
+    route();
+  });
+  btn.onclick = go;
+  p.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  show(top('Cofre'), h('div', { class: 'wrap' }, h('div', { class: 'card' },
+    h('div', { class: 'row' }, icon('lock'), h('strong', {}, 'Cofre trancado')),
+    h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'A frase não sai do seu navegador. O cofre trava sozinho depois de 5 minutos parado.'),
+    fld('Frase do cofre', p), btn)));
+}
+
+function vaultListView() {
+  const q = h('input', { class: 'inp', type: 'search', placeholder: 'Buscar', 'aria-label': 'Buscar no cofre' });
+  const box = h('div', {});
+  const paint = () => {
+    const t = q.value.trim().toLowerCase();
+    const items = V.data.items.filter((it) => !t || it.title.toLowerCase().includes(t) || it.fields.some((f) => !f.secret && f.value.toLowerCase().includes(t)))
+      .sort((a, b) => a.title.localeCompare(b.title, 'pt-BR'));
+    box.replaceChildren(items.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, items.map((it) => {
+      const sub = (it.fields.find((f) => !f.secret && f.value && !isUrl(f.value)) || {}).value || '';
+      return h('a', { class: 'li', href: `#/cofre/${it.id}`, style: 'text-decoration:none;color:inherit' }, icon('key'),
+        h('div', { class: 'sp' }, h('strong', {}, it.title), sub ? h('div', { class: 'muted' }, sub) : null), icon('chevron'));
+    })) : h('p', { class: 'empty' }, V.data.items.length ? 'Nada encontrado.' : 'O cofre está vazio. Toque em "Novo item" para guardar a primeira senha.'));
+  };
+  q.addEventListener('input', paint);
+  paint();
+  show(top('Cofre', { actions: h('button', { class: 'btn', type: 'button', onclick: () => { vaultLock(); route(); } }, 'Travar') }),
+    h('div', { class: 'wrap' }, h('div', { class: 'pad' }, h('a', { class: 'btn pri block', href: '#/cofre/novo', style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Novo item')),
+      h('div', { class: 'pad', style: 'margin:12px 0' }, q), box,
+      h('p', { class: 'muted pad', style: 'font-size:12px' }, 'Cifrado no navegador (AES-256). Só o mestre abre. ' + (V.data.items.length ? `${V.data.items.length} ite${V.data.items.length > 1 ? 'ns' : 'm'}.` : ''))));
+}
+
+function vaultItemView(it) {
+  const rows = it.fields.filter((f) => f.value || f.label).map((f) => {
+    let shown = false;
+    const val = h('span', { class: 'sp', style: 'word-break:break-all;font-family:ui-monospace,monospace' }, f.secret ? '••••••••' : f.value);
+    const kids = [h('button', { class: 'btn', type: 'button', onclick: act(() => copyText(f.value)) }, 'Copiar')];
+    if (f.secret) {
+      const eye = h('button', { class: 'btn', type: 'button' }, 'Mostrar');
+      eye.onclick = () => { shown = !shown; val.textContent = shown ? f.value : '••••••••'; eye.textContent = shown ? 'Esconder' : 'Mostrar'; };
+      kids.unshift(eye);
+    }
+    if (isUrl(f.value)) kids.unshift(h('a', { class: 'btn', href: f.value, target: '_blank', rel: 'noopener noreferrer', style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Abrir'));
+    return h('div', { style: 'padding:10px 0;border-top:1px solid var(--line)' }, h('div', { class: 'muted', style: 'font-size:12px' }, f.label || 'Campo'),
+      h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;margin-top:4px' }, val, h('span', { class: 'row', style: 'gap:6px' }, kids)));
+  });
+  show(top(it.title, { back: '#/cofre' }), h('div', { class: 'wrap' },
+    h('div', { class: 'card', style: 'padding-top:4px' }, rows.length ? rows : h('p', { class: 'muted' }, 'Sem campos.'),
+      it.note ? h('div', { style: 'padding:10px 0;border-top:1px solid var(--line)' }, h('div', { class: 'muted', style: 'font-size:12px' }, 'Anotação'), h('div', { style: 'white-space:pre-wrap;margin-top:4px' }, it.note)) : null),
+    h('div', { class: 'pad row', style: 'gap:10px' },
+      h('a', { class: 'btn pri grow', href: `#/cofre/${it.id}/editar`, style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Editar'),
+      h('button', { class: 'btn grow', type: 'button', onclick: act(async () => {
+        if (!(await sheet({ title: `Apagar "${it.title}"?`, rows: [['Item', it.title]], effect: 'some do cofre', effectKind: 'warn', confirm: 'Apagar', danger: true }))) return;
+        await vaultSave({ items: V.data.items.filter((x) => x.id !== it.id) });
+        location.hash = '#/cofre';
+      }) }, 'Apagar'))));
+}
+
+function vaultEditView(it) {
+  const draft = it ? { title: it.title, note: it.note || '', fields: it.fields.map((f) => ({ ...f })) } : { title: '', note: '', fields: TEMPLATE() };
+  const list = h('div', {});
+  const paint = () => list.replaceChildren(...draft.fields.map((f, i) => {
+    const val = h('input', { class: 'inp', type: f.secret ? 'password' : 'text', value: f.value, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': `Valor de ${f.label || 'campo'}` });
+    val.addEventListener('input', () => { f.value = val.value; });
+    const lab = h('input', { class: 'inp', type: 'text', value: f.label, placeholder: 'Nome do campo', 'aria-label': 'Nome do campo', maxlength: '60' });
+    lab.addEventListener('input', () => { f.label = lab.value; });
+    const sec = h('input', { type: 'checkbox', checked: f.secret, 'aria-label': 'Campo secreto' });
+    sec.addEventListener('change', () => { f.secret = sec.checked; val.type = f.secret ? 'password' : 'text'; gen.hidden = !f.secret; });
+    const gen = h('button', { class: 'btn', type: 'button', hidden: !f.secret, onclick: () => { f.value = vaultGenerate(20); val.value = f.value; val.type = 'text'; } }, 'Gerar senha');
+    return h('div', { class: 'card', style: 'margin-bottom:10px' }, lab,
+      h('div', { class: 'row', style: 'gap:8px;margin-top:8px' }, h('div', { class: 'sp' }, val), gen),
+      h('div', { class: 'row', style: 'margin-top:8px;gap:10px' }, h('label', { class: 'row', style: 'gap:6px' }, sec, 'Secreto (escondido)'), h('span', { class: 'sp' }),
+        h('button', { class: 'btn', type: 'button', onclick: () => { draft.fields.splice(i, 1); paint(); } }, 'Tirar campo')));
+  }));
+  paint();
+  const title = h('input', { class: 'inp', type: 'text', value: draft.title, maxlength: '80', placeholder: 'Ex.: Raspberry Pi' });
+  title.addEventListener('input', () => { draft.title = title.value; });
+  const note = h('textarea', { class: 'inp', rows: '3', style: 'padding:10px 12px;min-height:80px', maxlength: '2000' }, draft.note);
+  note.addEventListener('input', () => { draft.note = note.value; });
+  const save = h('button', { class: 'btn pri grow', type: 'button' }, 'Salvar');
+  save.onclick = act(async () => {
+    const t = draft.title.trim();
+    if (!t) throw new Error('Dê um nome ao item');
+    const fields = draft.fields.filter((f) => f.label.trim() || f.value).map((f) => ({ label: f.label.trim().slice(0, 60), value: f.value.slice(0, 2000), secret: !!f.secret }));
+    const next = { id: it ? it.id : newId(), title: t.slice(0, 80), note: draft.note.trim().slice(0, 2000), fields, updated: Math.floor(Date.now() / 1000) };
+    if (!it && V.data.items.length >= 500) throw new Error('Cofre cheio (500 itens)');
+    save.disabled = true;
+    try { await vaultSave({ items: it ? V.data.items.map((x) => (x.id === it.id ? next : x)) : [...V.data.items, next] }); } finally { save.disabled = false; }
+    location.hash = `#/cofre/${next.id}`;
+  });
+  show(top(it ? 'Editar item' : 'Novo item', { back: it ? `#/cofre/${it.id}` : '#/cofre' }), h('div', { class: 'wrap' },
+    h('div', { class: 'card' }, fld('Nome', title)), h('div', { class: 'sec' }, 'Campos'), list,
+    h('div', { class: 'pad' }, h('button', { class: 'btn block', type: 'button', style: 'margin-bottom:12px', onclick: () => { draft.fields.push({ label: '', value: '', secret: false }); paint(); } }, 'Adicionar campo')),
+    h('div', { class: 'card' }, fld('Anotação', note)),
+    h('div', { class: 'pad row', style: 'gap:10px' }, save, h('a', { class: 'btn grow', href: it ? `#/cofre/${it.id}` : '#/cofre', style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Cancelar'))));
+}
+
 function autoRefresh() {
   const a = document.activeElement;
+  if (location.hash.startsWith('#/cofre')) { timer = setTimeout(autoRefresh, 20000); return; }   // o cofre não recarrega sozinho (perderia o que está sendo digitado)
   const typing = a && a.matches && a.matches('input, textarea, select');
   const dirty = [...document.querySelectorAll('#main input.inp, #main textarea:not([readonly])')].some((e) => e.value.trim());
   if (typing || dirty || document.querySelector('.overlay') || document.hidden) { timer = setTimeout(autoRefresh, 20000); return; }
@@ -2175,6 +2356,7 @@ async function route() {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
     const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|consultas|liberados|recusados|vetos|meus)$/) || hash.match(/^#\/(domains)$/);
     const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados|instalados|vetados|catalogo))?$/);
+    const cofre = hash.match(/^#\/cofre(?:\/(novo|[0-9a-f]{12}))?(?:\/(editar))?$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);
@@ -2184,13 +2366,14 @@ async function route() {
     else if (hash === '#/devices' && isAdmin()) await devicesView();
     else if (hash === '#/pc' && isAdmin()) await pcView();
     else if (hash === '#/deploys' && isMaster()) await deploysView();
+    else if (cofre && isMaster()) await vaultView(cofre[1], cofre[2]);
     else if (his) await (isAdmin() || canSee('history') ? historyView(his[1]) : domainsView());
     else if (hash === '#/pair' && isAdmin()) await pairView();
     else if (ap) await appsView(ap[1]);
     else if (isAdmin() || canSee('devices')) await inicioView();
     else await domainsView();
   } catch (e) {
-    if (e.status === 401) { me = null; nav.hidden = true; return loginView(); }
+    if (e.status === 401) { vaultLock(); me = null; nav.hidden = true; return loginView(); }
     if (e.status === 403 && /janela de horário/.test(e.message)) { me = null; nav.hidden = true; return closedView(e.message); }
     show(top('Erro'), h('div', { class: 'card badb' }, e.message));
   }
