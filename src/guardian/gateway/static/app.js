@@ -1,7 +1,7 @@
 import { enc, dec, sha256, sealPin, commandBytes, pairingString } from './crypto.js';
 import { h, icon, chip, spark, toast, sheet, insignia, parentsOf } from './ui.js';
 import { classify } from './gate.js';
-import { newContext as newVaultContext, seal as vaultSeal, open as vaultOpen, generate as vaultGenerate, MIN_PASS } from './vault.js';
+import { newContext as newVaultContext, seal as vaultSeal, open as vaultOpen, openWith as vaultOpenWith, generate as vaultGenerate, remember as vaultRemember, recall as vaultRecall, forget as vaultForget, MIN_PASS } from './vault.js';
 
 const main = document.getElementById('main');
 const nav = document.getElementById('nav');
@@ -2160,17 +2160,8 @@ async function pairView() {
 // ---------- roteamento ----------
 /** Atualização periódica que não atropela quem está digitando (no celular se digita devagar) nem uma folha aberta. */
 // ---------------------------------------------------------------- Cofre (cifrado no navegador; veja vault.js)
-const V = { ver: 0, blob: null, ctx: null, data: null, idle: null, hide: null };
-const VAULT_IDLE_MS = 5 * 60 * 1000;
-const vaultLock = () => { V.ctx = null; V.data = null; clearTimeout(V.idle); };
-function vaultTouch() {
-  clearTimeout(V.idle);
-  if (V.ctx) V.idle = setTimeout(() => { vaultLock(); if (location.hash.startsWith('#/cofre')) route(); }, VAULT_IDLE_MS);
-}
-document.addEventListener('visibilitychange', () => {   // aba escondida por mais de 1 minuto: trava
-  clearTimeout(V.hide);
-  if (document.hidden && V.ctx) V.hide = setTimeout(() => { vaultLock(); if (location.hash.startsWith('#/cofre')) route(); }, 60000);
-});
+const V = { ver: 0, blob: null, ctx: null, data: null };
+const vaultLock = () => { V.ctx = null; V.data = null; V.ver = 0; };   // some só da memória; o que foi lembrado neste aparelho continua (ao sair, o login por passkey é que protege)
 
 async function vaultSave(next) {
   const blob = await vaultSeal(V.ctx, next);
@@ -2181,7 +2172,6 @@ async function vaultSave(next) {
     if (e.status === 409) { vaultLock(); throw new Error('O cofre mudou em outro navegador. Abra de novo com a frase.'); }
     throw e;
   }
-  vaultTouch();
 }
 
 const newId = () => [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -2194,13 +2184,21 @@ const copyText = async (text) => {
 };
 
 async function vaultView(sub, mode) {
-  if (!V.ctx) {
-    const r = await api('GET', '/v1/vault');
+  const r = await api('GET', '/v1/vault');   // sempre confere a versão: outro mestre pode ter mudado o cofre
+  if (!r.blob) { vaultLock(); return vaultCreateView(); }
+  if (r.ver !== V.ver || !V.data) {
     V.ver = r.ver; V.blob = r.blob;
-    return V.blob ? vaultUnlockView() : vaultCreateView();
+    let ctx = V.ctx;
+    if (!ctx) { const saved = await vaultRecall(me.guardian.id); if (saved && saved.key) ctx = { key: saved.key, salt: saved.salt, it: saved.it }; }
+    V.ctx = V.data = null;
+    if (ctx) {
+      try { V.data = await vaultOpenWith(ctx, r.blob); V.ctx = ctx; } catch (_) { await vaultForget(me.guardian.id); }   // a frase mudou: pede de novo
+    }
   }
-  vaultTouch();
+  if (!V.ctx || !V.data) return vaultUnlockView();
+  if (!Array.isArray(V.data.items)) V.data = { items: [] };
   if (sub === 'novo') return vaultEditView(null);
+  if (sub === 'frase') return vaultPhraseView();
   if (sub) {
     const it = V.data.items.find((x) => x.id === sub);
     if (!it) { location.hash = '#/cofre'; return null; }
@@ -2221,6 +2219,7 @@ function vaultCreateView() {
       V.ctx = await newVaultContext(p1.value);
       V.data = { items: [] };
       await vaultSave(V.data);
+      await vaultRemember(me.guardian.id, V.ctx);
     } catch (e) { vaultLock(); btn.disabled = false; btn.textContent = 'Criar cofre'; throw e; }
     route();
   });
@@ -2228,18 +2227,21 @@ function vaultCreateView() {
     h('div', { class: 'card' }, h('strong', {}, 'Criar o cofre'),
       h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'Guarde senhas e dados de acesso (como o Pi). Tudo é cifrado aqui no seu navegador com uma frase que só você sabe: o servidor guarda só texto embaralhado.')),
     h('div', { class: 'note bad' }, 'Se você esquecer a frase, ninguém consegue recuperar o cofre, nem o servidor. Anote em papel e guarde em lugar seguro.'),
+    h('div', { class: 'note' }, 'Todos os mestres abrem este cofre com a mesma frase. Cada um digita uma vez por aparelho; depois, o cofre abre sozinho enquanto você estiver logado.'),
     h('div', { class: 'card' }, fld('Frase do cofre', p1, `Pelo menos ${MIN_PASS} caracteres. Uma frase longa (várias palavras) é melhor que uma senha curta.`), fld('Repita a frase', p2), btn)));
 }
 
 function vaultUnlockView() {
   const p = h('input', { class: 'inp', type: 'password', autocomplete: 'current-password', id: 'vp' });
   const btn = h('button', { class: 'btn pri block', type: 'button' }, 'Abrir cofre');
+  const mem = h('input', { type: 'checkbox', checked: true, id: 'vmem' });
   const go = act(async () => {
     if (!p.value) throw new Error('Digite a frase do cofre');
     btn.disabled = true; btn.textContent = 'Abrindo…';
     try {
       const r = await vaultOpen(p.value, V.blob);
       V.ctx = r.ctx; V.data = r.data && Array.isArray(r.data.items) ? r.data : { items: [] };
+      if (mem.checked) await vaultRemember(me.guardian.id, r.ctx);
     } catch (e) { btn.disabled = false; btn.textContent = 'Abrir cofre'; p.select(); throw e; }
     route();
   });
@@ -2247,8 +2249,9 @@ function vaultUnlockView() {
   p.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   show(top('Cofre'), h('div', { class: 'wrap' }, h('div', { class: 'card' },
     h('div', { class: 'row' }, icon('lock'), h('strong', {}, 'Cofre trancado')),
-    h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'A frase não sai do seu navegador. O cofre trava sozinho depois de 5 minutos parado.'),
-    fld('Frase do cofre', p), btn)));
+    h('p', { class: 'muted', style: 'margin:6px 0 10px' }, 'A frase não sai do seu navegador.'),
+    fld('Frase do cofre', p), h('label', { class: 'row', style: 'gap:8px;margin:2px 0 12px' }, mem, 'Lembrar neste aparelho'),
+    h('p', { class: 'muted', style: 'font-size:12px;margin:0 0 12px' }, 'Com isso marcado, neste aparelho o cofre abre direto quando você entra no Guardian. Desmarque em computador de outra pessoa.'), btn)));
 }
 
 function vaultListView() {
@@ -2266,10 +2269,34 @@ function vaultListView() {
   };
   q.addEventListener('input', paint);
   paint();
-  show(top('Cofre', { actions: h('button', { class: 'btn', type: 'button', onclick: () => { vaultLock(); route(); } }, 'Travar') }),
+  show(top('Cofre', { actions: h('button', { class: 'btn', type: 'button', onclick: act(async () => { await vaultForget(me.guardian.id); vaultLock(); toast('Cofre trancado neste aparelho'); route(); }) }, 'Travar') }),
     h('div', { class: 'wrap' }, h('div', { class: 'pad' }, h('a', { class: 'btn pri block', href: '#/cofre/novo', style: 'display:flex;align-items:center;justify-content:center;text-decoration:none' }, 'Novo item')),
       h('div', { class: 'pad', style: 'margin:12px 0' }, q), box,
-      h('p', { class: 'muted pad', style: 'font-size:12px' }, 'Cifrado no navegador (AES-256). Só o mestre abre. ' + (V.data.items.length ? `${V.data.items.length} ite${V.data.items.length > 1 ? 'ns' : 'm'}.` : ''))));
+      h('div', { class: 'pad' }, h('a', { class: 'btn block', href: '#/cofre/frase', style: 'display:flex;align-items:center;justify-content:center;text-decoration:none;margin-bottom:10px' }, 'Trocar a frase do cofre')),
+      h('p', { class: 'muted pad', style: 'font-size:12px' }, 'Cifrado no navegador (AES-256). Os mestres abrem. ' + (V.data.items.length ? `${V.data.items.length} ite${V.data.items.length > 1 ? 'ns' : 'm'}.` : ''))));
+}
+
+function vaultPhraseView() {
+  const p1 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password', id: 'np1' });
+  const p2 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password', id: 'np2' });
+  const btn = h('button', { class: 'btn pri block', type: 'button' }, 'Trocar a frase');
+  btn.onclick = act(async () => {
+    if (p1.value.length < MIN_PASS) throw new Error(`Use pelo menos ${MIN_PASS} caracteres`);
+    if (p1.value !== p2.value) throw new Error('As duas frases são diferentes');
+    btn.disabled = true; btn.textContent = 'Trocando…';
+    const old = V.ctx;
+    try {
+      V.ctx = await newVaultContext(p1.value);
+      await vaultSave(V.data);
+      await vaultRemember(me.guardian.id, V.ctx);
+    } catch (e) { V.ctx = old; btn.disabled = false; btn.textContent = 'Trocar a frase'; throw e; }
+    toast('Frase trocada. Os outros mestres vão digitar a nova uma vez.');
+    location.hash = '#/cofre';
+  });
+  show(top('Trocar a frase', { back: '#/cofre' }), h('div', { class: 'wrap' },
+    h('div', { class: 'note' }, 'Use depois de tirar um mestre, ou se achar que a frase vazou. Cada mestre digita a nova frase uma vez em cada aparelho.'),
+    h('div', { class: 'note bad' }, 'Quem tiver uma cópia antiga do cofre ainda a abre com a frase antiga.'),
+    h('div', { class: 'card' }, fld('Nova frase', p1, `Pelo menos ${MIN_PASS} caracteres.`), fld('Repita a nova frase', p2), btn)));
 }
 
 function vaultItemView(it) {
@@ -2356,7 +2383,7 @@ async function route() {
     const dm = hash.match(/^#\/device\/([a-z2-7]{20})(?:\/(regras|apps|avancado))?$/);
     const dom = hash.match(/^#\/(?:domains\/)?(solicitacoes|pedidos|bloqueios|consultas|liberados|recusados|vetos|meus)$/) || hash.match(/^#\/(domains)$/);
     const ap = hash.match(/^#\/apps(?:\/(solicitacoes|aprovados|recusados|instalados|vetados|catalogo))?$/);
-    const cofre = hash.match(/^#\/cofre(?:\/(novo|[0-9a-f]{12}))?(?:\/(editar))?$/);
+    const cofre = hash.match(/^#\/cofre(?:\/(novo|frase|[0-9a-f]{12}))?(?:\/(editar))?$/);
     const his = hash.match(/^#\/history(?:\/(comandos|acessos))?$/);
     if (dm) await deviceView(dm[1], dm[2] || 'resumo');
     else if (dom) await domainsView(dom[1] === 'domains' ? undefined : dom[1]);

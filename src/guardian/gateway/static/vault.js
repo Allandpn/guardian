@@ -24,6 +24,35 @@ export async function seal(ctx, data) {
   return { v: 1, kdf: 'PBKDF2-SHA256', it: ctx.it, salt: ctx.salt, iv: enc(iv), ct: enc(ct) };
 }
 
+/** Abre o envelope com uma chave já derivada (a lembrada neste aparelho). Chave que não serve lança 'frase errada'. */
+export async function openWith(ctx, blob) {
+  if (!blob || blob.v !== 1 || blob.salt !== ctx.salt || blob.it !== ctx.it) throw new Error('frase errada');  // a frase mudou em outro lugar
+  try {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: dec(blob.iv), additionalData: AAD }, ctx.key, dec(blob.ct));
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch (_) {
+    throw new Error('frase errada');
+  }
+}
+
+// Lembrar neste aparelho: a chave (CryptoKey NÃO extraível) fica no IndexedDB deste navegador, por guardião. Ela não dá para copiar
+// para fora, nunca vai ao servidor, e só é usada com o mestre logado (o login é por passkey). Sem IndexedDB, só não lembra.
+const idb = () => new Promise((res, rej) => {
+  const r = indexedDB.open('guardian-vault', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('k');
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+const tx = async (mode, fn) => {
+  const db = await idb();
+  try {
+    return await new Promise((res, rej) => { const q = fn(db.transaction('k', mode).objectStore('k')); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+  } finally { db.close(); }
+};
+export const remember = (gid, ctx) => tx('readwrite', (s) => s.put({ key: ctx.key, salt: ctx.salt, it: ctx.it }, gid)).then(() => true, () => false);
+export const recall = (gid) => tx('readonly', (s) => s.get(gid)).catch(() => null);
+export const forget = (gid) => tx('readwrite', (s) => s.delete(gid)).then(() => true, () => false);
+
 /** Abre o envelope com a frase. Frase errada (ou envelope adulterado) lança 'frase errada'. */
 export async function open(pass, blob) {
   if (!blob || blob.v !== 1 || blob.kdf !== 'PBKDF2-SHA256') throw new Error('formato de cofre desconhecido');
