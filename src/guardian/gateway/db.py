@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TEXT,
 CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, guardian TEXT NOT NULL, p256dh TEXT NOT NULL,
   auth TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS vault(id INTEGER PRIMARY KEY CHECK(id=1), ver INTEGER NOT NULL, blob TEXT NOT NULL, ts INTEGER NOT NULL, by TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, dev TEXT NOT NULL, ts INTEGER NOT NULL,
   kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open');
 CREATE TABLE IF NOT EXISTS blocked(dev TEXT NOT NULL, domain TEXT NOT NULL, src TEXT NOT NULL, list TEXT NOT NULL DEFAULT '',
@@ -350,6 +351,20 @@ class Store:
         for r in self.q("SELECT dev, pkg FROM app_refusals ORDER BY ts DESC"):
             out.setdefault(r["dev"], []).append(r["pkg"])
         return out
+
+    # --- cofre (o servidor só guarda o texto cifrado no navegador; nunca vê a frase nem o conteúdo) ------------------
+    def vault_get(self):
+        return self.one("SELECT ver, blob, ts, by FROM vault WHERE id=1")
+
+    def vault_put(self, base_ver: int, blob: str, by: str) -> int | None:
+        """Grava se `base_ver` é a versão atual (0 = ainda não existe). Devolve a nova versão, ou None se outro navegador gravou antes."""
+        with self.lock:
+            cur = self.db.execute("SELECT ver FROM vault WHERE id=1").fetchone()
+            if (cur["ver"] if cur else 0) != base_ver:
+                return None
+            self.db.execute("INSERT INTO vault(id,ver,blob,ts,by) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ver=?, blob=?, ts=?, by=?",
+                            (base_ver + 1, blob, int(time.time()), by, base_ver + 1, blob, int(time.time()), by))
+            return base_ver + 1
 
     def audit(self, dev: str | None, kind: str, text: str):
         self.x("INSERT INTO audit(dev,ts,kind,text) VALUES(?,?,?,?)", (dev, int(time.time()), kind, text[:300]))
