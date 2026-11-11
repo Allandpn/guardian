@@ -1676,13 +1676,15 @@ async function pcView() {
     route();
   });
   const mk = (ph) => h('input', { class: 'inp', type: 'text', placeholder: ph, autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false' });
-  const sel = h('select', { class: 'sel' }, pcs.map((d) => h('option', { value: d.id }, d.name)));
   const wName = mk('Git'), wId = mk('Git.Git'), wVer = mk('a mais nova');
   const sName = mk('Limpar a pasta Temp'), sBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'Write-Output "olá"', spellcheck: 'false' });
   // Raspberry Pi: script livre, só do mestre. Quem roda é o deployer (root), que confere a assinatura de novo; o executor só entrega.
   const piEx = isMaster() ? devices.find((d) => d.kind === 'executor') : null;
   const piDep = ((piEx && piEx.report) || {}).deploy || null;
   const piRuns = ((piDep && piDep.status && piDep.status.history) || []).filter((x) => x.project === 'script').slice(0, 8);
+  const sel = h('select', { class: 'sel', 'aria-label': 'Onde executar' }, [...pcs.map((d) => h('option', { value: d.id }, d.name)), ...(piEx ? [h('option', { value: piEx.id }, 'Raspberry Pi')] : [])]);
+  const onPi = () => !!piEx && sel.value === piEx.id;
+  const piReady = !!(piDep && piDep.offers && (piDep.offers.features || []).includes('pi_run'));   // o deployer novo diz que sabe rodar script
   const pName = mk('Reiniciar o Pi-hole'), pBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'systemctl restart pihole-FTL', spellcheck: 'false', 'aria-label': 'Script do Pi (bash)' });
   const piSend = act(async () => {
     const script = pBody.value;
@@ -1698,15 +1700,36 @@ async function pcView() {
     }
   });
   const piBlock = piEx ? [
-    h('div', { class: 'sec' }, 'Executar no Raspberry Pi'),
-    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Só o mestre. Roda como root no Pi, com a sua passkey, dentro da sua janela de horário.'),
-      !piDep ? h('div', { class: 'note warn' }, 'O deployer ainda não está ligado a este executor (veja docs/DEPLOY.md): sem ele o Pi não roda scripts.') : null,
-      fld('O que o script faz', pName), fld('Script (bash)', pBody),
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', disabled: !piDep, onclick: piSend }, 'Revisar e assinar'))),
     h('div', { class: 'sec' }, 'O que foi executado no Pi'),
     piRuns.length ? piRuns.map((x) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${x.commit || 'script'} `, chip(x.ok ? 'ok' : 'falhou', x.ok ? 'ok' : 'bad'),
       h('span', { class: 'muted' }, ` ${x.ts ? ago(x.ts, now) : ''} · ${gname(x.by)}`)), h('pre', { class: 'detail inline' }, `${x.msg || ''}\n${x.out || ''}`))) :
       h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado no Pi ainda.'))] : null;
+  // "Executar agora": o mesmo lugar para o computador e para o Raspberry Pi; o menu escolhe onde, e o formulário muda junto.
+  const pcForms = h('div', {},
+    h('div', { class: 'sec', style: 'padding-left:0' }, 'Instalar pelo winget'), fld('Nome do programa', wName), fld('Id do winget', wId), fld('Versão (opcional)', wVer),
+    h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+      const p = { name: wName.value.trim(), source: 'winget', id: wId.value.trim() };
+      if (wVer.value.trim()) p.version = wVer.value.trim();
+      await direct(sel.value, p)();
+    }) }, 'Revisar e assinar')),
+    h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script'), fld('O que o script faz', sName), fld('Script do PowerShell', sBody),
+    h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
+      const p = { shell: 'powershell', script: sBody.value };
+      if (sName.value.trim()) p.name = sName.value.trim();
+      await direct(sel.value, p)();
+    }) }, 'Revisar e assinar')));
+  const piForm = piEx ? h('div', { hidden: true },
+    h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script no Raspberry Pi'),
+    h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Só o mestre. Roda como root no Pi, uma vez, dentro da sua janela de horário.'),
+    !piDep ? h('div', { class: 'note warn' }, 'O deployer ainda não está ligado a este executor (veja docs/DEPLOY.md): sem ele o Pi não roda scripts.')
+      : !piReady ? h('div', { class: 'note warn' }, 'O deployer do Pi ainda é a versão antiga e não sabe rodar scripts. Depois que esta versão do Guardian estiver no ar (Deploys), quem tem root no Pi roda uma vez: cd /opt/guardian && sudo sh deploy/install-deployer.sh && sudo systemctl restart guardian-deployer. Depois disso o botão libera sozinho.') : null,
+    fld('O que o script faz', pName), fld('Script (bash)', pBody),
+    h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', disabled: !piReady, onclick: piSend }, 'Revisar e assinar'))) : null;
+  const sync = () => { pcForms.hidden = onPi(); if (piForm) piForm.hidden = !onPi(); };
+  sel.addEventListener('change', sync);
+  sync();
+  const execSection = [h('div', { class: 'sec' }, 'Executar agora'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sem pedido: você mesmo manda, com a sua passkey.'), fld('Onde', sel), pcForms, piForm)];
   const reqCard = (q) => h('div', { class: 'card warnb' },
     h('div', { class: 'row', style: 'align-items:flex-start;gap:12px' }, insignia('device', 40), h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${nameOf(q.dev)} · ${ago(q.ts, now)}`))),
     h('pre', { class: 'detail inline' }, winDetail(q.payload)),
@@ -1734,20 +1757,9 @@ async function pcView() {
       h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Se o computador estiver desligado, o comando aprovado espera no servidor e roda quando ele ligar, dentro do prazo "Vale por". Depois disso vence e precisa ser aprovado de novo. Vale para as próximas aprovações, neste navegador.'),
         Object.keys(WIN_CHOICES).map((k) => [h('div', { class: 'sec', style: 'padding-left:0' }, WIN_CHOICES[k][0]),
           pillGroup(WIN_CHOICES[k][0], WIN_CHOICES[k][1], winCfg()[k], (v) => { setWinCfg(k, v); route(); })])),
-      h('div', { class: 'sec' }, 'Executar agora'),
-      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Sem pedido: você mesmo manda, com a sua passkey.'), fld('Computador', sel),
-        h('div', { class: 'sec', style: 'padding-left:0' }, 'Instalar pelo winget'), fld('Nome do programa', wName), fld('Id do winget', wId), fld('Versão (opcional)', wVer),
-        h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
-          const p = { name: wName.value.trim(), source: 'winget', id: wId.value.trim() };
-          if (wVer.value.trim()) p.version = wVer.value.trim();
-          await direct(sel.value, p)();
-        }) }, 'Revisar e assinar')),
-        h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script'), fld('O que o script faz', sName), fld('Script do PowerShell', sBody),
-        h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', onclick: act(async () => {
-          const p = { shell: 'powershell', script: sBody.value };
-          if (sName.value.trim()) p.name = sName.value.trim();
-          await direct(sel.value, p)();
-        }) }, 'Revisar e assinar'))),
+      ] : null,
+    (pcs.length || piEx) ? execSection : null,
+    pcs.length ? [
       h('div', { class: 'sec' }, 'O que foi executado'),
       runs.length ? runs.map((r) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${r.name || (r.type === 'win_install' ? 'Instalação' : 'Comando')} `, chip(r.ok ? 'ok' : 'falhou', r.ok ? 'ok' : 'bad'),
         h('span', { class: 'muted' }, ` ${r.pc} · ${ago(r.ts, now)} · ${gname(r.by)}`), r.verified === true ? [' ', chip('conferido', 'ok')] : r.verified === false && r.ok ? [' ', chip('não confirmou', 'warn')] : null),
