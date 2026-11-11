@@ -61,6 +61,16 @@ exige editar esse arquivo como root (ainda não há comando assinado para isso).
 
 A versão `release/2` foi criada só para testar o fluxo (mudança apenas de documentação). Ela aparece em Deploys como "não mexe em segurança".
 
+## Script no Pi (`pi_run`), só o mestre
+
+Tela **PC > Executar no Raspberry Pi**: o mestre cola um script bash e assina com a passkey (comando `pi_run`: script, nome opcional e tempo limite de 5 s a 1 h, padrão 10 min).
+O executor **não roda nada** (ele não tem poder para isso): deixa o comando assinado na caixa do deployer, que confere a assinatura, o papel (só mestre), a janela de horário e o contador
+contra a sua cópia da confiança, e roda o script como root, uma vez, com `bash`, `PATH` fixo e `HOME=/root`. Vale o script que está dentro do comando assinado, não o que o executor escreveu ao lado.
+Sem a assinatura conferida pelo deployer, nada roda. O resultado (código, e o fim da saída, 1500 caracteres) vai para o histórico dos deploys; só os 3 mais recentes guardam a saída.
+
+**Atenção:** o deployer é de root e **não é atualizado por deploy**. Esta função só passa a existir no Pi depois de `sudo sh deploy/install-deployer.sh` e `systemctl restart guardian-deployer`
+(uma vez, por quem tem root). Antes disso o deployer recusa o pedido ("comando que o deployer não executa").
+
 ## Apps Android (loja própria)
 
 Instalar e atualizar apps nos celulares sem a janela de dev. O aparelho **nunca fala com o GitHub**.
