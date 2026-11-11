@@ -1259,6 +1259,8 @@ async function domainsView(tab) {
       })) : empty('Nenhuma solicitação de liberação.'),
       otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
         h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
+        // Pedido de app é só um texto: quem instala e aprova é a tela Apps (solicitações do aparelho), não esta.
+        q.kind === 'app' ? h('button', { class: 'btn pri', type: 'button', onclick: () => { appDev = q.dev; location.hash = '#/apps/solicitacoes'; } }, 'Ver em Apps') : null,
         h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
   } else if (tab === 'bloqueios') {
     const qs = new URLSearchParams();
