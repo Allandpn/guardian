@@ -253,7 +253,8 @@ class Deployer:
             self._git(name, "--git-dir", m, "fetch", self.reg[name]["workdir"], base)
         if not self._have(name, m, base):
             return None
-        rc, out = self._git(name, "--git-dir", m, "diff", "--name-only", base, commit)
+        # --no-renames: mover um arquivo sensível para fora da pasta listaria só o nome novo; assim aparecem os dois (o que sumiu e o que surgiu)
+        rc, out = self._git(name, "--git-dir", m, "diff", "--name-only", "--no-renames", base, commit)
         return out.splitlines() if rc == 0 else None
 
     def sensitive_of(self, name: str, files: list[str] | None) -> list[str]:
@@ -284,7 +285,7 @@ class Deployer:
                         continue
                     if not (mem.isfile() or mem.isdir()) or n.startswith(("/", "..")):
                         continue
-                    t.extract(mem, pdir)
+                    t.extract(mem, pdir, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
             links |= self._escaping_links(name)
             env = os.path.join(proj["workdir"], ".env")
             if os.path.isfile(env):

@@ -7,10 +7,12 @@
       "src/guardian/protocol/*",
       "src/guardian/executor/*",
       "src/guardian/deployer/*",
-      "src/guardian/gateway/server.py",
-      "src/guardian/gateway/db.py",
-      "src/guardian/gateway/limits.py",
+      "src/guardian/gateway/*",
+      "src/guardian/agent/*",
       "deploy/*",
+      "tools/*",
+      ".github/*",
+      "pyproject.toml",
       "tests/gwharness.py"
     ],
     "steps": [
