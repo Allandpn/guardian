@@ -47,6 +47,9 @@ class SignedInbox:
             if t == cmds.T_DEPLOY:
                 cmds.check_deploy_args(a)
                 return {"project": a["project"], "commit": a["commit"], "sensitive_ok": a.get("sensitive_ok") is True, "guardian": who}
+            if t == cmds.T_PI_RUN:
+                cmds.check_pi_run_args(a)
+                return {"kind": "pi_run", "script": a["script"], "name": a.get("name", ""), "timeout_s": a.get("timeout_s", 600), "guardian": who}
             if t == cmds.T_PROJECT_ADD:
                 cmds.check_project_add_args(a)
                 return {"kind": "project_add", "name": a["name"], "github": a["github"], "pkg": a["pkg"], "guardian": who}

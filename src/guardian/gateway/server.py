@@ -648,7 +648,7 @@ class Gateway:
         return 200, {"id": cid, "status": "ready" if ready else "awaiting"}, {}
 
     # Argumentos que o gateway confere antes de enfileirar (o aparelho e o executor conferem de novo).
-    _ARG_CHECKS = {cmds.T_PROJECT_ADD: cmds.check_project_add_args, cmds.T_DEPLOY: cmds.check_deploy_args, cmds.T_INSTALL_APP: cmds.check_install_args}
+    _ARG_CHECKS = {cmds.T_PROJECT_ADD: cmds.check_project_add_args, cmds.T_DEPLOY: cmds.check_deploy_args, cmds.T_PI_RUN: cmds.check_pi_run_args, cmds.T_INSTALL_APP: cmds.check_install_args}
 
     def _check_command(self, row, dev: str, gid: str, cmd: dict, signers: set, trust: cmds.Trust) -> None:
         t, a = cmd["type"], cmd["args"]

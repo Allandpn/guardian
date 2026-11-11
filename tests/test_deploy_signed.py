@@ -144,6 +144,67 @@ class SignedDeploy(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertIn("assinatura recusada", res["msg"])
 
+    def test_pi_run_only_with_the_masters_signature(self):
+        calls = []
+        real = self.d.run
+
+        def fake_run(argv, cwd=None, env=None, timeout=600):
+            if argv[0] != "/bin/bash":
+                return real(argv, cwd=cwd, env=env, timeout=timeout)   # o git do deployer segue normal
+            calls.append((argv, timeout, open(argv[1]).read()))
+            return 0, "olá do Pi"
+        self.d.run = fake_run
+        args = {"script": "echo oi\n", "name": "teste", "timeout_s": 30}
+        # sem envelope: recusado, nada roda
+        res = self.drop({"kind": "pi_run", "script": "rm -rf /", "name": "x", "timeout_s": 30}, "1-a.json")
+        self.assertFalse(res["ok"])
+        self.assertEqual(calls, [])
+        # guardião-mor não assina script no Pi (é do mestre)
+        res = self.drop({"envelope": self.env(args, cmds.T_PI_RUN, "g_mor", self.mor)}, "2-b.json")
+        self.assertFalse(res["ok"], res)
+        self.assertEqual(calls, [])
+        # o mestre assina: roda o script que está DENTRO da assinatura, não o que o executor escreveu ao lado
+        res = self.drop({"kind": "pi_run", "script": "rm -rf /", "envelope": self.env(args, cmds.T_PI_RUN)}, "3-c.json")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], 30)
+        self.assertEqual(calls[0][2], "echo oi\n")
+        self.assertEqual(res["out"], "olá do Pi")
+        self.assertEqual(res["project"], "script")
+        self.assertFalse(os.path.exists(calls[0][0][1]))   # o arquivo temporário não fica
+
+    def test_pi_run_failure_and_timeout_are_reported(self):
+        real = self.d.run
+        self.d.run = lambda argv, cwd=None, env=None, timeout=600: (3, "deu ruim") if argv[0] == "/bin/bash" else real(argv, cwd=cwd, env=env, timeout=timeout)
+        res = self.drop({"envelope": self.env({"script": "exit 3"}, cmds.T_PI_RUN)}, "1-a.json")
+        self.assertFalse(res["ok"])
+        self.assertIn("código 3", res["msg"])
+
+        def slow(argv, cwd=None, env=None, timeout=600):
+            if argv[0] != "/bin/bash":
+                return real(argv, cwd=cwd, env=env, timeout=timeout)   # o git do deployer segue normal
+            raise subprocess.TimeoutExpired(argv, timeout, output="parcial")
+        self.d.run = slow
+        res = self.drop({"envelope": self.env({"script": "sleep 99", "timeout_s": 5}, cmds.T_PI_RUN)}, "2-b.json")
+        self.assertFalse(res["ok"])
+        self.assertIn("tempo limite", res["msg"])
+        self.assertEqual(res["out"], "parcial")
+
+    def test_pi_run_keeps_output_only_for_the_latest_runs(self):
+        real = self.d.run
+        self.d.run = lambda argv, cwd=None, env=None, timeout=600: (0, "x" * 5000) if argv[0] == "/bin/bash" else real(argv, cwd=cwd, env=env, timeout=timeout)
+        for i in range(5):
+            self.drop({"envelope": self.env({"script": f"echo {i}"}, cmds.T_PI_RUN)}, f"{i}-r.json")
+        hist = [x for x in self.d.status["history"] if x["project"] == "script"]
+        self.assertEqual(len(hist), 5)
+        self.assertEqual([len(x.get("out", "")) for x in hist], [1500, 1500, 1500, 0, 0])
+
+    def test_pi_run_args_are_checked(self):
+        for bad in ({"script": ""}, {"script": "x" * 6001}, {"script": "a\x00b"}, {"script": "ok", "timeout_s": 1}, {"script": "ok", "extra": 1}, {"script": 5}):
+            with self.assertRaises(cmds.CommandError):
+                cmds.check_pi_run_args(bad)
+        cmds.check_pi_run_args({"script": "echo ok", "name": "a", "timeout_s": 600})
+
     def test_10_without_trust_file_every_request_is_refused(self):
         os.remove(self.trust_path)
         d = Deployer(self.reg, self.state, sleep=lambda s: None, now=lambda: self.now, trust_path=self.trust_path)

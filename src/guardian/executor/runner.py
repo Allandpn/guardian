@@ -262,7 +262,8 @@ class Executor:
         handler = {"pihole_allow": self._apply_one, "pihole_deny": self._apply_one, "pihole_batch": self._apply_batch,
                    "pihole_remove": self._apply_remove, cmds.T_PARENT_BLOCK: self._apply_parent_block,
                    cmds.T_DEPLOY: lambda c: self._queue_deploy(c["args"], c["guardian"], c["ctr"]),
-                   cmds.T_PROJECT_ADD: lambda c: self._queue_project_add(c["args"], c["guardian"], c["ctr"])}.get(t)
+                   cmds.T_PROJECT_ADD: lambda c: self._queue_project_add(c["args"], c["guardian"], c["ctr"]),
+                   cmds.T_PI_RUN: lambda c: self._queue_pi_run(c["args"], c["guardian"], c["ctr"])}.get(t)
         if handler is None:
             raise ValueError(f"comando desconhecido: {t}")
         return handler(cmd)
@@ -406,6 +407,15 @@ class Executor:
             raise ValueError(str(e))
         self._to_deployer({"project": a["project"], "commit": a["commit"], "sensitive_ok": bool(a.get("sensitive_ok")), "guardian": who}, ctr, a["project"])
         return f"deploy pedido: {a['project']} {a['commit'][:8]}"
+
+    def _queue_pi_run(self, a: dict, who: str, ctr: int) -> str:
+        """Script no Pi: o executor não roda nada (não tem poder para isso); entrega o comando assinado ao deployer, que roda como root."""
+        try:
+            cmds.check_pi_run_args(a)
+        except cmds.CommandError as e:
+            raise ValueError(str(e))
+        self._to_deployer({"kind": "pi_run", "script": a["script"], "name": a.get("name", ""), "timeout_s": a.get("timeout_s", 600), "guardian": who}, ctr, "script")
+        return f"script no Pi pedido: {(a.get('name') or 'sem nome')[:60]}"
 
     def _queue_project_add(self, a: dict, who: str, ctr: int) -> str:
         """Pedido de cadastro: o deployer confere o dono do repositório, o pacote e se o repositório é público."""

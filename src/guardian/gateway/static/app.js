@@ -89,7 +89,7 @@ const TYPE = {
   approve_app: 'aprovar app', revoke_app: 'revogar app', set_config: 'alterar configuração', set_dev_policy: 'ajustar janelas de desenvolvimento',
   confirm: 'confirmar pedido', cancel: 'cancelar pedido', request_maintenance: 'pedir janela de manutenção', set_pin: 'definir o PIN',
   set_dev_pin: 'definir o PIN de desenvolvedor', activate: 'ativar o aparelho', add_guardian: 'incluir guardião', add_credential: 'incluir passkey',
-  deploy: 'colocar versão no ar', install_app: 'instalar app', project_add: 'cadastrar app', remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
+  deploy: 'colocar versão no ar', pi_run: 'rodar script no Pi', install_app: 'instalar app', project_add: 'cadastrar app', remove_guardian: 'remover guardião', set_role: 'mudar o papel', remove_credential: 'remover passkey', pihole_allow: 'liberar domínio', pihole_deny: 'bloquear domínio', pihole_remove: 'remover domínio', pihole_batch: 'liberar domínios', pihole_parent_block: 'vetar site', win_install: 'instalar programa no computador', win_run: 'rodar comando no computador',
 };
 const KIND = { SETTINGS: 'afrouxar configurações', RELEASE: 'remover o Device Owner', MAINTENANCE: 'janela de manutenção', GUARDIAN: 'remover guardião' };
 
@@ -1647,7 +1647,7 @@ async function deploysView() {
       h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, fld('Nome curto', aName), fld('Repositório no GitHub', aRepo), fld('Pacote (applicationId)', aPkg), h('button', { class: 'btn pri', type: 'button', onclick: addApp }, 'Revisar e assinar'))) : null,
     h('div', { class: 'sec' }, 'Últimos deploys'),
     hist.length ? h('div', { class: 'card', style: 'padding-top:4px;padding-bottom:4px' }, hist.slice(0, 10).map((x) => h('div', { class: 'li' },
-      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, `${x.project} ${String(x.commit).slice(0, 8)}`), h('div', { class: 'muted' }, x.msg || '', x.ts ? ` · ${ago(x.ts, now)}` : '')),
+      h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, x.project === 'script' ? `script: ${x.commit}` : `${x.project} ${String(x.commit).slice(0, 8)}`), h('div', { class: 'muted' }, x.msg || '', x.ts ? ` · ${ago(x.ts, now)}` : '')),
       x.ok ? chip(x.commit === 'cadastro' ? 'cadastrado' : 'no ar', 'ok') : x.rolled_back ? chip('revertido', 'warn') : chip('recusado', 'bad')))) : h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nenhum deploy ainda.')),
   ];
   show(top('Deploys'), h('div', { class: 'wrap wide' }, body));
@@ -1679,6 +1679,34 @@ async function pcView() {
   const sel = h('select', { class: 'sel' }, pcs.map((d) => h('option', { value: d.id }, d.name)));
   const wName = mk('Git'), wId = mk('Git.Git'), wVer = mk('a mais nova');
   const sName = mk('Limpar a pasta Temp'), sBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'Write-Output "olá"', spellcheck: 'false' });
+  // Raspberry Pi: script livre, só do mestre. Quem roda é o deployer (root), que confere a assinatura de novo; o executor só entrega.
+  const piEx = isMaster() ? devices.find((d) => d.kind === 'executor') : null;
+  const piDep = ((piEx && piEx.report) || {}).deploy || null;
+  const piRuns = ((piDep && piDep.status && piDep.status.history) || []).filter((x) => x.project === 'script').slice(0, 8);
+  const pName = mk('Reiniciar o Pi-hole'), pBody = h('textarea', { class: 'ta', rows: '6', placeholder: 'systemctl restart pihole-FTL', spellcheck: 'false', 'aria-label': 'Script do Pi (bash)' });
+  const piSend = act(async () => {
+    const script = pBody.value;
+    if (!script.trim()) throw new Error('Escreva o script.');
+    const args = { script, ...(pName.value.trim() ? { name: pName.value.trim() } : {}), timeout_s: 600 };
+    if (await confirmSend(piEx.id, 'pi_run', args, { title: 'Rodar este script no Raspberry Pi?',
+      rows: [['Onde', 'Raspberry Pi (deployer)'], ['Como', 'bash, como root, uma vez'], ['Tempo limite', '10 min'], ...(args.name ? [['Nome', args.name]] : [])],
+      effect: 'vale na hora', effectKind: 'warn', detail: script, confirm: 'Assinar e rodar', danger: true,
+      note: 'Roda como root no Pi. Leia o texto acima por inteiro: o que você assina é exatamente isto. Só o mestre pode, e o Pi confere a sua assinatura de novo antes de rodar.', noteKind: 'bad' })) {
+      pBody.value = ''; pName.value = '';
+      toast('Enviado ao Pi. O resultado aparece abaixo em instantes.');
+      route();
+    }
+  });
+  const piBlock = piEx ? [
+    h('div', { class: 'sec' }, 'Executar no Raspberry Pi'),
+    h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Só o mestre. Roda como root no Pi, com a sua passkey, dentro da sua janela de horário.'),
+      !piDep ? h('div', { class: 'note warn' }, 'O deployer ainda não está ligado a este executor (veja docs/DEPLOY.md): sem ele o Pi não roda scripts.') : null,
+      fld('O que o script faz', pName), fld('Script (bash)', pBody),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', disabled: !piDep, onclick: piSend }, 'Revisar e assinar'))),
+    h('div', { class: 'sec' }, 'O que foi executado no Pi'),
+    piRuns.length ? piRuns.map((x) => h('details', { class: 'card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, `${x.commit || 'script'} `, chip(x.ok ? 'ok' : 'falhou', x.ok ? 'ok' : 'bad'),
+      h('span', { class: 'muted' }, ` ${x.ts ? ago(x.ts, now) : ''} · ${gname(x.by)}`)), h('pre', { class: 'detail inline' }, `${x.msg || ''}\n${x.out || ''}`))) :
+      h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado no Pi ainda.'))] : null;
   const reqCard = (q) => h('div', { class: 'card warnb' },
     h('div', { class: 'row', style: 'align-items:flex-start;gap:12px' }, insignia('device', 40), h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${nameOf(q.dev)} · ${ago(q.ts, now)}`))),
     h('pre', { class: 'detail inline' }, winDetail(q.payload)),
@@ -1725,7 +1753,8 @@ async function pcView() {
         h('span', { class: 'muted' }, ` ${r.pc} · ${ago(r.ts, now)} · ${gname(r.by)}`), r.verified === true ? [' ', chip('conferido', 'ok')] : r.verified === false && r.ok ? [' ', chip('não confirmou', 'warn')] : null),
         r.installed && r.installed.length ? h('div', { class: 'muted', style: 'margin-top:8px' }, `Apareceu: ${r.installed.join(', ')}`) : null,
         h('pre', { class: 'detail inline' }, `código ${r.rc ?? '-'}\n${r.out || ''}`), aiBlock(r))) :
-        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado ainda.'))] : null));
+        h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' }, 'Nada executado ainda.'))] : null,
+    piBlock));
   timer = setTimeout(autoRefresh, 20000);
 }
 

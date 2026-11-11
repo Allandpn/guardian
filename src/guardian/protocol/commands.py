@@ -49,7 +49,11 @@ T_INSTALL_APP = "install_app"
 # Cadastrar no Pi um app Android novo (repositório do GitHub + pacote) para ele aparecer no Catálogo. Só o mestre. Cadastra APENAS app Android lido das
 # Releases: nunca um projeto com diretório e passos a rodar no Pi (esses continuam só por root).
 T_PROJECT_ADD = "project_add"
-EXECUTOR_MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY, T_PROJECT_ADD}   # os que o executor do Pi executa
+# Rodar um script (bash) no Pi, como root, uma vez: só o mestre, sozinho. O executor não tem poder para isso: ele só deixa o comando assinado
+# na caixa do deployer (root), que confere a assinatura de novo e roda. O resultado (saída e código) volta no histórico dos deploys.
+T_PI_RUN = "pi_run"
+PI_MAX_SCRIPT_BYTES = 6000
+EXECUTOR_MASTER_TYPES = {T_PARENT_BLOCK, T_DEPLOY, T_PROJECT_ADD, T_PI_RUN}   # os que o executor do Pi executa
 MASTER_TYPES = EXECUTOR_MASTER_TYPES | {T_INSTALL_APP}
 MAX_APK_BYTES = 150 * 1024 * 1024
 _PKG = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
@@ -89,6 +93,21 @@ def check_project_add_args(args: dict) -> None:
         raise CommandError("repositório inválido: use dono/repositório")
     if not isinstance(args["pkg"], str) or len(args["pkg"]) > 200 or not _PKG.match(args["pkg"]):
         raise CommandError("pacote inválido")
+
+
+def check_pi_run_args(args: dict) -> None:
+    """script (bash), name (o que faz, opcional) e timeout_s (5 s a 1 h, padrão 600). Repetido no deployer (deployer/core.py::check_pi_run)."""
+    if not isinstance(args, dict) or set(args) - {"script", "name", "timeout_s"}:
+        raise CommandError("argumentos do script inválidos")
+    script = args.get("script")
+    if not isinstance(script, str) or not script.strip() or "\x00" in script or len(script.encode("utf-8")) > PI_MAX_SCRIPT_BYTES:
+        raise CommandError(f"script inválido (até {PI_MAX_SCRIPT_BYTES} bytes)")
+    name = args.get("name", "")
+    if not isinstance(name, str) or len(name) > 80 or any(ord(c) < 32 for c in name):
+        raise CommandError("nome inválido")
+    t = args.get("timeout_s", 600)
+    if not isinstance(t, int) or isinstance(t, bool) or not 5 <= t <= 3600:
+        raise CommandError("tempo limite de 5 s a 1 h")
 
 
 def check_deploy_args(args: dict) -> None:

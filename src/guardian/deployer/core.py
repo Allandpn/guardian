@@ -46,6 +46,22 @@ _PKG = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 APP_SENSITIVE = [".github/workflows/*", "app/build.gradle.kts", "build.gradle.kts", "gradle/*", "gradle.properties", "app/src/main/AndroidManifest.xml"]
 
 
+PI_MAX_SCRIPT_BYTES = 6000
+PI_OUT_KEEP = 1500   # o fim da saída do script que fica no histórico (o relatório do executor ao gateway tem teto de 128 KB)
+PI_OUT_RECENT = 3    # só os scripts mais recentes guardam a saída
+
+
+def check_pi_run(req: dict) -> None:
+    """Repetido de propósito (protocol/commands.py::check_pi_run_args): o deployer não importa nada do repositório."""
+    s, n, t = req.get("script"), req.get("name", ""), req.get("timeout_s", 600)
+    if not isinstance(s, str) or not s.strip() or "\x00" in s or len(s.encode("utf-8")) > PI_MAX_SCRIPT_BYTES:
+        raise ValueError("script inválido")
+    if not isinstance(n, str) or len(n) > 80 or any(ord(c) < 32 for c in n):
+        raise ValueError("nome inválido")
+    if not isinstance(t, int) or isinstance(t, bool) or not 5 <= t <= 3600:
+        raise ValueError("tempo limite inválido")
+
+
 def check_add_request(req: dict) -> None:
     """Repetido de propósito, como check_request (protocol/commands.py::check_project_add_args)."""
     if not isinstance(req.get("name"), str) or not _PROJECT.match(req["name"]):
@@ -510,6 +526,10 @@ class Deployer:
                 kind = req.get("kind") if isinstance(req, dict) else None
                 if kind == "project_add":
                     check_add_request(req)
+                elif kind == "pi_run":
+                    if self.signed is None:   # sem a assinatura conferida aqui, ninguém roda script como root
+                        raise ValueError("script só roda com a assinatura do mestre conferida pelo deployer")
+                    check_pi_run(req)
                 elif kind != "trust" or self.signed is None:   # mudança de confiança só existe com a assinatura conferida aqui
                     check_request(req)
             except (OSError, ValueError) as e:
@@ -519,13 +539,15 @@ class Deployer:
                     res = {"ts": int(self.now()), "project": "confiança", "commit": req["type"], "ok": True, "rolled_back": False,
                            "by": req["guardian"], "msg": f"confiança do deployer atualizada ({req['type']})"}
                 else:
-                    res = self.project_add(req) if req.get("kind") == "project_add" else self.deploy(req)
+                    res = (self.project_add(req) if req.get("kind") == "project_add" else self.pi_run(req) if req.get("kind") == "pi_run" else self.deploy(req))
             finally:
                 try:
                     os.replace(p, self._path("done", fn))  # um pedido roda uma vez só
                 except OSError:
                     pass
             self.status["history"] = ([res] + self.status.get("history", []))[:KEEP_HISTORY]
+            for old in [x for x in self.status["history"] if "out" in x][PI_OUT_RECENT:]:
+                old.pop("out", None)
             out.append(res)
         if out:
             _atomic_write(self._path("status.json"), self.status)
@@ -539,6 +561,36 @@ class Deployer:
             return d if isinstance(d, dict) else {}
         except (OSError, ValueError):
             return {}
+
+    def pi_run(self, req: dict) -> dict:
+        """Roda o script que o mestre assinou, como root, uma vez. Só chega aqui com a assinatura conferida (process_inbox)."""
+        name = (req.get("name") or "script")[:80]
+        t = req.get("timeout_s", 600)
+        res = {"ts": int(self.now()), "project": "script", "commit": name, "by": req.get("guardian", ""), "ok": False, "rolled_back": False}
+        d = self._path("scripts")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        fd, path = tempfile.mkstemp(dir=d, prefix="run-", suffix=".sh")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(req["script"])
+            os.chmod(path, 0o700)
+            env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8"}
+            try:
+                rc, out = self.run(["/bin/bash", path], cwd="/root", env=env, timeout=t)
+                res["ok"] = rc == 0
+                res["msg"] = "terminou sem erro" if rc == 0 else f"terminou com código {rc}"
+            except subprocess.TimeoutExpired as e:
+                out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+                res["msg"] = f"passou do tempo limite ({t} s) e foi interrompido"
+            except OSError as e:
+                out, res["msg"] = "", f"não consegui rodar: {e}"[:200]
+            res["out"] = (out or "")[-PI_OUT_KEEP:]
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        return res
 
     def project_add(self, req: dict) -> dict:
         """Cadastra um app Android que o mestre pediu (assinado e conferido pelo executor; aqui confere de novo). Só app lido das Releases do GitHub,
