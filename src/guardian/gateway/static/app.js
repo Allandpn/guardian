@@ -1722,7 +1722,7 @@ async function pcView() {
     h('div', { class: 'sec', style: 'padding-left:0' }, 'Rodar um script no Raspberry Pi'),
     h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'Só o mestre. Roda como root no Pi, uma vez, dentro da sua janela de horário.'),
     !piDep ? h('div', { class: 'note warn' }, 'O deployer ainda não está ligado a este executor (veja docs/DEPLOY.md): sem ele o Pi não roda scripts.')
-      : !piReady ? h('div', { class: 'note warn' }, 'O deployer do Pi ainda é a versão antiga e não sabe rodar scripts. Depois que esta versão do Guardian estiver no ar (Deploys), quem tem root no Pi roda uma vez: cd /opt/guardian && sudo sh deploy/install-deployer.sh && sudo systemctl restart guardian-deployer. Depois disso o botão libera sozinho.') : null,
+      : !piReady ? h('div', { class: 'note warn' }, 'O deployer do Pi ainda é a versão antiga e não sabe rodar scripts. Ele só se atualiza com acesso físico ao Pi (reinstalar o deployer como root, veja docs/OPERACAO-FECHADA.md), de propósito. Até lá o botão fica desligado; depois da reinstalação ele libera sozinho.') : null,
     fld('O que o script faz', pName), fld('Script (bash)', pBody),
     h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn pri grow', type: 'button', disabled: !piReady, onclick: piSend }, 'Revisar e assinar'))) : null;
   const sync = () => { pcForms.hidden = onPi(); if (piForm) piForm.hidden = !onPi(); };

@@ -69,7 +69,7 @@ contra a sua cópia da confiança, e roda o script como root, uma vez, com `bash
 Sem a assinatura conferida pelo deployer, nada roda. O resultado (código, e o fim da saída, 1500 caracteres) vai para o histórico dos deploys; só os 3 mais recentes guardam a saída.
 
 **Atenção:** o deployer é de root e **não é atualizado por deploy**. Esta função só passa a existir no Pi depois de `sudo sh deploy/install-deployer.sh` e `systemctl restart guardian-deployer`
-(uma vez, por quem tem root). Antes disso o deployer recusa o pedido ("comando que o deployer não executa").
+(uma vez, por quem tem root: com o acesso fechado, só com acesso físico ao Pi, veja `docs/OPERACAO-FECHADA.md`). Antes disso o site mantém o botão desligado e o deployer recusaria o pedido.
 
 ## Apps Android (loja própria)
 
