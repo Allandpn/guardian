@@ -198,13 +198,15 @@ async function loadAll() {
   const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).filter((a) => !(x.approved_by || {})[a.pkg]).length, 0);
   const pcReqs = r.items.filter((q) => q.kind === 'install' || q.kind === 'command');   // pedidos do computador: tela PC
   // Um pedido de liberação só conta enquanto tem domínio em aberto (liberar ou recusar tudo já resolve, mesmo que o pedido demore a fechar).
-  const reqs = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command' && (q.kind !== 'unblock' || !q.items || q.items.some((i) => i.state === 'open')));
+  const user = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command' && (q.kind !== 'unblock' || !q.items || q.items.some((i) => i.state === 'open')));
+  const reqs = user.filter((q) => q.kind === 'unblock' || q.kind === 'domain');   // Domínios
+  const appReqs = user.filter((q) => q.kind !== 'unblock' && q.kind !== 'domain');   // pedidos de app e de outro assunto, em texto: tela Apps
   const dep = d.devices.filter((x) => x.kind === 'executor').map((x) => ((x.report || {}).deploy || {}).offers).filter(Boolean)[0];
   const deploys = dep ? (dep.offers || []).filter((o) => o.commit && !deployedNow(dep, o)).length : 0;
   const grants = d.apk_grants || {};
   const catalog = isMaster() ? countCatalog(d.devices, grants) : 0;
-  counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length, deploys, catalog };
-  return { devices: d.devices, now: d.now, reqs, pcReqs, aw: a.commands, grants };
+  counts = { apps: apps + appReqs.length, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length, deploys, catalog };
+  return { devices: d.devices, now: d.now, reqs, appReqs, pcReqs, aw: a.commands, grants };
 }
 
 function statusOf(d, now) {
@@ -830,14 +832,15 @@ function pillGroup(label, options, current, onPick) {
 
 /** Apps: Solicitações | Aprovados | Recusados, com filtro por aparelho. Serve ao guardião-mor e ao guardião. */
 async function appsView(tab) {
-  const { devices, now, grants } = await loadAll();
+  const { devices, now, grants, appReqs } = await loadAll();
   renderNav('apps');
   const phones = devices.filter((x) => x.kind === 'device');
   if (appDev && !phones.some((x) => x.id === appDev)) appDev = '';
   const shown = appDev ? phones.filter((x) => x.id === appDev) : phones;
   tab = ['solicitacoes', 'aprovados', 'recusados', ...(isAdmin() ? ['instalados', 'vetados'] : []), ...(isMaster() ? ['catalogo'] : [])].includes(tab) ? tab : 'solicitacoes';
   const pendingOf = (d) => ((d.report || {}).pendingApps || []);
-  const nPend = shown.reduce((n, d) => n + pendingOf(d).length, 0);
+  const textReqs = appReqs.filter((q) => !appDev || q.dev === appDev);   // pedidos em texto (o aparelho ainda não mandou o app para aprovar)
+  const nPend = shown.reduce((n, d) => n + pendingOf(d).length, 0) + textReqs.length;
   const nRef = shown.reduce((n, d) => n + (d.refusedApps || []).length, 0);
   const tabs = [['#/apps/solicitacoes', `Solicitações · ${nPend}`, 'solicitacoes'], ['#/apps/aprovados', 'Aprovados', 'aprovados'], ['#/apps/recusados', `Recusados · ${nRef}`, 'recusados'],
     ...(isMaster() ? [['#/apps/catalogo', counts.catalog ? `Catálogo · ${counts.catalog}` : 'Catálogo', 'catalogo']] : []),
@@ -866,6 +869,11 @@ async function appsView(tab) {
         h('button', { class: 'btn pri', type: 'button', onclick: approve(d, a) }, 'Aprovar')),
       (a.risks || []).length ? h('div', { style: 'flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap' }, a.risks.map((x) => chip(`risco: ${x}`, appRisky(x) ? 'bad' : 'warn'))) : null))) :
       empty('Nenhum app aguardando aprovação.');
+    if (textReqs.length) body = [body, h('div', { class: 'sec' }, 'Pedidos em texto'),
+      h('p', { class: 'muted', style: 'padding:0 14px;margin:0 0 8px' }, 'O usuário pediu, mas o app ainda não chegou para aprovação. Quando chegar, aparece na lista acima.'),
+      textReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
+        h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind === 'app' ? 'app' : 'outro assunto'} · ${(devices.find((x) => x.id === q.dev) || { name: q.dev }).name} · ${ago(q.ts, now)}`)),
+        h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))];
   } else if (tab === 'aprovados') {
     let rows;
     if (isAdmin()) {
@@ -1068,7 +1076,6 @@ async function domainsView(tab) {
   const r = ex.report || {};
   const admin = isAdmin();
   const unb = reqs.filter((q) => q.kind === 'unblock');
-  const otherReqs = reqs.filter((q) => q.kind !== 'unblock');
   tab = tab === 'pedidos' ? 'solicitacoes' : tab === 'meus' ? 'liberados' : tab;  // endereços antigos
   if (!(admin ? ['solicitacoes', 'bloqueios', 'consultas', 'liberados', 'vetos'] : ['solicitacoes', 'bloqueios', 'consultas', 'liberados', 'recusados']).includes(tab)) tab = admin && !reqs.length ? 'bloqueios' : 'solicitacoes';
   const devName = (id) => (devices.find((x) => x.id === id) || { name: id }).name;
@@ -1256,12 +1263,7 @@ async function domainsView(tab) {
             h('button', { class: 'btn', type: 'button', 'aria-haspopup': 'dialog', 'aria-label': `Escolher o domínio a liberar no lugar de ${d0}`,
               onclick: () => domainPicker(d0, e, narrower, (v) => { if (v === d0) reqLvl.delete(d0); else reqLvl.set(d0, v); route(); }) }, 'Domínio…'),
             h('button', { class: 'btn pri', type: 'button', onclick: releaseOne(x) }, 'Liberar')));
-      })) : empty('Nenhuma solicitação de liberação.'),
-      otherReqs.length ? [h('div', { class: 'sec' }, 'Outros pedidos'), otherReqs.map((q) => h('div', { class: 'card' }, h('div', { class: 'row' },
-        h('div', { class: 'sp' }, h('strong', {}, q.text), h('div', { class: 'muted' }, `${q.kind} · ${devName(q.dev)} · ${ago(q.ts, now)}`)),
-        // Pedido de app é só um texto: quem instala e aprova é a tela Apps (solicitações do aparelho), não esta.
-        q.kind === 'app' ? h('button', { class: 'btn pri', type: 'button', onclick: () => { appDev = q.dev; location.hash = '#/apps/solicitacoes'; } }, 'Ver em Apps') : null,
-        h('button', { class: 'btn', type: 'button', onclick: act(async () => { await api('POST', `/v1/requests/${q.id}/dismiss`, {}); route(); }) }, 'Dispensar'))))] : null];
+      })) : empty('Nenhuma solicitação de liberação.')];
   } else if (tab === 'bloqueios') {
     const qs = new URLSearchParams();
     if (blkSrc) qs.set('src', blkSrc);
