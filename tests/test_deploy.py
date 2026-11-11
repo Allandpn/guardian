@@ -86,6 +86,17 @@ class DeployerFlow(unittest.TestCase):
         git(self.origin, "commit", "-q", "-m", msg)
         return git(self.origin, "rev-parse", "HEAD")
 
+    def test_moving_a_sensitive_file_out_of_its_folder_is_still_flagged(self):
+        body = "regra\n" * 50
+        c2 = self._commit("sec/regras.py", body, "adiciona regras")
+        git(self.origin, "tag", "release/2")
+        self.assertTrue(self.d.deploy({"project": "demo", "commit": c2, "sensitive_ok": True})["ok"])
+        git(self.origin, "mv", "sec/regras.py", "misc_regras.py")        # só renomeia: o git lista apenas o nome novo sem --no-renames
+        git(self.origin, "commit", "-q", "-m", "arruma pasta")
+        git(self.origin, "tag", "release/3")
+        offers = {o["tag"]: o for o in self.d.refresh_offers()}
+        self.assertEqual(offers["release/3"]["sensitive"], ["sec/regras.py"])   # a que sumiu da pasta sensível aparece
+
     def test_01_offers_show_only_minimal_info_and_flag_sensitive_files(self):
         self._commit("app.txt", "ok normal", "ajuste simples")
         git(self.origin, "tag", "release/2")

@@ -71,6 +71,19 @@ Sem a assinatura conferida pelo deployer, nada roda. O resultado (código, e o f
 **Atenção:** o deployer é de root e **não é atualizado por deploy**. Esta função só passa a existir no Pi depois de `sudo sh deploy/install-deployer.sh` e `systemctl restart guardian-deployer`
 (uma vez, por quem tem root: com o acesso fechado, só com acesso físico ao Pi, veja `docs/OPERACAO-FECHADA.md`). Antes disso o site mantém o botão desligado e o deployer recusaria o pedido.
 
+## Revisão de segurança (2026-11-11): o que ficou combinado
+
+1. **Lista `sensitive` completa no Pi.** O aviso vermelho depende de caminho. O registro do Pi (`/etc/guardian-deploy/projects.json`) tem de listar também o site (`src/guardian/gateway/*`, que inclui
+   `static/*.js`: é o JavaScript que monta o que a passkey assina, então uma versão que o troque pode mostrar "liberar um domínio" e assinar outra coisa), o agente do PC (`src/guardian/agent/*`),
+   `tools/*`, `.github/*` e `pyproject.toml`. O `deploy/deploy-projects.example.json` já traz a lista nova; **na visita física, copie as linhas `sensitive` do guardian para o arquivo do Pi.**
+2. **Renomear não esconde.** O deployer agora compara com `--no-renames`: mover um arquivo sensível para fora da pasta lista o que sumiu e o que surgiu. (Vale depois de reinstalar o deployer.)
+3. **Agente do PC só por commit fixo.** `tools/atualizar-agente.ps1` baixava a `main`, que muda: o mestre assinava um texto e o código vinha de fora. Agora o script exige o hash do commit (40 caracteres),
+   que fica dentro do texto assinado. Troque `$Commit` pelo hash que você revisou e confira no GitHub antes de assinar.
+4. **Ao reinstalar o deployer (acesso físico), confira o que vai instalar:** `git -C /opt/guardian log -1` tem de ser o commit que o mestre aprovou, e `git diff <versão antiga>..HEAD -- src/guardian/deployer src/guardian/protocol deploy/install-deployer.sh`
+   é o que passa a rodar como root. O `install-deployer.sh` copia o que estiver na pasta: ele confia na cópia, quem confere é quem instala.
+5. **Risco que continua (aceito):** quem tem a passkey do mestre, dentro da janela dele, escreve um script como root no Pi (`pi_run`). A defesa é a passkey (com verificação do usuário), a janela, o CSP sem script inline,
+   `SameSite=Strict` e a conferência de origem. Se isso incomodar, a saída é tirar o `pi_run` do deployer.
+
 ## Apps Android (loja própria)
 
 Instalar e atualizar apps nos celulares sem a janela de dev. O aparelho **nunca fala com o GitHub**.
