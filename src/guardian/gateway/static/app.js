@@ -182,6 +182,9 @@ const catalogOffers = (devices) => { const ex = devices.find((d) => d.kind === '
 const countCatalog = (devices, grants) => { const ph = androidPhones(devices); return newestOffers(catalogOffers(devices)).reduce((n, o) => n + ph.filter((d) => installState(o, d, grants) === 'pending').length, 0); };
 
 // ---------- dados ----------
+// Versões que o mestre acabou de mandar colocar no ar: somem da lista na hora, sem esperar o executor relatar de novo.
+const sentDeploys = new Set();
+const deployedNow = (dep, o) => sentDeploys.has(o.commit) || ((dep.current || {})[o.project] === o.commit);
 async function loadAll() {
   const [d, r, a] = await Promise.all([api('GET', '/v1/devices'), api('GET', '/v1/requests'), api('GET', '/v1/commands/awaiting')]);
   for (const x of d.devices) {  // apps recusados saem das pendências e ficam em refusedApps (dá para reconsiderar)
@@ -191,11 +194,13 @@ async function loadAll() {
       x.report.pendingApps = x.report.pendingApps.filter((a) => !ref.has(a.pkg) && !(x.vetoed || {})[a.pkg]);  // vetados saem das solicitações
     }
   }
-  const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).length, 0);
+  // O aparelho só relata de novo depois de um tempo: um app já aprovado por um guardião continua em pendingApps até lá, mas não espera mais ninguém.
+  const apps = d.devices.reduce((n, x) => n + ((x.report && x.report.pendingApps) || []).filter((a) => !(x.approved_by || {})[a.pkg]).length, 0);
   const pcReqs = r.items.filter((q) => q.kind === 'install' || q.kind === 'command');   // pedidos do computador: tela PC
-  const reqs = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command');
+  // Um pedido de liberação só conta enquanto tem domínio em aberto (liberar ou recusar tudo já resolve, mesmo que o pedido demore a fechar).
+  const reqs = r.items.filter((q) => q.kind !== 'install' && q.kind !== 'command' && (q.kind !== 'unblock' || !q.items || q.items.some((i) => i.state === 'open')));
   const dep = d.devices.filter((x) => x.kind === 'executor').map((x) => ((x.report || {}).deploy || {}).offers).filter(Boolean)[0];
-  const deploys = dep ? (dep.offers || []).filter((o) => o.commit).length : 0;
+  const deploys = dep ? (dep.offers || []).filter((o) => o.commit && !deployedNow(dep, o)).length : 0;
   const grants = d.apk_grants || {};
   const catalog = isMaster() ? countCatalog(d.devices, grants) : 0;
   counts = { apps, reqs: reqs.length, cosign: a.commands.filter((c) => c.can_cosign).length, pc: pcReqs.length, deploys, catalog };
@@ -1544,7 +1549,8 @@ async function domainsView(tab) {
       canary ? h('div', { class: 'card flat' }, h('div', { class: 'row' }, h('div', { class: 'sp' }, h('span', { class: 'mono', style: 'font-weight:600' }, canary),
         h('div', { class: 'muted' }, 'Domínio-canário · protegido: não pode ser liberado, bloqueado nem removido por aqui')), chip('protegido'))) : null];
   }
-  show(top('Domínios', { actions: chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok') }),
+  const reload = h('button', { class: 'ib', type: 'button', 'aria-label': 'Atualizar', title: 'Atualizar', onclick: () => { reload.disabled = true; route(); } }, icon('sync'));
+  show(top('Domínios', { actions: h('div', { class: 'row', style: 'gap:8px' }, chip(r.pihole_ok === false ? 'Pi-hole inacessível' : 'Pi-hole ok', r.pihole_ok === false ? 'bad' : 'ok'), reload) }),
     h('div', { class: 'wrap wide' }, segTabs(tabs, tab), body));
   timer = setTimeout(autoRefresh, 20000);
 }
@@ -1597,7 +1603,7 @@ async function deploysView() {
   renderNav('deploys');
   const ex = devices.find((d) => d.kind === 'executor');
   const dep = ((ex && ex.report) || {}).deploy || null;
-  const offers = ((dep && dep.offers && dep.offers.offers) || []).filter((o) => o.commit);
+  const offers = ((dep && dep.offers && dep.offers.offers) || []).filter((o) => o.commit && !deployedNow(dep.offers, o));
   const errs = ((dep && dep.offers && dep.offers.offers) || []).filter((o) => o.error);
   const hist = (dep && dep.status && dep.status.history) || [];
   const approve = (o) => act(async () => {
@@ -1608,7 +1614,7 @@ async function deploysView() {
     if (await confirmSend(ex.id, 'deploy', args, { title: `Colocar ${o.project} ${o.tag} no ar?`,
       rows: [['Projeto', o.project], ['Versão', o.tag], ['Commit', o.commit.slice(0, 8)], ['Pedido por', o.author || '?'], ['Resumo', o.subject || '']],
       effect: 'vale na hora', effectKind: sens ? 'warn' : 'ok',
-      note: 'O Pi confere a versão, instala, testa e volta sozinho para a anterior se algo falhar.', noteKind: 'warn', confirm: 'Colocar no ar' })) route();
+      note: 'O Pi confere a versão, instala, testa e volta sozinho para a anterior se algo falhar.', noteKind: 'warn', confirm: 'Colocar no ar' })) { sentDeploys.add(o.commit); route(); }
   });
   const addIn = (ph) => h('input', { class: 'inp', type: 'text', placeholder: ph, autocomplete: 'off', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false' });
   const aName = addIn('triagem'), aRepo = addIn('Allandpn/MeuApp'), aPkg = addIn('com.allan.meuapp');
@@ -2355,7 +2361,7 @@ function vaultEditView(it) {
     if (!it && V.data.items.length >= 500) throw new Error('Cofre cheio (500 itens)');
     save.disabled = true;
     try { await vaultSave({ items: it ? V.data.items.map((x) => (x.id === it.id ? next : x)) : [...V.data.items, next] }); } finally { save.disabled = false; }
-    location.hash = `#/cofre/${next.id}`;
+    location.hash = it ? `#/cofre/${next.id}` : '#/cofre';   // item novo: volta para a lista do cofre; editar volta para o item
   });
   show(top(it ? 'Editar item' : 'Novo item', { back: it ? `#/cofre/${it.id}` : '#/cofre' }), h('div', { class: 'wrap' },
     h('div', { class: 'card' }, fld('Nome', title)), h('div', { class: 'sec' }, 'Campos'), list,
