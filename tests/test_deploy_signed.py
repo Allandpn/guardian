@@ -199,6 +199,11 @@ class SignedDeploy(unittest.TestCase):
         self.assertEqual(len(hist), 5)
         self.assertEqual([len(x.get("out", "")) for x in hist], [1500, 1500, 1500, 0, 0])
 
+    def test_the_deployer_announces_pi_run_so_the_site_can_tell_old_from_new(self):
+        self.d.refresh_offers()
+        with open(os.path.join(self.state, "offers.json")) as f:
+            self.assertIn("pi_run", json.load(f)["features"])
+
     def test_pi_run_args_are_checked(self):
         for bad in ({"script": ""}, {"script": "x" * 6001}, {"script": "a\x00b"}, {"script": "ok", "timeout_s": 1}, {"script": "ok", "extra": 1}, {"script": 5}):
             with self.assertRaises(cmds.CommandError):

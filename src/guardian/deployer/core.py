@@ -423,7 +423,7 @@ class Deployer:
                                "sensitive": sens[:8], "sensitive_n": len(sens), "policy": viol[:6], "policy_n": len(viol)})
                 if sum(1 for o in offers if o["project"] == name and "commit" in o) >= KEEP_OFFERS:
                     break
-        _atomic_write(self._path("offers.json"), {"ts": int(self.now()), "offers": offers,
+        _atomic_write(self._path("offers.json"), {"ts": int(self.now()), "offers": offers, "features": ["pi_run"],   # o site só libera o que o deployer sabe fazer
                                                   "current": {n: self._deployed(n) for n in self._code_projects()}})
         return offers
 
