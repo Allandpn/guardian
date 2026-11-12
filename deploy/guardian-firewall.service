@@ -6,7 +6,8 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/guardian/deploy/firewall.sh
+# Fora da pasta de deploy: o que roda como root no boot não muda com uma versão nova (deploy/install-deployer.sh copia, como root).
+ExecStart=/usr/local/lib/guardian-root/firewall.sh
 
 [Install]
 WantedBy=multi-user.target

@@ -6,8 +6,9 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/usr/bin/docker compose -f /opt/guardian/deploy/suricata/docker-compose.yml up -d
-ExecStart=/opt/guardian/deploy/torrent-firewall.sh
+# Fora da pasta de deploy: o que roda como root no boot não muda com uma versão nova (deploy/install-deployer.sh copia, como root).
+ExecStartPre=/usr/bin/docker compose -f /usr/local/lib/guardian-root/suricata/docker-compose.yml up -d
+ExecStart=/usr/local/lib/guardian-root/torrent-firewall.sh
 
 [Install]
 WantedBy=multi-user.target

@@ -84,6 +84,29 @@ Sem a assinatura conferida pelo deployer, nada roda. O resultado (código, e o f
 5. **Risco que continua (aceito):** quem tem a passkey do mestre, dentro da janela dele, escreve um script como root no Pi (`pi_run`). A defesa é a passkey (com verificação do usuário), a janela, o CSP sem script inline,
    `SameSite=Strict` e a conferência de origem. Se isso incomodar, a saída é tirar o `pi_run` do deployer.
 
+## Segunda revisão (2026-11-12): o que só vale depois de reinstalar o deployer
+
+1. **Compose: valida o que vai rodar.** Antes, a política conferia o `docker-compose.yml`, mas o passo `docker compose up` (sem `-f`) preferia um `compose.yaml` e juntava os
+   `*.override.*` que a versão trouxesse: uma versão "verde" subia um contêiner privilegiado com o disco do Pi montado. Agora todo passo `docker compose ...` de um projeto
+   `"type": "compose"` roda com `--project-directory`, `-f` (e `--env-file` e `-p`, se o registro disser) iguais aos da validação; o `.env` usado na validação é o da versão,
+   se ela traz um, e só senão o da pasta; e arquivos de compose novos, `.env`, `Dockerfile`, `.pth`, `sitecustomize.py`, `.venv/` e `.github/` são sempre sensíveis.
+2. **Política por lista do que é permitido.** Campo do compose que a política não conhece (serviço, `build`, `deploy`, topo) é recusado, em vez de passar.
+3. **"Seguro" é a exceção.** Com `"safe"` no registro, tudo é sensível, menos o que a lista diz (`docs/*`, `*.md`). Uma lista do que é sensível sempre esquece algo que roda código.
+4. **O gateway também passa pela política.** O projeto `guardian` vira `"type": "compose"`, com o nome do projeto (`deploy`) e a rede fixa (`guardian_net`) declarados no registro.
+5. **Scripts de root fora da pasta de deploy.** `firewall.sh`, `torrent-firewall.sh` e o compose do Suricata passam a rodar de `/usr/local/lib/guardian-root/`; uma versão nova não os altera.
+
+### Na visita física, nesta ordem
+1. Conferir o commit: `git -C /opt/guardian log -1` tem de ser o que o mestre colocou no ar.
+2. Ler o que vai virar root: `git -C /opt/guardian diff <versão antiga>..HEAD -- src/guardian/deployer src/guardian/protocol deploy/install-deployer.sh deploy/*.service`.
+3. Em `/etc/guardian-deploy/projects.json`, trocar a entrada `guardian` pela de `deploy/deploy-projects.example.json` (chaves novas: `type`, `compose_file`, `compose_env_file`,
+   `compose_project`, `compose_names`, `safe`, e os passos sem `--env-file`/`-f`, que o deployer agora põe sozinho). Nos projetos `estudos` e `imagineer`, nada muda nos passos.
+4. `sudo sh deploy/install-deployer.sh` (instala o deployer novo e os scripts de root, e atualiza as unidades do firewall e do torrent que já existirem).
+5. `sudo systemctl daemon-reload && sudo systemctl restart guardian-deployer guardian-executor`, e conferir `systemctl is-active guardian-deployer` e
+   `grep -o '"features": \[[^]]*\]' /var/lib/guardian-deploy/offers.json`.
+6. Fechar de novo o acesso (`docs/OPERACAO-FECHADA.md`).
+
+Fica de fora (baixo risco): a lista de trackers do Pi-hole ainda é lida de `/opt/guardian/deploy/pihole/torrent-trackers.txt`; uma versão pode esvaziá-la (o arquivo é sensível pela lista `safe`).
+
 ## Apps Android (loja própria)
 
 Instalar e atualizar apps nos celulares sem a janela de dev. O aparelho **nunca fala com o GitHub**.
