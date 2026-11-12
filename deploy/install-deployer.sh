@@ -18,6 +18,18 @@ install -m 0644 -o root -g root "$SRC/src/guardian/deployer/__init__.py" "$SRC/s
 install -m 0644 -o root -g root "$SRC/src/guardian/protocol/__init__.py" "$SRC/src/guardian/protocol/commands.py" \
   "$SRC/src/guardian/protocol/webauthn.py" "$SRC/src/guardian/protocol/b64.py" "$SRC/src/guardian/protocol/cbor.py" "$LIB/guardian_deployer/protocol/"
 
+# Scripts que rodam como root no boot (firewall do gateway, bloqueio de torrent): ficam FORA de /opt/guardian, que muda a cada versão.
+# Uma versão nova não os altera; para mudá-los, reinstale (este script, como root).
+ROOTLIB=/usr/local/lib/guardian-root
+install -d -m 0755 -o root -g root "$ROOTLIB" "$ROOTLIB/suricata"
+install -m 0755 -o root -g root "$SRC/deploy/firewall.sh" "$SRC/deploy/torrent-firewall.sh" "$ROOTLIB/"
+install -m 0644 -o root -g root "$SRC/deploy/suricata/docker-compose.yml" "$SRC/deploy/suricata/torrent.rules" "$ROOTLIB/suricata/"
+for u in guardian-firewall guardian-torrent-firewall; do   # só os que já estão instalados neste Pi
+  if [ -f "/etc/systemd/system/$u.service" ]; then
+    install -m 0644 -o root -g root "$SRC/deploy/$u.service" "/etc/systemd/system/$u.service"
+  fi
+done
+
 install -d -m 0755 -o root -g root /etc/guardian-deploy
 [ -f /etc/guardian-deploy/projects.json ] || install -m 0644 -o root -g root "$SRC/deploy/deploy-projects.example.json" /etc/guardian-deploy/projects.json
 [ -f /etc/guardian-deploy/policy.json ] || install -m 0644 -o root -g root "$SRC/deploy/deploy-policy.example.json" /etc/guardian-deploy/policy.json

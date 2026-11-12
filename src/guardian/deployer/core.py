@@ -72,6 +72,12 @@ def check_add_request(req: dict) -> None:
         raise ValueError("pacote inválido")
 
 
+# Rodam código sozinhos (o Python os carrega ao iniciar, o compose os lê sem ninguém pedir): sensíveis em qualquer projeto.
+ALWAYS_SENSITIVE = ["*.pth", "*sitecustomize.py", "*usercustomize.py", ".venv/*", "venv/*", ".env", "*/.env", ".env.*", "*/.env.*",
+                    "compose.y*ml", "*/compose.y*ml", "*docker-compose*.y*ml", "*compose.override*", "Dockerfile*", "*/Dockerfile*",
+                    ".github/*", ".gitattributes", "*/.gitattributes", ".gitmodules"]
+
+
 def _atomic_write(path: str, data: dict) -> None:
     d = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
@@ -197,7 +203,10 @@ class Deployer:
 
     def _reserved_compose_names(self, name: str) -> set[str]:
         """Nomes de projeto do compose de OUTROS serviços do Pi (o Guardian sobe como `deploy`): usá-los daria os volumes e redes deles."""
-        own = {name.lower(), os.path.basename(str(self.reg[name].get("workdir", "")).rstrip("/")).lower()}
+        p = self.reg[name]
+        own = {name.lower(), os.path.basename(str(p.get("workdir", "")).rstrip("/")).lower()}
+        if p.get("compose_project"):   # nome declarado no registro do Pi (só o root edita): o do Guardian é "deploy"
+            own.add(str(p["compose_project"]).lower())
         names = {"deploy"} | {n.lower() for n in self.reg}
         names |= {os.path.basename(str(p.get("workdir", "")).rstrip("/")).lower() for p in self.reg.values() if p.get("workdir")}
         return {n for n in names - own if n}
@@ -258,10 +267,16 @@ class Deployer:
         return out.splitlines() if rc == 0 else None
 
     def sensitive_of(self, name: str, files: list[str] | None) -> list[str]:
-        pats = self.reg[name].get("sensitive", [])
+        """Arquivos da versão que pedem o aviso vermelho. Com `safe` no registro, vale o contrário: tudo é sensível, menos o que a lista diz
+        que é seguro (documentação). Uma lista do que é sensível sempre esquece algo que roda código (um sitecustomize.py, um .pth, o
+        __init__.py do pacote). E há o que é sensível em qualquer projeto, liste o registro ou não."""
+        proj = self.reg[name]
+        pats, safe = proj.get("sensitive", []), proj.get("safe")
         if files is None:
             return ["(não deu para comparar com a versão atual)"]
-        return [f for f in files if any(fnmatch.fnmatch(f, p) for p in pats)]
+        match = lambda f, ps: any(fnmatch.fnmatch(f, p) for p in ps)   # noqa: E731
+        pats = [*pats, *([os.path.normpath(proj["compose_env_file"])] if proj.get("compose_env_file") else [])]   # o arquivo de variáveis do compose
+        return [f for f in files if match(f, pats) or match(f, ALWAYS_SENSITIVE) or (safe is not None and not match(f, safe))]
 
     def compose_violations(self, name: str, m: str, commit: str) -> list[str]:
         """Projetos em contêiner: confere o docker-compose da versão contra a política de isolamento ANTES de qualquer instalação."""
@@ -287,11 +302,14 @@ class Deployer:
                         continue
                     t.extract(mem, pdir, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
             links |= self._escaping_links(name)
-            env = os.path.join(proj["workdir"], ".env")
-            if os.path.isfile(env):
-                shutil.copy(env, os.path.join(pdir, ".env"))
-            cfile = os.path.join(pdir, proj.get("compose_file", "docker-compose.yml"))
-            rc, out = self.run(["docker", "compose", "--project-directory", pdir, "-f", cfile, "config", "--format", "json", "--no-env-resolution"],
+            # Os arquivos de variáveis que o compose vai ler NO AR: o da versão, se ela traz um (o checkout troca o que está na pasta), senão o
+            # que já está na pasta de deploy (não versionado, do root). Validar com outro daria outra interpolação (${PASTA} -> /).
+            for rel in {os.path.join(os.path.dirname(self._compose_rel(name)), ".env"), *([proj["compose_env_file"]] if proj.get("compose_env_file") else [])}:
+                live, here = os.path.join(proj["workdir"], rel), os.path.join(pdir, rel)
+                if not os.path.lexists(here) and os.path.isfile(live):
+                    os.makedirs(os.path.dirname(here), exist_ok=True)
+                    shutil.copy(live, here)
+            rc, out = self.run(self._compose_base(name, pdir) + ["config", "--format", "json", "--no-env-resolution"],
                                cwd=pdir, env=self._env(proj), timeout=120)
             if rc != 0:
                 return [f"não consegui validar o compose: {out[-120:]}"]
@@ -300,7 +318,8 @@ class Deployer:
             except ValueError:
                 return ["saída do compose ilegível"]
             return policy.violations(cfg, pdir, proj.get("allowed_binds"), proj.get("allowed_contexts"),
-                                     symlinks=frozenset(links), forbidden_names=frozenset(self._reserved_compose_names(name)))
+                                     symlinks=frozenset(links), forbidden_names=frozenset(self._reserved_compose_names(name)),
+                                     allowed_names=frozenset(proj.get("compose_names") or []))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -429,6 +448,38 @@ class Deployer:
         return offers
 
     # --- instalar ---------------------------------------------------------------------
+    def _compose_rel(self, name: str) -> str:
+        return os.path.normpath(self.reg[name].get("compose_file", "docker-compose.yml"))
+
+    def _compose_base(self, name: str, root: str) -> list[str]:
+        """`docker compose` com os arquivos EXPLÍCITOS: a validação e a instalação leem exatamente os mesmos. Sem `-f`, o compose prefere um
+        compose.yaml e junta os *.override.* que a versão trouxer, e um COMPOSE_FILE no .env escolheria outro arquivo: nada disso foi validado."""
+        proj = self.reg[name]
+        cfile = os.path.join(root, self._compose_rel(name))
+        argv = ["docker", "compose", "--project-directory", os.path.dirname(cfile), "-f", cfile]
+        if proj.get("compose_env_file"):
+            argv += ["--env-file", os.path.join(root, os.path.normpath(proj["compose_env_file"]))]
+        if proj.get("compose_project"):   # fixo: um COMPOSE_PROJECT_NAME no .env da versão não troca o projeto (e os volumes) por outro
+            argv += ["-p", str(proj["compose_project"])]
+        return argv
+
+    def _step_argv(self, name: str, argv: list[str]) -> list[str]:
+        """Nos projetos em contêiner, todo passo `docker compose ...` roda com os mesmos arquivos que a política conferiu."""
+        if self.reg[name].get("type") != "compose" or argv[:2] != ["docker", "compose"]:
+            return argv
+        rest, i = [], 2
+        while i < len(argv):   # o que o registro tinha de arquivo/pasta é trocado pelo que foi validado
+            a = argv[i]
+            if a in ("-f", "--file", "--env-file", "--project-directory", "-p", "--project-name"):
+                i += 2
+                continue
+            if a.startswith(("--file=", "--env-file=", "--project-directory=", "--project-name=")):
+                i += 1
+                continue
+            rest.append(a)
+            i += 1
+        return self._compose_base(name, self.reg[name]["workdir"]) + rest
+
     def _steps(self, name: str, commit: str) -> tuple[bool, str]:
         proj = self.reg[name]
         sub = {"{commit}": commit, "{workdir}": proj["workdir"]}
@@ -437,7 +488,7 @@ class Deployer:
                 a = a.replace(k, v)
             return a
         for argv in proj.get("steps", []):
-            rc, out = self.run([fill(a) for a in argv], cwd=proj["workdir"], env=self._env(proj), timeout=1200)
+            rc, out = self.run(self._step_argv(name, [fill(a) for a in argv]), cwd=proj["workdir"], env=self._env(proj), timeout=1200)
             if rc != 0:
                 return False, f"passo falhou ({' '.join(argv)[:60]}): {out[-200:]}"
         deadline = self.now() + proj.get("health_timeout_s", HEALTH_TIMEOUT_S)

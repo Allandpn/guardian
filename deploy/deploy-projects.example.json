@@ -3,6 +3,17 @@
     "repo": "https://github.com/Allandpn/guardian.git",
     "tag_prefix": "release/",
     "workdir": "/opt/guardian",
+    "type": "compose",
+    "compose_file": "deploy/docker-compose.yml",
+    "compose_env_file": "deploy/gateway.env",
+    "compose_project": "deploy",
+    "compose_names": [
+      "guardian_net"
+    ],
+    "safe": [
+      "docs/*",
+      "*.md"
+    ],
     "sensitive": [
       "src/guardian/protocol/*",
       "src/guardian/executor/*",
@@ -19,10 +30,6 @@
       [
         "docker",
         "compose",
-        "--env-file",
-        "deploy/gateway.env",
-        "-f",
-        "deploy/docker-compose.yml",
         "up",
         "-d",
         "--build",

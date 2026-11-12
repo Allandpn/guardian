@@ -294,6 +294,30 @@ class DeployerCompose(unittest.TestCase):
         self.assertTrue(self.d.deploy({"project": "p", "commit": c})["ok"])
 
 
+    def test_compose_steps_run_with_the_same_files_the_policy_checked(self):
+        calls = []
+        real = self.d.run
+
+        def spy(argv, cwd=None, env=None, timeout=600):
+            if argv[:2] == ["docker", "compose"] and "config" not in argv:
+                calls.append(argv)
+            return real(argv, cwd=cwd, env=env, timeout=timeout)
+        self.d.run = spy
+        self.reg["p"]["steps"] = [["docker", "compose", "-f", "outro.yml", "--project-directory", "/", "up", "-d"], ["true"]]
+        open(os.path.join(self.origin, "compose.yaml"), "w").write("services: {app: {image: x, privileged: true}}\n")
+        c = self._release("v2 com compose.yaml", "release/2")
+        (offer,) = [o for o in self.d.refresh_offers() if o.get("commit") == c]
+        self.assertIn("compose.yaml", offer["sensitive"])                       # arquivo de compose novo: aviso vermelho
+        self.assertTrue(self.d.deploy({"project": "p", "commit": c, "sensitive_ok": True})["ok"])
+        self.assertEqual(calls, [["docker", "compose", "--project-directory", self.work, "-f", os.path.join(self.work, "docker-compose.yml"), "up", "-d"]])
+
+    def test_safe_list_inverts_the_sensitive_check(self):
+        self.reg["p"]["safe"] = ["docs/*", "*.md"]
+        files = ["docs/a.txt", "README.md", "src/x/__init__.py", "src/sitecustomize.py", "web/app.js"]
+        self.assertEqual(self.d.sensitive_of("p", files), ["src/x/__init__.py", "src/sitecustomize.py", "web/app.js"])
+        del self.reg["p"]["safe"]
+        self.assertEqual(self.d.sensitive_of("p", files + [".venv/lib/z.pth", ".env"]), ["src/sitecustomize.py", ".venv/lib/z.pth", ".env"])   # sempre sensíveis
+
     def _release(self, msg, tag):
         git(self.origin, "add", "-A")
         git(self.origin, "commit", "-q", "-m", msg)
@@ -689,3 +713,64 @@ class ExecutorQueuesDeploy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _docker_compose_ok() -> bool:
+    try:
+        return subprocess.run(["docker", "compose", "version"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@unittest.skipUnless(_docker_compose_ok(), "precisa do docker compose (só o 'config', nada sobe)")
+class RealCompose(unittest.TestCase):
+    """Com o `docker compose config` de verdade: a validação enxerga o mesmo que o passo de instalação vai usar."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.origin, self.work, self.state = os.path.join(t, "o"), os.path.join(t, "w"), os.path.join(t, "s")
+        os.makedirs(self.origin)
+        git(self.origin, "init", "-q", "-b", "main")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _commit(self, files: dict, tag: str) -> str:
+        for path, text in files.items():
+            full = os.path.join(self.origin, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            open(full, "w").write(text)
+        git(self.origin, "add", "-A")
+        git(self.origin, "commit", "-q", "-m", tag)
+        git(self.origin, "tag", tag)
+        return git(self.origin, "rev-parse", "HEAD")
+
+    def _deployer(self, **extra):
+        reg = {"p": {"repo": self.origin, "workdir": self.work, "type": "compose", "tag_prefix": "release/", "steps": [], "health": [], **extra}}
+        return Deployer(reg, self.state, sleep=lambda s: None)
+
+    def test_env_file_of_the_version_is_the_one_validated(self):
+        """A versão traz um .env com SRC=/ e monta ${SRC}: a validação tem de usar ESSE .env (o checkout troca o da pasta por ele)."""
+        self._commit({"docker-compose.yml": "services:\n  app:\n    image: alpine\n"}, "release/1")
+        git(self.tmp.name, "clone", "-q", self.origin, self.work)
+        open(os.path.join(self.work, ".env"), "w").write("SRC=./dados\n")   # o .env que já estava na pasta (não versionado)
+        c = self._commit({"docker-compose.yml": "services:\n  app:\n    image: alpine\n    volumes: ['${SRC}:/h']\n", ".env": "SRC=/\n"}, "release/2")
+        d = self._deployer()
+        (offer,) = [o for o in d.refresh_offers() if o.get("commit") == c]
+        self.assertTrue(any("monta /" in v for v in offer["policy"]), offer["policy"])
+
+    def test_the_gateway_compose_of_this_repository_passes_with_the_example_registry(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        files = {f"deploy/{n}": open(os.path.join(root, "deploy", n)).read() for n in ("docker-compose.yml", "serve.json", "Dockerfile")}
+        self._commit(files, "release/1")
+        git(self.tmp.name, "clone", "-q", self.origin, self.work)
+        open(os.path.join(self.work, "deploy", "gateway.env"), "w").write("TS_AUTHKEY=x\nGATEWAY_ORIGIN=https://x\n")
+        c = self._commit({"docs/a.md": "x"}, "release/2")
+        ex = json.load(open(os.path.join(root, "deploy", "deploy-projects.example.json")))["guardian"]
+        keys = ("compose_file", "compose_env_file", "compose_project", "compose_names")
+        d = self._deployer(**{k: ex[k] for k in keys})
+        (offer,) = [o for o in d.refresh_offers() if o.get("commit") == c]
+        self.assertEqual(offer["policy"], [])
+        # e sem os nomes declarados no registro, a rede fixa e o nome de projeto "deploy" seriam recusados
+        d2 = self._deployer(**{k: ex[k] for k in ("compose_file", "compose_env_file")})
+        self.assertTrue(d2.compose_violations("p", d2._fetch_tags("p"), c))
