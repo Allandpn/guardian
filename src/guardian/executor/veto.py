@@ -74,6 +74,9 @@ class Veto:
         for p in self.parents:
             if domain == p or domain.endswith("." + p):
                 return f"site vetado pelo mestre ({p})"
+            # Liberar exemplo.com.br em regex cobre chat.exemplo.com.br, e no Pi-hole a liberação vence o bloqueio: o veto seria contornado.
+            if regex_mode and p.endswith("." + domains.rule_domain(domain)):
+                return f"{domains.rule_domain(domain)} cobre um site vetado pelo mestre ({p})"
         if not self.path:
             return None
         self.refresh()

@@ -95,6 +95,12 @@ Sem a assinatura conferida pelo deployer, nada roda. O resultado (código, e o f
 4. **O gateway também passa pela política.** O projeto `guardian` vira `"type": "compose"`, com o nome do projeto (`deploy`) e a rede fixa (`guardian_net`) declarados no registro.
 5. **Scripts de root fora da pasta de deploy.** `firewall.sh`, `torrent-firewall.sh` e o compose do Suricata passam a rodar de `/usr/local/lib/guardian-root/`; uma versão nova não os altera.
 
+### Valem com um deploy normal (sem a visita)
+- **Veto pelo pai:** liberar `exemplo.com.br` quando o mestre vetou `chat.exemplo.com.br` é recusado (a regra regex cobriria o vetado, e no Pi-hole a liberação vence o bloqueio).
+- **Executor só pelo mestre:** parear e esquecer o executor passou a ser só do mestre. Quem controla o executor controla as versões e os APKs que aparecem em Deploys e no Catálogo.
+- **`.msi` só com propriedades:** os argumentos extras de um `.msi` são só `NOME=valor`. Opções do msiexec (`/update`, `/i outro.msi`) e propriedades que trazem código de outro
+  arquivo (`TRANSFORMS`, `PATCH`) são recusadas no gateway; o agente confere de novo depois de atualizado.
+
 ### Na visita física, nesta ordem
 1. Conferir o commit: `git -C /opt/guardian log -1` tem de ser o que o mestre colocou no ar.
 2. Ler o que vai virar root: `git -C /opt/guardian diff <versão antiga>..HEAD -- src/guardian/deployer src/guardian/protocol deploy/install-deployer.sh deploy/*.service`.

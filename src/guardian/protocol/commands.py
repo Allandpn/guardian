@@ -136,6 +136,29 @@ _WIN_PATH = re.compile(r"^[A-Za-z]:\\[^<>\"|?*]+$")
 _HOST = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
 
 
+# Propriedades do Windows Installer que trazem código de outro arquivo (uma transformação .mst ou um patch .msp rodam ações como SYSTEM):
+# o hash aprovado é só o do .msi, então estas ficam de fora.
+MSI_FORBIDDEN = {"TRANSFORMS", "PATCH", "MSIPATCHREMOVE", "PATCHNEWPACKAGECODE", "PATCHNEWSUMMARYSUBJECT", "PATCHNEWSUMMARYCOMMENTS",
+                 "TRANSFORMSATSOURCE", "TRANSFORMSSECURE", "ACTION", "EXECUTEACTION", "SOURCEDIR", "SOURCELIST", "MSINEWINSTANCE"}
+_MSI_PROP = re.compile(r'([A-Za-z_][A-Za-z0-9_.]*)=("[^"]*"|[^\s"]*)')
+
+
+def check_msi_args(text: str) -> None:
+    """Argumentos extras do msiexec: só propriedades (NOME=valor ou NOME="valor com espaço"). Opções (/update, /i outro.msi, /p) e as
+    propriedades que carregam código de fora são recusadas."""
+    pos = 0
+    while pos < len(text):
+        if text[pos] == " ":
+            pos += 1
+            continue
+        m = _MSI_PROP.match(text, pos)
+        if not m or (m.end() < len(text) and text[m.end()] != " "):
+            raise CommandError("argumentos do .msi: use só PROPRIEDADE=valor (sem opções do msiexec como /update ou /i)")
+        if m.group(1).upper() in MSI_FORBIDDEN:
+            raise CommandError(f"argumentos do .msi: {m.group(1).upper()} não é permitido (traria código de outro arquivo)")
+        pos = m.end()
+
+
 def _win_text(args: dict, key: str, lo: int, hi: int, required: bool = True) -> str:
     v = args.get(key)
     if v is None and not required:
@@ -162,6 +185,8 @@ def _check_win_source(args: dict) -> None:
         if args.get("kind") not in ("msi", "exe"):
             raise CommandError("tipo do instalador deve ser msi ou exe")
         _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+        if args["kind"] == "msi":
+            check_msi_args(args.get("args") or "")
     elif source == "file":
         # Um instalador que já está no computador (baixado antes). O agente o copia para uma pasta protegida ANTES de conferir o hash,
         # então trocar o arquivo depois da aprovação não adianta. `publisher` (opcional) exige assinatura digital válida desse nome.
@@ -174,6 +199,8 @@ def _check_win_source(args: dict) -> None:
         if not _SHA256.match(_win_text(args, "sha256", 64, 64)):
             raise CommandError("sha256 inválido (64 caracteres hexadecimais em minúsculas)")
         _win_text(args, "args", 0, WIN_MAX_ARGS, required=False)
+        if ext == "msi":
+            check_msi_args(args.get("args") or "")
         if args.get("publisher") is not None:
             _win_text(args, "publisher", 1, 120)
     else:
