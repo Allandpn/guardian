@@ -5,7 +5,7 @@ Para instalar o deployer novo (ele não se atualiza por deploy) sem reabrir o ac
 Imager usa para configurar um Pi sem tela. O script (`tools/visita-pi/guardian-visita.sh`) só faz o que está nele e se apaga; ninguém ganha senha nem sudo.
 
 ## Antes (pelo Guardian)
-1. Etiqueta `release/15` no commit `dbb040b1b01ab8c6011da824e47e0f631bee5248` (é o que o script confere).
+1. Etiqueta `release/15` no commit `cb3dc71ba3a98992872ab068876d2a10f4f84edd` (é o que o script confere).
 2. Na janela, o mestre coloca a `release/15` no ar em **Deploys** (vem com o aviso vermelho: esperado).
 3. Baixe para o PC, pelo botão **Download raw file** do GitHub (não copie e cole o texto, nem salve pelo Bloco de Notas: o fim de linha do Windows quebra o script):
    `https://github.com/Allandpn/guardian/blob/main/tools/visita-pi/guardian-visita.sh`
