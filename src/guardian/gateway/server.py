@@ -574,6 +574,8 @@ class Gateway:
         kind = req.json().get("kind")
         if kind not in ("device", "executor"):
             raise HttpError(400, "tipo inválido")
+        if kind == "executor":   # o executor mostra ao mestre as versões e os APKs que ele assina: só o mestre escolhe qual executor vale
+            self.master(req)
         token = secrets.token_urlsafe(24)
         self.store.put_pairing(_hash(token), kind, int(time.time()) + self.cfg.invite_ttl_s)
         return 200, {"token": token, "expires_in": self.cfg.invite_ttl_s}, {}
@@ -1030,6 +1032,9 @@ class Gateway:
 
     def forget(self, req, dev):
         self.admin(req)
+        row = self.store.device(dev)
+        if row and row["kind"] == "executor":
+            self.master(req)
         self.store.forget_device(dev)
         self.store.audit(dev, "forget", "aparelho removido do gateway")
         return 200, {"ok": True}, {}

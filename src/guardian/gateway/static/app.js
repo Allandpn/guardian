@@ -2131,7 +2131,7 @@ async function pairView() {
   const body = [];
 
   body.push(card(1, steps[0], `O aparelho vai confiar em: ${names}`, [
-    h('div', { class: 'seg', style: 'margin:10px 0' }, [['device', 'Aparelho'], ['executor', 'Executor do Pi-hole']].map(([k, t]) => h('a', { href: '#/pair', class: pair.kind === k ? 'on' : '', onclick: (e) => { e.preventDefault(); pair.kind = k; pair.step = 1; route(); } }, t))),
+    h('div', { class: 'seg', style: 'margin:10px 0' }, [['device', 'Aparelho'], ...(isMaster() || !hasMaster() ? [['executor', 'Executor do Pi-hole']] : [])].map(([k, t]) => h('a', { href: '#/pair', class: pair.kind === k ? 'on' : '', onclick: (e) => { e.preventDefault(); pair.kind = k; pair.step = 1; route(); } }, t))),
     h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'O código vale 24 h e só funciona uma vez.'),
     h('button', { class: 'btn pri', type: 'button', onclick: act(async () => {
       const before = devices.map((d) => d.id);
