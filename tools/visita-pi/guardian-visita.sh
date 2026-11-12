@@ -8,8 +8,8 @@
 # "guardian" do registro, reinstala o deployer, reinicia o deployer e o executor, e registra o resultado no histórico de Deploys (aparece no site).
 # Tudo o que acontece vai para guardian-visita.log, na mesma partição de boot.
 
-# O commit que o mestre colocou no ar (release/14). Se você aprovou outro, escreva o hash completo num arquivo guardian-commit.txt ao lado deste.
-EXPECTED=dbb040b1b01ab8c6011da824e47e0f631bee5248
+# O commit que o mestre colocou no ar (release/15). Se você aprovou outro, escreva o hash completo num arquivo guardian-commit.txt ao lado deste.
+EXPECTED=cb3dc71ba3a98992872ab068876d2a10f4f84edd
 
 SELF=/usr/local/sbin/guardian-visita.sh
 UNIT=/etc/systemd/system/guardian-visita.service
