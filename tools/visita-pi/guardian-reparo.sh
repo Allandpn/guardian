@@ -55,8 +55,18 @@ probe() {   # o site responde de dentro da rede do Tailscale? (é o caminho que 
   docker exec "$TS" wget -q -T 5 -O - http://127.0.0.1:8080/healthz 2>&1 | head -c 200
 }
 
+section "Docker";                 systemctl is-active docker; systemctl is-enabled docker
+if ! systemctl is-active --quiet docker; then
+  echo "o Docker estava parado: ligando"
+  systemctl start docker; systemctl enable docker 2>/dev/null
+  systemctl --no-pager status docker 2>&1 | tail -15
+fi
 sleep 30   # o Docker termina de subir os contêineres que reiniciam sozinhos
 section "contêineres";            docker ps -a --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
+section "estado do Tailscale e do site"
+for c in "$TS" "$GW"; do
+  docker inspect -f "$c: {{.State.Status}} saída={{.State.ExitCode}} OOM={{.State.OOMKilled}} reinícios={{.RestartCount}} erro={{.State.Error}} política={{.HostConfig.RestartPolicy.Name}}" "$c" 2>&1
+done
 section "versão no ar";           git -C /opt/guardian -c safe.directory=/opt/guardian log -1 --oneline
 section "serviços do Guardian";   systemctl --no-pager --plain list-units 'guardian*' 2>&1 | head -20
 section "rede: site x Tailscale"; echo "site=$(netns "$GW") tailscale=$(netns "$TS")"
@@ -67,10 +77,12 @@ section "deployer (fim)";         journalctl -u guardian-deployer -n 25 --no-pag
 section "executor (fim)";         journalctl -u guardian-executor -n 15 --no-pager 2>&1
 
 section "conserto"
-if [ "$(docker inspect -f '{{.State.Running}}' "$TS" 2>/dev/null)" != "true" ]; then
-  echo "o contêiner do Tailscale estava parado: iniciando o mesmo contêiner (sem recriar, a identidade dele fica)"
+if [ "$(docker inspect -f '{{.State.Status}}' "$TS" 2>/dev/null)" != "running" ]; then
+  echo "o contêiner do Tailscale não estava rodando: iniciando o mesmo contêiner (sem recriar, a identidade dele fica no volume)"
   docker start "$TS"
-  sleep 10
+  sleep 20
+  docker inspect -f "$TS agora: {{.State.Status}} reinícios={{.RestartCount}}" "$TS" 2>&1
+  docker logs --tail 30 "$TS" 2>&1 | grep -v -i 'authkey'
 fi
 cd /opt/guardian && docker compose --env-file deploy/gateway.env -f deploy/docker-compose.yml up -d --no-deps --force-recreate gateway
 sleep 20
