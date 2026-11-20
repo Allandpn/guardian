@@ -1478,7 +1478,12 @@ class _Server(ThreadingHTTPServer):
                 self.shutdown_request(request)  # lotado: fecha na hora, sem criar thread
                 return
             self._active += 1
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:   # a thread não nasceu (limite de processos do contêiner): a vaga não pode ficar presa para sempre
+            with self._alock:
+                self._active -= 1
+            raise
 
     def process_request_thread(self, request, client_address):
         try:
@@ -1580,10 +1585,74 @@ class Handler(BaseHTTPRequestHandler):
     do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = do_PUT
 
 
+SELFCHECK_FAILS = 3        # falhas seguidas do teste interno antes de reiniciar (com o padrão de 30 s: 1 min e meio sem responder)
+TRAVA_KEEP = 5             # relatórios de trava guardados em /data
+
+
+def selfcheck_once(port: int, timeout: float = 5.0) -> bool:
+    """O próprio servidor atende? Abre uma conexão nova e pede /healthz, como o Tailscale faz."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            data = b""
+            while len(data) < 4096:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        return data.startswith(b"HTTP/1.") and b" 200 " in data.split(b"\r\n", 1)[0] and b'"ok"' in data
+    except OSError:
+        return False
+
+
+def write_trava_report(srv, fails: int, now: float | None = None) -> str | None:
+    """Antes de reiniciar: o que estava acontecendo (vagas ocupadas, threads e onde cada uma estava parada). Fica em /data, que sobrevive."""
+    import faulthandler
+    d = os.path.dirname(srv.gw.cfg.db_path) or "."
+    now = time.time() if now is None else now
+    path = os.path.join(d, f"trava-{time.strftime('%Y%m%d-%H%M%S', time.gmtime(now))}.txt")
+    try:
+        with open(path, "w") as f:
+            f.write(f"{time.strftime('%F %T', time.gmtime(now))} UTC: {fails} testes internos seguidos sem resposta; reiniciando o processo\n")
+            f.write(f"vagas ocupadas: {srv._active} de {srv.gw.cfg.max_connections}; threads vivas: {threading.active_count()}\n\n")
+            f.flush()
+            faulthandler.dump_traceback(file=f, all_threads=True)
+        old = sorted(x for x in os.listdir(d) if x.startswith("trava-") and x.endswith(".txt"))
+        for x in old[:-TRAVA_KEEP]:
+            os.remove(os.path.join(d, x))
+        return path
+    except OSError as e:
+        print("não consegui gravar o relatório da trava:", e, file=sys.stderr)
+        return None
+
+
+def selfcheck_loop(srv, interval: float, check=selfcheck_once, exit_fn=os._exit, sleep=time.sleep, stop=None) -> None:
+    """Vigia interno do site: se o próprio /healthz não responde SELFCHECK_FAILS vezes seguidas, grava o relatório e encerra o processo.
+    O Docker o religa (restart: unless-stopped), na mesma rede do contêiner do Tailscale. Sem root: vale com um deploy normal."""
+    fails = 0
+    sleep(interval * 2)   # deixa o servidor subir
+    while not (stop and stop.is_set()):
+        if check(srv.server_address[1]):
+            fails = 0
+        else:
+            fails += 1
+            print(f"teste interno falhou ({fails}/{SELFCHECK_FAILS}); vagas ocupadas {srv._active}", file=sys.stderr, flush=True)
+            if fails >= SELFCHECK_FAILS:
+                path = write_trava_report(srv, fails)
+                print(f"site travado: reiniciando (relatório em {path})", file=sys.stderr, flush=True)
+                exit_fn(3)
+                return
+        sleep(interval)
+
+
 def make_server(cfg: Config, store: Store | None = None) -> _Server:
     gw = Gateway(cfg, store)
     srv = _Server((cfg.bind, cfg.port), Handler, gw)
     threading.Thread(target=gw._purge_loop, daemon=True).start()
     if cfg.alerts_enabled:
         threading.Thread(target=gw._alerts_loop, daemon=True).start()
+    if cfg.selfcheck_s > 0:
+        threading.Thread(target=selfcheck_loop, args=(srv, cfg.selfcheck_s), daemon=True).start()
     return srv
